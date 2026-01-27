@@ -454,7 +454,8 @@ public final class AgentService {
     }
 
     public SseEmitter chatStream(ChatRequest req) {
-        SseEmitter emitter = new SseEmitter(180_000L); // 3 mins
+        long timeoutMs = resolveStreamTimeoutMs();
+        SseEmitter emitter = new SseEmitter(timeoutMs);
         executor.submit(() -> {
             String traceId = resolveTraceId("trace-");
             MDC.put("traceId", traceId);
@@ -620,5 +621,24 @@ public final class AgentService {
                 lower.contains("不足以") ||
                 lower.contains("缺少") ||
                 lower.contains("need more context");
+    }
+
+
+    private long resolveStreamTimeoutMs() {
+        String prop = System.getProperty("codeagent.stream.timeout.ms");
+        if (prop != null && !prop.trim().isEmpty()) {
+            try {
+                long v = Long.parseLong(prop.trim());
+                if (v > 0) return v;
+            } catch (Exception ignored) {}
+        }
+        String env = System.getenv("CODEAGENT_STREAM_TIMEOUT_MS");
+        if (env != null && !env.trim().isEmpty()) {
+            try {
+                long v = Long.parseLong(env.trim());
+                if (v > 0) return v;
+            } catch (Exception ignored) {}
+        }
+        return 900_000L; // 15 mins
     }
 }

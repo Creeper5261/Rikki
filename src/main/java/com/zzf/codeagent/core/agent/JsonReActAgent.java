@@ -1404,10 +1404,11 @@ public class JsonReActAgent {
         sb.append("4. Constraints: Prioritize ProjectMemory/LongTermMemory/IDEContext when relevant. ");
         sb.append("5. Facts: Only record facts supported by tool output or explicit user input. Previewed edits are pending. Do NOT claim changes are applied unless APPLY_PENDING_DIFF succeeded. ");
         sb.append("6. Edits: Use preview/dry-run for file changes when available. Do NOT ask the user to confirm in chat; rely on UI confirmation or call APPLY_PENDING_DIFF only if the user explicitly authorizes apply. ");
-        sb.append("7. Output: STRICT JSON only. Do not include markdown outside JSON. finalAnswer may include markdown/code fences. ");
-        sb.append("8. FinalAnswer must be user-facing and omit tool/system details. ");
-        sb.append("9. Thought: Provide a brief, non-sensitive, one-sentence thought in the user's language. ");
-        sb.append("10. Code Output: Show only core logic or changed lines unless the user requests the full file. ");
+        sb.append("7. Tool Args: Keep tool arguments minimal. Avoid embedding full file contents in tool args; prefer APPLY_PATCH or small EDIT_FILE/REPLACE_LINES. ");
+        sb.append("8. Output: STRICT JSON only. Do not include markdown outside JSON. finalAnswer may include markdown/code fences. ");
+        sb.append("9. FinalAnswer must be user-facing and omit tool/system details. ");
+        sb.append("10. Thought: Provide a brief, non-sensitive, one-sentence thought in the user's language. ");
+        sb.append("11. Code Output: Show only core logic or changed lines unless the user requests the full file. ");
         
         String toolList = buildToolListLine();
         if (!toolList.isEmpty()) {
@@ -2049,6 +2050,7 @@ public class JsonReActAgent {
         }
         ObjectNode payload = mapper.createObjectNode();
         payload.put("stage", stage == null ? "" : stage);
+        payload.put("stepType", stage == null ? "" : stage);
         if (turn != null) {
             payload.put("turn", turn.intValue());
         }

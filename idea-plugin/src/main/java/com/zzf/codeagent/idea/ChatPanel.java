@@ -343,8 +343,9 @@ final class ChatPanel {
                 String payload = mapper.writeValueAsString(json);
                 String endpointUrl = System.getProperty("codeagent.endpoint", "http://localhost:8080/api/agent/chat/stream");
                 
+                int timeoutMinutes = Integer.getInteger("codeagent.stream.timeout.minutes", 15);
                 HttpRequest req = HttpRequest.newBuilder(URI.create(endpointUrl))
-                        .timeout(Duration.ofMinutes(3))
+                        .timeout(Duration.ofMinutes(timeoutMinutes))
                         .header("Content-Type", "application/json")
                         .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
                         .build();
@@ -377,7 +378,11 @@ final class ChatPanel {
             try {
                 if ("agent_step".equals(event)) {
                     JsonNode node = mapper.readTree(data);
-                    if ("thought".equals(node.path("stepType").asText())) {
+                    String stepType = node.path("stepType").asText();
+                    if (stepType == null || stepType.isEmpty()) {
+                        stepType = node.path("stage").asText();
+                    }
+                    if ("thought".equals(stepType)) {
                          String thought = node.path("text").asText();
                          if (ui.thoughtPanel != null) {
                              ui.thoughtPanel.appendContent(thought + "\n");
