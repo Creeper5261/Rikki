@@ -13,6 +13,7 @@ import com.zzf.codeagent.core.tools.FileSystemToolService;
 public class ToolExecutionContext {
     public String traceId;
     public String workspaceRoot;
+    public String sessionRoot;
     public ObjectMapper mapper;
     public FileSystemToolService fs;
     public CodeSearchService search; // Elasticsearch
@@ -27,12 +28,13 @@ public class ToolExecutionContext {
     public SkillManager skillManager;
     public int sameQueryCount;
 
-    public ToolExecutionContext(String traceId, String workspaceRoot, ObjectMapper mapper, 
+    public ToolExecutionContext(String traceId, String workspaceRoot, String sessionRoot, ObjectMapper mapper, 
                               FileSystemToolService fs, CodeSearchService search,
                               HybridCodeSearchService hybridSearch,
                               IndexingWorker indexingWorker, String kafkaBootstrapServers, EventStream eventStream, RuntimeService runtimeService, SkillManager skillManager) {
         this.traceId = traceId;
         this.workspaceRoot = workspaceRoot;
+        this.sessionRoot = sessionRoot;
         this.mapper = mapper;
         this.fs = fs;
         this.search = search;

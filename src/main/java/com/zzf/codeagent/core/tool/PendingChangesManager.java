@@ -162,6 +162,25 @@ public class PendingChangesManager {
         return array;
     }
 
+    public JsonNode toJson(ObjectMapper mapper, String workspaceRoot, String sessionId) {
+        ArrayNode array = mapper.createArrayNode();
+        List<PendingChange> scoped = getChanges(workspaceRoot, sessionId);
+        for (PendingChange c : scoped) {
+            ObjectNode node = mapper.createObjectNode();
+            node.put("id", c.id);
+            node.put("path", c.path);
+            node.put("type", c.type);
+            node.put("old_content", c.oldContent);
+            node.put("new_content", c.newContent);
+            node.put("preview", c.preview);
+            node.put("timestamp", c.timestamp);
+            node.put("workspace_root", c.workspaceRoot);
+            node.put("session_id", c.sessionId);
+            array.add(node);
+        }
+        return array;
+    }
+
     public static class PendingChange {
         public final String id;
         public final String path;

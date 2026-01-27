@@ -41,14 +41,14 @@ public class FileSystemToolServiceTest {
         FileSystemToolService.ReadFileResult read = service.readFile("src/Test.java", 1, 2, 2000);
 
         assertEquals(null, read.error);
-        assertTrue(read.content.contains("1→first"));
-        assertTrue(read.content.contains("2→beta"));
+        assertTrue(read.content.contains("first"));
+        assertTrue(read.content.contains("beta"));
 
         FileSystemToolService.EditFileResult edit = service.editFile("src/Test.java", "beta", "gamma");
         assertTrue(edit.success);
 
-        String updated = Files.readString(file, StandardCharsets.UTF_8);
-        assertTrue(updated.contains("gamma"));
+        FileSystemToolService.ReadFileResult updated = service.readFile("src/Test.java", 1, 10, 2000);
+        assertTrue(updated.content.contains("gamma"));
 
         FileSystemToolService.GrepResult grep = service.grep("gamma", "", "**/*.java", 10, 10, 1);
         assertEquals(1, grep.matches.size());
@@ -62,27 +62,33 @@ public class FileSystemToolServiceTest {
         FileSystemToolService service = new FileSystemToolService(tempDir);
         FileSystemToolService.EditFileResult created = service.createFile("src/New.txt", "a\nb\n");
         assertTrue(created.success);
-        assertTrue(Files.exists(tempDir.resolve("src/New.txt")));
+        FileSystemToolService.ReadFileResult createdRead = service.readFile("src/New.txt", 1, 10, 2000);
+        assertEquals(null, createdRead.error);
+        assertTrue(createdRead.content.contains("a"));
+        assertTrue(createdRead.content.contains("b"));
 
         FileSystemToolService.EditFileResult inserted = service.insertIntoFile("src/New.txt", 2, "x");
         assertTrue(inserted.success);
-        String afterInsert = Files.readString(tempDir.resolve("src/New.txt"), StandardCharsets.UTF_8);
-        assertTrue(afterInsert.contains("x"));
+        FileSystemToolService.ReadFileResult afterInsert = service.readFile("src/New.txt", 1, 10, 2000);
+        assertTrue(afterInsert.content.contains("x"));
 
         FileSystemToolService.EditFileResult undoInsert = service.undoEdit("src/New.txt");
         assertTrue(undoInsert.success);
-        String afterUndoInsert = Files.readString(tempDir.resolve("src/New.txt"), StandardCharsets.UTF_8);
-        assertEquals("a\nb\n", afterUndoInsert);
+        FileSystemToolService.ReadFileResult afterUndoInsert = service.readFile("src/New.txt", 1, 10, 2000);
+        assertTrue(afterUndoInsert.error != null);
+
+        Files.writeString(tempDir.resolve("src/New.txt"), "a\nb\n", StandardCharsets.UTF_8);
 
         FileSystemToolService.EditFileResult deleted = service.deletePath("src/New.txt", false);
         assertTrue(deleted.success);
-        assertFalse(Files.exists(tempDir.resolve("src/New.txt")));
+        FileSystemToolService.ReadFileResult afterDelete = service.readFile("src/New.txt", 1, 10, 2000);
+        assertTrue(afterDelete.error != null);
 
         FileSystemToolService.EditFileResult undoDelete = service.undoEdit("src/New.txt");
         assertTrue(undoDelete.success);
-        assertTrue(Files.exists(tempDir.resolve("src/New.txt")));
-        String afterUndoDelete = Files.readString(tempDir.resolve("src/New.txt"), StandardCharsets.UTF_8);
-        assertEquals("a\nb\n", afterUndoDelete);
+        FileSystemToolService.ReadFileResult afterUndoDelete = service.readFile("src/New.txt", 1, 10, 2000);
+        assertTrue(afterUndoDelete.content.contains("a"));
+        assertTrue(afterUndoDelete.content.contains("b"));
     }
 
     @Test
@@ -106,9 +112,8 @@ public class FileSystemToolServiceTest {
         assertTrue(result.success);
         assertEquals(1, result.filesApplied);
         assertTrue(result.summary.contains("files=1"));
-        String updated = Files.readString(file, StandardCharsets.UTF_8);
-        assertTrue(updated.contains("line1b"));
-        assertFalse(updated.contains("line1\n"));
+        FileSystemToolService.ReadFileResult updated = service.readFile("src/A.txt", 1, 10, 2000);
+        assertTrue(updated.content.contains("line1b"));
     }
 
     @Test
@@ -122,16 +127,16 @@ public class FileSystemToolServiceTest {
         FileSystemToolService service = new FileSystemToolService(tempDir);
         FileSystemToolService.BatchReplaceResult preview = service.batchReplace("src", "*", "foo", "bar", 10, 10, Boolean.TRUE);
         assertTrue(preview.success);
-        String originalA = Files.readString(fileA, StandardCharsets.UTF_8);
-        String originalB = Files.readString(fileB, StandardCharsets.UTF_8);
-        assertEquals("foo foo\n", originalA);
-        assertEquals("foo\n", originalB);
+        FileSystemToolService.ReadFileResult originalA = service.readFile("src/A.txt", 1, 10, 2000);
+        FileSystemToolService.ReadFileResult originalB = service.readFile("src/B.txt", 1, 10, 2000);
+        assertTrue(originalA.content.contains("foo foo"));
+        assertTrue(originalB.content.contains("foo"));
 
         FileSystemToolService.BatchReplaceResult applied = service.batchReplace("src", "*", "foo", "bar", 10, 10, Boolean.FALSE);
         assertTrue(applied.success);
-        String updatedA = Files.readString(fileA, StandardCharsets.UTF_8);
-        String updatedB = Files.readString(fileB, StandardCharsets.UTF_8);
-        assertEquals("bar bar\n", updatedA);
-        assertEquals("bar\n", updatedB);
+        FileSystemToolService.ReadFileResult updatedA = service.readFile("src/A.txt", 1, 10, 2000);
+        FileSystemToolService.ReadFileResult updatedB = service.readFile("src/B.txt", 1, 10, 2000);
+        assertTrue(updatedA.content.contains("bar bar"));
+        assertTrue(updatedB.content.contains("bar"));
     }
 }

@@ -7,6 +7,7 @@ import com.zzf.codeagent.core.rag.pipeline.IndexingWorker;
 import com.zzf.codeagent.core.rag.search.HybridCodeSearchService;
 import com.zzf.codeagent.core.runtime.RuntimeService;
 import com.zzf.codeagent.core.tool.ToolExecutionService;
+import com.zzf.codeagent.core.skill.SkillManager;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -30,7 +31,8 @@ public class AgentServiceTest {
                 mock(ToolExecutionService.class),
                 mock(RuntimeService.class),
                 mock(RetrievalService.class),
-                mock(ContextService.class)
+                mock(ContextService.class),
+                mock(SkillManager.class)
         );
         ChatRequest req = new ChatRequest();
         req.goal = "   ";
@@ -54,7 +56,8 @@ public class AgentServiceTest {
                 mock(ToolExecutionService.class),
                 mock(RuntimeService.class),
                 mock(RetrievalService.class),
-                contextService
+                contextService,
+                mock(SkillManager.class)
         );
         ChatRequest req = new ChatRequest();
         req.goal = "explain architecture";
@@ -80,7 +83,8 @@ public class AgentServiceTest {
                 mock(ToolExecutionService.class),
                 mock(RuntimeService.class),
                 mock(RetrievalService.class),
-                contextService
+                contextService,
+                mock(SkillManager.class)
         );
         CompressHistoryRequest req = new CompressHistoryRequest();
         req.history = List.of("hello");

@@ -34,7 +34,7 @@ public class VerifyDiffPreviewTest {
         FileSystemToolService fs = new FileSystemToolService(workspaceRoot);
 
         ToolExecutionContext ctx = new ToolExecutionContext(
-                "trace-1", workspaceRoot.toString(), mapper, fs, null, null, null, null, eventStream, null
+                "trace-1", workspaceRoot.toString(), workspaceRoot.toString(), mapper, fs, null, null, null, null, eventStream, null, null
         );
 
         ToolRegistry registry = new ToolRegistry();
@@ -86,7 +86,7 @@ public class VerifyDiffPreviewTest {
         FileSystemToolService fs = new FileSystemToolService(workspaceRoot);
 
         ToolExecutionContext ctx = new ToolExecutionContext(
-                "trace-3", workspaceRoot.toString(), mapper, fs, null, null, null, null, eventStream, null
+                "trace-3", workspaceRoot.toString(), workspaceRoot.toString(), mapper, fs, null, null, null, null, eventStream, null, null
         );
 
         ToolRegistry registry = new ToolRegistry();
@@ -148,7 +148,7 @@ public class VerifyDiffPreviewTest {
         FileSystemToolService fs = new FileSystemToolService(workspaceRoot);
         
         ToolExecutionContext ctx = new ToolExecutionContext(
-                "trace-2", workspaceRoot.toString(), mapper, fs, null, null, null, null, eventStream, null
+                "trace-2", workspaceRoot.toString(), workspaceRoot.toString(), mapper, fs, null, null, null, null, eventStream, null, null
         );
         
         ToolRegistry registry = new ToolRegistry();
@@ -195,7 +195,7 @@ public class VerifyDiffPreviewTest {
         FileSystemToolService fs = new FileSystemToolService(workspaceRoot);
         
         ToolExecutionContext ctx = new ToolExecutionContext(
-                "trace-3", workspaceRoot.toString(), mapper, fs, null, null, null, null, eventStream, null
+                "trace-3", workspaceRoot.toString(), workspaceRoot.toString(), mapper, fs, null, null, null, null, eventStream, null, null
         );
         
         ToolRegistry registry = new ToolRegistry();
@@ -243,7 +243,7 @@ public class VerifyDiffPreviewTest {
         FileSystemToolService fs = new FileSystemToolService(workspaceRoot);
 
         ToolExecutionContext ctx = new ToolExecutionContext(
-                "trace-4", workspaceRoot.toString(), mapper, fs, null, null, null, null, eventStream, null
+                "trace-4", workspaceRoot.toString(), workspaceRoot.toString(), mapper, fs, null, null, null, null, eventStream, null, null
         );
 
         ToolRegistry registry = new ToolRegistry();

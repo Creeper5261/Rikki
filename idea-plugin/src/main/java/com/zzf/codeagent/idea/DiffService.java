@@ -172,9 +172,10 @@ public class DiffService {
 
         if ("DELETE".equalsIgnoreCase(change.type)) {
             if (virtualFile != null) {
+                final VirtualFile toDelete = virtualFile;
                 ApplicationManager.getApplication().runWriteAction(() -> {
                     try {
-                        virtualFile.delete(this);
+                        toDelete.delete(this);
                     } catch (IOException e) {
                         e.printStackTrace();
                     }

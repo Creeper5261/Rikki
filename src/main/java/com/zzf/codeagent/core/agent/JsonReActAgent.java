@@ -16,6 +16,7 @@ import com.zzf.codeagent.core.rag.search.InMemoryCodeSearchService;
 import com.zzf.codeagent.core.runtime.RuntimeService;
 import com.zzf.codeagent.core.skill.Skill;
 import com.zzf.codeagent.core.skill.SkillManager;
+import com.zzf.codeagent.core.skill.SkillSelector;
 import com.zzf.codeagent.core.tool.ToolExecutionContext;
 import com.zzf.codeagent.core.tool.ToolExecutionService;
 import com.zzf.codeagent.core.tool.ToolProtocol;
@@ -55,6 +56,8 @@ public class JsonReActAgent {
     private static final int MAX_HISTORY_LINES = 6;
     private static final int MAX_CLAUDE_MEMORY_CHARS = 6000;
     private static final int MAX_LONG_TERM_MEMORY_CHARS = 8000;
+    private static final int MAX_SKILL_CONTENT_CHARS = 2500;
+    private static final int MAX_AUTO_SKILLS = 2;
     
     private static final Pattern SENSITIVE_KV = Pattern.compile("(?i)(password|passwd|secret|token|apikey|accesskey|secretkey)\\s*[:=]\\s*([\"']?)([^\"'\\\\\\r\\n\\s]{1,160})\\2");
     private static final Pattern SENSITIVE_JSON_KV = Pattern.compile("(?i)(\"(?:password|passwd|secret|token|apiKey|accessKey|secretKey)\"\\s*:\\s*\")([^\"]{1,160})(\")");
@@ -63,7 +66,7 @@ public class JsonReActAgent {
 
     private static final String SKILL_SYSTEM_PROMPT = 
             "You have access to a set of Skills that provide specialized capabilities. \n" +
-            "Skills are loaded from .agent/skills in the workspace. \n" +
+            "Skills are loaded from built-in classpath resources and from the workspace (.agent/skills, .claude/skills). \n" +
             "To use a skill, you must first load it using LOAD_SKILL. \n" +
             "Once loaded, the skill will provide detailed instructions and context. \n" +
             "Below are the currently available skills:\n";
@@ -75,6 +78,7 @@ public class JsonReActAgent {
     private final String traceId;
     private final String workspaceRoot;
     private final String sessionId;
+    private final String sessionRoot;
     private final IndexingWorker indexingWorker;
     private final String kafkaBootstrapServers;
     private final FileSystemToolService fs;
@@ -110,7 +114,10 @@ public class JsonReActAgent {
     private final Set<String> readFiles = new HashSet<>();
     private int lowEfficiencySearchCount = 0;
     private int toolCallCount = 0;
+    private int toolErrorCount = 0;
     private int consecutiveToolErrors = 0;
+    private int turnsUsed = 0;
+    private final List<String> autoSkillsLoaded = new ArrayList<>();
     private String lastFailedTool;
     private int toolBudgetLimit = MAX_TOOL_CALLS;
     private PlanExecutionState planState;
@@ -128,6 +135,7 @@ public class JsonReActAgent {
         this.traceId = traceId;
         this.workspaceRoot = workspaceRoot == null ? "" : workspaceRoot.trim();
         this.sessionId = sessionId == null ? "" : sessionId.trim();
+        this.sessionRoot = fileSystemRoot == null ? "" : fileSystemRoot.trim();
         this.indexingWorker = indexingWorker;
         this.kafkaBootstrapServers = kafkaBootstrapServers == null ? "" : kafkaBootstrapServers.trim();
         this.chatHistory = chatHistory == null ? new ArrayList<>() : new ArrayList<>(chatHistory);
@@ -157,6 +165,7 @@ public class JsonReActAgent {
         this.agentsMdLoaded = false;
         this.agentsMdContent = "";
         this.toolCallCount = 0;
+        this.toolErrorCount = 0;
         this.consecutiveToolErrors = 0;
         this.lastFailedTool = null;
         this.toolBudgetLimit = MAX_TOOL_CALLS;
@@ -164,6 +173,22 @@ public class JsonReActAgent {
 
     public List<Map<String, Object>> getPendingChanges() {
         return pendingChanges;
+    }
+
+    public int getToolCallCount() {
+        return toolCallCount;
+    }
+
+    public int getToolErrorCount() {
+        return toolErrorCount;
+    }
+
+    public int getTurnsUsed() {
+        return turnsUsed;
+    }
+
+    public List<String> getAutoSkillsLoaded() {
+        return new ArrayList<>(autoSkillsLoaded);
     }
 
     public String run(String goal) {
@@ -194,6 +219,7 @@ public class JsonReActAgent {
         Map<String, String> signatureToObs = new HashMap<>();
         
         for (int i = 0; i < MAX_TURNS; i++) {
+            turnsUsed = i + 1;
             logger.info("agent.turn.start traceId={} turn={} goalChars={} requestHistorySize={} agentHistorySize={}", traceId, i, goal == null ? 0 : goal.length(), chatHistory.size(), history.size());
             emitAgentStepEvent("turn_start", goal, i, null);
             String prompt = buildPrompt(goal);
@@ -300,7 +326,7 @@ public class JsonReActAgent {
             // If the content is different (e.g. paging), it's NOT a loop even if signature (path) is same.
             if (isLoop && "READ_FILE".equals(tool)) {
                 try {
-                    ToolExecutionContext ctx = new ToolExecutionContext(traceId, workspaceRoot, mapper, fs, search, hybridSearch, indexingWorker, kafkaBootstrapServers, eventStream, runtimeService, skillManager);
+                    ToolExecutionContext ctx = new ToolExecutionContext(traceId, workspaceRoot, sessionRoot, mapper, fs, search, hybridSearch, indexingWorker, kafkaBootstrapServers, eventStream, runtimeService, skillManager);
                     String newObs = toolExecutionService.execute(tool, toolVersion, args, ctx);
                     String cached = signatureToObs.get(sig);
                     // Compare JSON-serialized observations. 
@@ -413,7 +439,7 @@ public class JsonReActAgent {
                 continue;
             }
 
-            ToolExecutionContext ctx = new ToolExecutionContext(traceId, workspaceRoot, mapper, fs, search, hybridSearch, indexingWorker, kafkaBootstrapServers, eventStream, runtimeService, skillManager);
+            ToolExecutionContext ctx = new ToolExecutionContext(traceId, workspaceRoot, sessionRoot, mapper, fs, search, hybridSearch, indexingWorker, kafkaBootstrapServers, eventStream, runtimeService, skillManager);
             String obs;
             if (preCalculatedObs != null) {
                 obs = preCalculatedObs;
@@ -459,6 +485,7 @@ public class JsonReActAgent {
             signatureToObs.put(sig, obs);
             if (toolError) {
                 consecutiveToolErrors++;
+                toolErrorCount++;
                 lastFailedTool = tool;
             } else {
                 consecutiveToolErrors = 0;
@@ -603,6 +630,7 @@ public class JsonReActAgent {
         staticSystem.append("IMPORTANT: Always respond to the user in the same language as the user's input, or as explicitly requested by the user. If the user speaks Chinese, your final answer and thought process should be in Chinese (except for code and technical terms). If the user speaks English, use English.\n\n");
         staticSystem.append(buildToolProtocolPrompt());
         staticSystem.append(buildSkillsPrompt());
+        staticSystem.append(buildAutoSkillPrompt(g));
 
         // 2. Static Context (IDEContext & ProjectMemory) - Always included for Prefix Caching stability
         StringBuilder staticContext = new StringBuilder();
@@ -1349,6 +1377,60 @@ public class JsonReActAgent {
             logger.warn("Failed to list skills", e);
             return "";
         }
+    }
+
+    private String buildAutoSkillPrompt(String goal) {
+        if (agentsMdContent != null && (agentsMdContent.contains("<skills_system>") || agentsMdContent.contains("<available_skills>"))) {
+            return "";
+        }
+        if (skillManager == null) return "";
+
+        List<Skill> skills;
+        try {
+            skills = skillManager.listSkills(workspaceRoot);
+        } catch (Exception e) {
+            logger.warn("Failed to list skills for auto-load", e);
+            return "";
+        }
+        if (skills == null || skills.isEmpty()) return "";
+
+        String triggerText = buildSkillTriggerText(goal);
+        List<String> selected = SkillSelector.selectSkillNames(triggerText, skills, MAX_AUTO_SKILLS);
+        if (selected.isEmpty()) return "";
+
+        Map<String, Skill> skillMap = new HashMap<>();
+        for (Skill s : skills) {
+            if (s != null && s.getName() != null) {
+                skillMap.put(s.getName().toLowerCase(), s);
+            }
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("\n\nAuto-loaded skills (use these instructions with priority if relevant):\n");
+        autoSkillsLoaded.clear();
+        for (String name : selected) {
+            Skill s = skillMap.get(name.toLowerCase());
+            if (s == null) continue;
+            autoSkillsLoaded.add(s.getName());
+            sb.append("- ").append(s.getName()).append(": ").append(s.getDescription() == null ? "" : s.getDescription()).append("\n");
+            sb.append(StringUtils.truncate(s.getContent() == null ? "" : s.getContent(), MAX_SKILL_CONTENT_CHARS)).append("\n");
+        }
+        logger.info("skills.auto_load traceId={} names={}", traceId, selected);
+        return sb.toString();
+    }
+
+    private String buildSkillTriggerText(String goal) {
+        StringBuilder sb = new StringBuilder();
+        if (goal != null && !goal.trim().isEmpty()) {
+            sb.append(goal).append(" ");
+        }
+        int start = Math.max(0, chatHistory.size() - 4);
+        for (int i = start; i < chatHistory.size(); i++) {
+            String line = chatHistory.get(i);
+            if (line == null) continue;
+            sb.append(line).append(" ");
+        }
+        return sb.toString();
     }
 
     private String buildToolSpecLine() {

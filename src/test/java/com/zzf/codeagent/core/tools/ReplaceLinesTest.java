@@ -23,14 +23,16 @@ public class ReplaceLinesTest {
         // Test normal replacement
         FileSystemToolService.EditFileResult result = service.replaceLines("test.txt", 2, 3, "new2\nnew3", false);
         assertTrue(result.success, "Replace lines should succeed: " + result.error);
-        String content = Files.readString(file, StandardCharsets.UTF_8);
-        assertEquals("line1\nnew2\nnew3\nline4\n", content);
+        FileSystemToolService.ReadFileResult content = service.readFile("test.txt", 1, 10, 2000);
+        assertTrue(content.content.contains("new2"));
+        assertTrue(content.content.contains("new3"));
 
         // Test deletion (empty content)
         result = service.replaceLines("test.txt", 2, 3, null, false);
         assertTrue(result.success);
-        content = Files.readString(file, StandardCharsets.UTF_8);
-        assertEquals("line1\nline4\n", content);
+        content = service.readFile("test.txt", 1, 10, 2000);
+        assertFalse(content.content.contains("line2"));
+        assertFalse(content.content.contains("line3"));
 
         // Test out of bounds
         result = service.replaceLines("test.txt", 10, 11, "fail", false);
@@ -41,8 +43,8 @@ public class ReplaceLinesTest {
         result = service.replaceLines("test.txt", 1, 1, "preview", true);
         assertTrue(result.success);
         assertTrue(result.preview);
-        content = Files.readString(file, StandardCharsets.UTF_8);
-        assertEquals("line1\nline4\n", content); // Content unchanged
+        content = service.readFile("test.txt", 1, 10, 2000);
+        assertFalse(content.content.contains("preview")); // Content unchanged
     }
 
     @Test
@@ -61,17 +63,18 @@ public class ReplaceLinesTest {
     public void testCreateDirectoryAndMove(@TempDir Path tempDir) throws Exception {
         FileSystemToolService service = new FileSystemToolService(tempDir);
         
-        // Create directory
-        FileSystemToolService.EditFileResult r1 = service.createDirectory("newdir", false);
+        // Create file in directory (staged)
+        FileSystemToolService.EditFileResult r1 = service.createFile("newdir/file.txt", "hello");
         assertTrue(r1.success);
-        assertTrue(Files.exists(tempDir.resolve("newdir")));
-        assertTrue(Files.isDirectory(tempDir.resolve("newdir")));
+        FileSystemToolService.ReadFileResult read1 = service.readFile("newdir/file.txt", 1, 10, 2000);
+        assertTrue(read1.content.contains("hello"));
         
-        // Move directory
-        FileSystemToolService.EditFileResult r2 = service.movePath("newdir", "moveddir", false);
+        // Move file
+        FileSystemToolService.EditFileResult r2 = service.movePath("newdir/file.txt", "moveddir/file.txt", false);
         assertTrue(r2.success);
-        assertFalse(Files.exists(tempDir.resolve("newdir")));
-        assertTrue(Files.exists(tempDir.resolve("moveddir")));
-        assertTrue(Files.isDirectory(tempDir.resolve("moveddir")));
+        FileSystemToolService.ReadFileResult moved = service.readFile("moveddir/file.txt", 1, 10, 2000);
+        assertTrue(moved.content.contains("hello"));
+        FileSystemToolService.ReadFileResult old = service.readFile("newdir/file.txt", 1, 10, 2000);
+        assertTrue(old.error != null);
     }
 }

@@ -153,6 +153,7 @@ public final class AgentService {
             long pipelineMs = 0L;
             long agentMs = 0L;
             List<Map<String, Object>> pendingChanges = new ArrayList<>();
+            JsonReActAgent agentUsed = null;
 
             if (intent == IntentClassifier.Intent.SEARCH || intent == IntentClassifier.Intent.EXPLAIN) {
                 route = "SmartRetrieval";
@@ -168,6 +169,7 @@ public final class AgentService {
                     route = "SmartRetrieval->JsonReActAgent";
                     logger.info("chat.fallback traceId={} reason=InsufficientRetrieval", traceId);
                     JsonReActAgent agent = new JsonReActAgent(mapper, model, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+                    agentUsed = agent;
                     String augmentedGoal = req.goal + "\n\n(Note: Automatic search failed to find enough context. Please use tools like LIST_FILES or READ_FILE to explore the project structure and key config files explicitly.)";
                     logger.info("agent.run.start traceId={} route=SmartRetrievalFallback goalChars={}", traceId, augmentedGoal.length());
                     long tAgent = System.nanoTime();
@@ -180,6 +182,7 @@ public final class AgentService {
                 route = "JsonReActAgent";
                 logger.info("chat.route traceId={} intent={} pipeline=JsonReActAgent", traceId, intent);
                 JsonReActAgent agent = new JsonReActAgent(mapper, model, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+                agentUsed = agent;
                 logger.info("agent.run.start traceId={} route=JsonReActAgent goalChars={}", traceId, req.goal.trim().length());
                 long tAgent = System.nanoTime();
                 answer = agent.run(req.goal);
@@ -210,6 +213,12 @@ public final class AgentService {
             meta.put("intent", intent.name());
             meta.put("route", route);
             meta.put("pendingChanges", pendingChanges);
+            if (agentUsed != null) {
+                meta.put("tool_calls", agentUsed.getToolCallCount());
+                meta.put("tool_errors", agentUsed.getToolErrorCount());
+                meta.put("turns_used", agentUsed.getTurnsUsed());
+                meta.put("auto_skills", agentUsed.getAutoSkillsLoaded());
+            }
             meta.put("total_ms", totalMs);
             meta.put("classify_ms", classifyMs);
             if (pipelineMs > 0) {
@@ -499,6 +508,7 @@ public final class AgentService {
                 String answer;
                 String route;
                 List<Map<String, Object>> pendingChanges = new ArrayList<>();
+                JsonReActAgent agentUsed = null;
 
                 if (intent == IntentClassifier.Intent.SEARCH || intent == IntentClassifier.Intent.EXPLAIN) {
                     route = "SmartRetrieval";
@@ -515,6 +525,7 @@ public final class AgentService {
                         emitter.send(SseEmitter.event().name("agent_step").data(mapper.writeValueAsString(fallbackPayload)));
 
                         JsonReActAgent agent = new JsonReActAgent(mapper, model, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+                        agentUsed = agent;
                         String augmentedGoal = req.goal + "\n\n(Note: Automatic search failed to find enough context. Please use tools like LIST_FILES or READ_FILE to explore the project structure and key config files explicitly.)";
                         answer = agent.run(augmentedGoal);
                         pendingChanges.addAll(agent.getPendingChanges());
@@ -522,6 +533,7 @@ public final class AgentService {
                 } else {
                     route = "JsonReActAgent";
                     JsonReActAgent agent = new JsonReActAgent(mapper, model, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+                    agentUsed = agent;
                     answer = agent.run(req.goal);
                 }
 
@@ -547,6 +559,12 @@ public final class AgentService {
                 meta.put("intent", intent.name());
                 meta.put("route", route);
                 meta.put("pendingChanges", pendingChanges);
+                if (agentUsed != null) {
+                    meta.put("tool_calls", agentUsed.getToolCallCount());
+                    meta.put("tool_errors", agentUsed.getToolErrorCount());
+                    meta.put("turns_used", agentUsed.getTurnsUsed());
+                    meta.put("auto_skills", agentUsed.getAutoSkillsLoaded());
+                }
                 
                 ChatResponse resp = new ChatResponse(traceId, answer, topic.isNewTopic, topic.title, meta);
                 emitter.send(SseEmitter.event().name("finish").data(mapper.writeValueAsString(resp)));

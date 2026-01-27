@@ -746,10 +746,10 @@ public final class BuiltInToolHandlers {
                 out = out.withHint("EDIT_FILE failed. Check if file exists and old_str matches (must be exact). Suggest READ_FILE to confirm content.");
             } else if (r.preview) {
                 out = out.withHint("Changes applied successfully.");
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "edit_file", r.oldContent, r.newContent, true, r.prevExist);
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "edit_file", r.oldContent, r.newContent, true, r.prevExist, ctx.workspaceRoot, ctx.traceId);
             } else {
                 out = out.withHint("File edited successfully. Suggestions: 1. Run relevant tests to verify; 2. If task done, update facts and output type=final.");
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "edit_file", r.oldContent, r.newContent, false, r.prevExist);
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "edit_file", r.oldContent, r.newContent, false, r.prevExist, ctx.workspaceRoot, ctx.traceId);
             }
             out = out.withExtra("path", ctx.mapper.valueToTree(path));
             return out.withTookMs((System.nanoTime() - t0) / 1_000_000L);
@@ -815,7 +815,7 @@ public final class BuiltInToolHandlers {
                     : ToolResult.error(env.getTool(), env.getVersion(), r.error == null || r.error.isEmpty() ? "create_failed" : r.error)
                         .withExtra("result", ctx.mapper.valueToTree(r));
             if (r.success) {
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "create", r.oldContent, r.newContent, r.preview, r.prevExist);
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "create", r.oldContent, r.newContent, r.preview, r.prevExist, ctx.workspaceRoot, ctx.traceId);
                 if (!r.preview) {
                     out = out.withHint("File created successfully in sandbox. You MUST NOT ask for confirmation. Proceed with next steps or output type=final.");
                 } else {
@@ -896,7 +896,7 @@ public final class BuiltInToolHandlers {
                     : ToolResult.error(env.getTool(), env.getVersion(), r.error == null || r.error.isEmpty() ? "insert_failed" : r.error)
                         .withExtra("result", ctx.mapper.valueToTree(r));
             if (r.success) {
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "insert", r.oldContent, r.newContent, r.preview, r.prevExist);
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "insert", r.oldContent, r.newContent, r.preview, r.prevExist, ctx.workspaceRoot, ctx.traceId);
                 if (!r.preview) {
                     out = out.withHint("Line inserted successfully. Suggestions: 1. Continue editing; 2. Verify if needed.");
                 } else {
@@ -947,7 +947,7 @@ public final class BuiltInToolHandlers {
                     : ToolResult.error(env.getTool(), env.getVersion(), r.error == null || r.error.isEmpty() ? "undo_failed" : r.error)
                         .withExtra("result", ctx.mapper.valueToTree(r));
             if (r.success) {
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "undo_edit", r.oldContent, r.newContent, r.preview, r.prevExist);
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "undo_edit", r.oldContent, r.newContent, r.preview, r.prevExist, ctx.workspaceRoot, ctx.traceId);
                 out = out.withHint("Undo applied. Review the file state.");
             } else {
                 out = out.withHint("UNDO_EDIT failed. Check if there is edit history.");
@@ -1134,7 +1134,7 @@ public final class BuiltInToolHandlers {
                 if (view != null && view.error == null) {
                     updateWorkspaceView(ctx.eventStream, ctx.mapper, view);
                 }
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, command, op.oldContent, op.newContent, op.preview, op.prevExist);
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, command, op.oldContent, op.newContent, op.preview, op.prevExist, ctx.workspaceRoot, ctx.traceId);
                 out = out.withHint("Edit applied. Review the view and proceed.");
             } else {
                 out = out.withHint("STR_REPLACE_EDITOR failed. Check path and parameters.");
@@ -1193,7 +1193,7 @@ public final class BuiltInToolHandlers {
                     updateWorkspaceDelete(ctx.eventStream, ctx.mapper, path);
                     out = out.withHint("Path deleted. Continue with next steps.");
                 } else {
-                    updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "delete_file", r.oldContent, r.newContent, r.preview, r.prevExist);
+                    updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "delete_file", r.oldContent, r.newContent, r.preview, r.prevExist, ctx.workspaceRoot, ctx.traceId);
                     out = out.withHint("File deleted successfully.");
                 }
             } else {
@@ -1275,7 +1275,7 @@ public final class BuiltInToolHandlers {
                     newContent = item.newContent;
                     prevExist = !item.created;
                 }
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "apply_patch", oldContent, newContent, r.preview, prevExist);
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "apply_patch", oldContent, newContent, r.preview, prevExist, ctx.workspaceRoot, ctx.traceId);
 
                 if (!r.preview) {
                     out = out.withHint("Patch applied. Review changes if needed.");
@@ -1363,7 +1363,7 @@ public final class BuiltInToolHandlers {
                     oldC = item.oldContent;
                     newC = item.newContent;
                 }
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, p, "batch_replace", oldC, newC, r.preview, true);
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, p, "batch_replace", oldC, newC, r.preview, true, ctx.workspaceRoot, ctx.traceId);
                 if (!r.preview) {
                     out = out.withHint("Batch replace completed. Review summary and items.");
                 } else {
@@ -1442,18 +1442,36 @@ public final class BuiltInToolHandlers {
                             .withExtra("runtimeType", ctx.mapper.valueToTree(runtimeRaw))
                             .withTookMs((System.nanoTime() - t0) / 1_000_000L);
                 }
-                if (override == RuntimeType.DOCKER && (ctx.workspaceRoot == null || ctx.workspaceRoot.isEmpty())) {
+                String dockerRoot = (ctx.sessionRoot != null && !ctx.sessionRoot.isEmpty()) ? ctx.sessionRoot : ctx.workspaceRoot;
+                if (override == RuntimeType.DOCKER && (dockerRoot == null || dockerRoot.isEmpty())) {
                     return ToolResult.error(env.getTool(), env.getVersion(), "workspaceRoot_is_blank")
                             .withExtra("runtimeType", ctx.mapper.valueToTree(runtimeRaw))
                             .withTookMs((System.nanoTime() - t0) / 1_000_000L);
                 }
             }
+            String runRoot = (ctx.sessionRoot != null && !ctx.sessionRoot.isEmpty()) ? ctx.sessionRoot : ctx.workspaceRoot;
             if (cwd == null || cwd.trim().isEmpty()) {
-                cwd = ctx.workspaceRoot;
+                cwd = runRoot;
+            }
+            if (runRoot != null && !runRoot.isEmpty()) {
+                Path rootPath = Paths.get(runRoot).toAbsolutePath().normalize();
+                Path cwdPath = Paths.get(cwd);
+                if (!cwdPath.isAbsolute()) {
+                    cwdPath = rootPath.resolve(cwdPath).normalize();
+                } else {
+                    cwdPath = cwdPath.toAbsolutePath().normalize();
+                }
+                if (!cwdPath.startsWith(rootPath)) {
+                    return ToolResult.error(env.getTool(), env.getVersion(), "cwd_outside_session_root")
+                            .withExtra("cwd", ctx.mapper.valueToTree(cwd))
+                            .withExtra("sessionRoot", ctx.mapper.valueToTree(runRoot))
+                            .withTookMs((System.nanoTime() - t0) / 1_000_000L);
+                }
+                cwd = cwdPath.toString();
             }
             CommandRequest req = new CommandRequest(command, cwd, timeout, mode);
             RuntimeType effective = override == null ? ctx.runtimeService.defaultType() : override;
-            CommandResult result = ctx.runtimeService.execute(ctx.workspaceRoot, req, override);
+            CommandResult result = ctx.runtimeService.execute(runRoot, req, override);
             ToolResult out = result.exitCode == 0 && result.error.isEmpty()
                     ? ToolResult.ok(env.getTool(), env.getVersion(), ctx.mapper.valueToTree(result))
                     : ToolResult.error(env.getTool(), env.getVersion(), result.error.isEmpty() ? "command_failed" : result.error)
@@ -1643,7 +1661,7 @@ public final class BuiltInToolHandlers {
         eventStream.updateWorkspaceState(update, EventSource.AGENT, null);
     }
 
-    private static void updateWorkspaceEdit(EventStream eventStream, ObjectMapper mapper, String path, String command, String oldContent, String newContent, boolean preview, boolean prevExist) {
+    private static void updateWorkspaceEdit(EventStream eventStream, ObjectMapper mapper, String path, String command, String oldContent, String newContent, boolean preview, boolean prevExist, String workspaceRoot, String sessionId) {
         if (eventStream == null || mapper == null) {
             return;
         }
@@ -1662,7 +1680,7 @@ public final class BuiltInToolHandlers {
             if (preview) {
                 // Add to PendingChangesManager only if not already added by FileSystemToolService
                 // This prevents overwriting the correct 'oldContent' (original disk content) with intermediate content
-                if (PendingChangesManager.getInstance().getPendingChange(path, ctx.workspaceRoot, ctx.traceId).isEmpty()) {
+                if (PendingChangesManager.getInstance().getPendingChange(path, workspaceRoot, sessionId).isEmpty()) {
                     String changeType = "EDIT";
                     if (newContent == null) {
                         changeType = "DELETE";
@@ -1679,8 +1697,8 @@ public final class BuiltInToolHandlers {
                             newContent,
                             null, // Preview diff computed by frontend or later
                             System.currentTimeMillis(),
-                            ctx.workspaceRoot,
-                            ctx.traceId
+                            workspaceRoot,
+                            sessionId
                         )
                     );
                 }
@@ -1696,7 +1714,7 @@ public final class BuiltInToolHandlers {
             }
             
             // Add all pending changes to update
-            update.set("pending_changes", PendingChangesManager.getInstance().toJson(mapper));
+            update.set("pending_changes", PendingChangesManager.getInstance().toJson(mapper, workspaceRoot, sessionId));
         }
         eventStream.updateWorkspaceState(update, EventSource.AGENT, null);
     }
@@ -1836,7 +1854,7 @@ public final class BuiltInToolHandlers {
                     // We do this after the loop or per item? 
                     // Per item is safer for history, but might be noisy. 
                     // Let's do it per item to record the edit in history properly.
-                    updateWorkspaceEdit(ctx.eventStream, ctx.mapper, change.path, "apply_pending_diff", change.oldContent, change.newContent, false, true);
+                    updateWorkspaceEdit(ctx.eventStream, ctx.mapper, change.path, "apply_pending_diff", change.oldContent, change.newContent, false, true, ctx.workspaceRoot, ctx.traceId);
                 } else {
                     errors.add(change.path + ": " + r.error);
                 }
@@ -1845,7 +1863,7 @@ public final class BuiltInToolHandlers {
             // If we rejected, we also need to update workspace state to clear the pending list in JSON
             if (reject) {
                 ObjectNode update = ctx.mapper.createObjectNode();
-                update.set("pending_changes", PendingChangesManager.getInstance().toJson(ctx.mapper));
+                update.set("pending_changes", PendingChangesManager.getInstance().toJson(ctx.mapper, ctx.workspaceRoot, ctx.traceId));
                 // Also clear legacy pending_diff if empty
                 if (PendingChangesManager.getInstance().getChanges(ctx.workspaceRoot, ctx.traceId).isEmpty()) {
                     update.putNull("pending_diff");
@@ -2000,7 +2018,7 @@ public final class BuiltInToolHandlers {
                         .withExtra("result", ctx.mapper.valueToTree(r));
             
             if (r.success) {
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "replace_lines", r.oldContent, r.newContent, r.preview, r.prevExist);
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "replace_lines", r.oldContent, r.newContent, r.preview, r.prevExist, ctx.workspaceRoot, ctx.traceId);
                 if (!r.preview) {
                     out = out.withHint("Lines replaced. Verify content.");
                 } else {
@@ -2059,7 +2077,7 @@ public final class BuiltInToolHandlers {
                         .withExtra("result", ctx.mapper.valueToTree(r));
             
             if (r.success) {
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "create_directory", null, null, r.preview, r.prevExist);
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "create_directory", null, null, r.preview, r.prevExist, ctx.workspaceRoot, ctx.traceId);
                 if (!r.preview) {
                     out = out.withHint("Directory created.");
                 } else {
@@ -2118,7 +2136,7 @@ public final class BuiltInToolHandlers {
                         .withExtra("result", ctx.mapper.valueToTree(r));
             
             if (r.success) {
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, destination, "move_path", "source: " + source, "dest: " + destination, r.preview, r.prevExist);
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, destination, "move_path", "source: " + source, "dest: " + destination, r.preview, r.prevExist, ctx.workspaceRoot, ctx.traceId);
                 if (!r.preview) {
                     out = out.withHint("Path moved successfully.");
                 } else {

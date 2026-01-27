@@ -64,7 +64,7 @@ public class BinaryAndConfirmationTest {
         FileSystemToolService fs = new FileSystemToolService(workspaceRoot);
 
         ToolExecutionContext ctx = new ToolExecutionContext(
-                "trace-1", workspaceRoot.toString(), mapper, fs, null, null, null, null, eventStream, null
+                "trace-1", workspaceRoot.toString(), workspaceRoot.toString(), mapper, fs, null, null, null, null, eventStream, null, null
         );
 
         ToolRegistry registry = new ToolRegistry();
