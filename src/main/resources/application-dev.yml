@@ -1,0 +1,11 @@
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+elasticsearch:
+  host: localhost
+  port: 9200
+  scheme: http
+codeagent:
+  redis:
+    host: localhost
+    port: 6379

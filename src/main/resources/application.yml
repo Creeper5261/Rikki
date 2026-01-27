@@ -1,0 +1,55 @@
+spring:
+  application:
+    name: code-agent
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+elasticsearch:
+  scheme: ${ES_SCHEME:http}
+  host: ${ES_HOST:localhost}
+  port: ${ES_PORT:9200}
+embedding:
+  provider: ${EMBEDDING_PROVIDER:dashscope}
+  api:
+    url: ${EMBEDDING_API_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+    key: ${EMBEDDING_API_KEY:}
+    model: ${EMBEDDING_API_MODEL:text-embedding-v4}
+    dimension: ${EMBEDDING_API_DIMENSION:2048}
+    timeout-ms: ${EMBEDDING_API_TIMEOUT_MS:15000}
+deepseek:
+  api-key: ${DEEPSEEK_API_KEY:}
+  base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com/v1}
+  model-name: ${DEEPSEEK_MODEL_NAME:deepseek-chat}
+  fast-base-url: ${DEEPSEEK_FAST_BASE_URL:}
+  fast-model-name: ${DEEPSEEK_FAST_MODEL_NAME:}
+codeagent:
+  repo-root: ${CODEAGENT_REPO_ROOT:}
+  repo-name: ${CODEAGENT_REPO_NAME:code-agent}
+  compose-file: ${CODEAGENT_COMPOSE_FILE:}
+  runtime:
+    type: ${CODEAGENT_RUNTIME_TYPE:local}
+    docker-image: ${CODEAGENT_RUNTIME_DOCKER_IMAGE:ubuntu:22.04}
+    docker-workdir: ${CODEAGENT_RUNTIME_DOCKER_WORKDIR:/workspace}
+    timeout-ms: ${CODEAGENT_RUNTIME_TIMEOUT_MS:120000}
+  redis:
+    host: ${REDIS_HOST:localhost}
+    port: ${REDIS_PORT:6379}
+    timeout-ms: ${REDIS_TIMEOUT_MS:2000}
+logging:
+  pattern:
+    level: "%5p [${spring.application.name:-},%X{traceId:-}]"
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: always
+    prometheus:
+      enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name:code-agent}
+    export:
+      prometheus:
+        enabled: true
