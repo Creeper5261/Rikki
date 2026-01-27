@@ -1,0 +1,50 @@
+﻿[
+  {
+    "id": "skill-log-analyzer",
+    "type": "auto",
+    "goal": "Here is a Java stack trace:\njava.lang.IllegalStateException: boom\n    at com.example.App.run(App.java:10)\nCaused by: java.lang.NullPointerException\n    at com.example.Service.call(Service.java:42)",
+    "expect": {
+      "meta_auto_skills": ["log-analyzer"]
+    }
+  },
+  {
+    "id": "skill-gradle",
+    "type": "auto",
+    "goal": "Gradle dependency conflict in build.gradle.kts. How to resolve it?",
+    "expect": {
+      "meta_auto_skills": ["gradle-expert"]
+    }
+  },
+  {
+    "id": "skill-java-test-gen",
+    "type": "auto",
+    "goal": "Please write a JUnit + Mockito unit test for this service class.",
+    "expect": {
+      "meta_auto_skills": ["java-test-gen"]
+    }
+  },
+  {
+    "id": "tool-budget",
+    "type": "manual",
+    "goal": "Run an unconstrained full repo analysis that would exceed tool budget.",
+    "expect": {
+      "notes": "Expect tool_calls to reach MAX_TOOL_CALLS and forced final answer with tool_budget_exceeded in obs."
+    }
+  },
+  {
+    "id": "session-isolation",
+    "type": "manual",
+    "goal": "Open two parallel sessions and stage a pending change in only one.",
+    "expect": {
+      "notes": "pendingChanges should be isolated per session traceId."
+    }
+  },
+  {
+    "id": "run-command-isolation",
+    "type": "manual",
+    "goal": "Attempt RUN_COMMAND with cwd outside session root.",
+    "expect": {
+      "notes": "Expect error: cwd_outside_session_root."
+    }
+  }
+]

@@ -1,6 +1,16 @@
-# Evaluation Suite (Manual Baseline)
+# Evaluation Suite
 
 This repo does not include a live LLM in unit tests. Use the steps below to validate agent behavior across key dimensions.
+
+## Quick Run (Automated)
+
+Start the server, then run:
+
+```powershell
+.\scripts\eval\run_eval.ps1 -ServerUrl http://localhost:8080 -WorkspaceRoot <path-to-workspace>
+```
+
+Output includes PASS/FAIL/MANUAL with a non-zero exit code on FAIL.
 
 ## Scenario 1 - Skill Auto-Load (Log Analyzer)
 - Input: Provide a Java stack trace with a "Caused by" section.
@@ -31,4 +41,6 @@ This repo does not include a live LLM in unit tests. Use the steps below to vali
   - tool error: `cwd_outside_session_root`
 
 ## Notes
+- Automated cases live in `scripts/eval/eval_cases.json`.
+- Manual cases are tracked in the same file and will show as MANUAL.
 - Record results in a test report for regression tracking.
