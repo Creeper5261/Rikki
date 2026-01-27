@@ -38,7 +38,8 @@ Output includes PASS/FAIL/MANUAL with a non-zero exit code on FAIL.
 ## Scenario 5 - RUN_COMMAND Isolation
 - Run a command with cwd outside session root
 - Expected:
-  - tool error: `cwd_outside_session_root`
+  - If RUN_COMMAND disabled: `tool_disabled`
+  - If RUN_COMMAND enabled: `cwd_outside_session_root`
 
 ## Notes
 - Automated cases live in `scripts/eval/eval_cases.json`.

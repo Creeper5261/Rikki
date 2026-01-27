@@ -20,18 +20,31 @@ public class ToolExecutionService {
     private static final Pattern SENSITIVE_JSON_KV = Pattern.compile("(?i)(\"(?:password|passwd|secret|token|apiKey|accessKey|secretKey)\"\\s*:\\s*\")([^\"]{1,160})(\")");
     private final ToolRegistry registry;
     private final ToolRouter router;
+    private final boolean runCommandEnabled;
 
     public ToolExecutionService() {
         ToolRegistry reg = new ToolRegistry();
         BuiltInToolHandlers.registerAll(reg);
         this.registry = reg;
         this.router = new ToolRouter(reg);
+        this.runCommandEnabled = resolveRunCommandEnabled();
+    }
+
+    public boolean isRunCommandEnabled() {
+        return runCommandEnabled;
     }
 
     public String execute(String tool, String version, JsonNode args, ToolExecutionContext ctx) {
         long t0 = System.nanoTime();
         String requestId = "tool-" + UUID.randomUUID();
         try {
+            if ("RUN_COMMAND".equalsIgnoreCase(tool) && !runCommandEnabled) {
+                ToolEnvelope env = new ToolEnvelope(tool, registry.resolveVersion(tool, version), args, ctx.traceId, requestId);
+                ToolResult result = ToolResult.error(tool, env.getVersion(), "tool_disabled")
+                        .withHint("RUN_COMMAND is disabled for safety.").withTookMs((System.nanoTime() - t0) / 1_000_000L);
+                ObjectNode out = result.toJson(ctx.mapper, env);
+                return sanitizeObservation(out.toString());
+            }
             String v = registry.resolveVersion(tool, version);
             ToolEnvelope env = new ToolEnvelope(tool, v, args, ctx.traceId, requestId);
             logger.info("tool.call traceId={} tool={} version={} requestId={}", ctx.traceId, env.getTool(), env.getVersion(), env.getRequestId());
@@ -69,5 +82,12 @@ public class ToolExecutionService {
             return "";
         }
         return s.length() <= maxChars ? s : s.substring(0, maxChars);
+    }
+
+    private static boolean resolveRunCommandEnabled() {
+        String sys = System.getProperty("codeagent.run_command.enabled");
+        String env = System.getenv("CODEAGENT_RUN_COMMAND_ENABLED");
+        String val = (sys != null && !sys.isBlank()) ? sys : env;
+        return "true".equalsIgnoreCase(val);
     }
 }

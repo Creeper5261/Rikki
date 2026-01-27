@@ -17,6 +17,7 @@ import com.zzf.codeagent.core.runtime.RuntimeService;
 import com.zzf.codeagent.core.skill.Skill;
 import com.zzf.codeagent.core.skill.SkillManager;
 import com.zzf.codeagent.core.skill.SkillSelector;
+import com.zzf.codeagent.core.tool.PendingChangesManager;
 import com.zzf.codeagent.core.tool.ToolExecutionContext;
 import com.zzf.codeagent.core.tool.ToolExecutionService;
 import com.zzf.codeagent.core.tool.ToolProtocol;
@@ -667,13 +668,6 @@ public class JsonReActAgent {
         StringBuilder dynamicContext = new StringBuilder();
         dynamicContext.append("\nUserGoal: ").append(g);
 
-        if (!readFiles.isEmpty()) {
-            dynamicContext.append("\n[Read Files]\n");
-            for (String rf : readFiles) {
-                dynamicContext.append("- ").append(rf).append("\n");
-            }
-        }
-
         if (ideContextPath != null && !ideContextPath.isEmpty()) {
             dynamicContext.append("\nProjectStructurePath: ").append(ideContextPath);
             dynamicContext.append("\n").append(IDE_OPENED_FILE_PROMPT.replace("$filename", ideContextPath));
@@ -688,6 +682,20 @@ public class JsonReActAgent {
         if (!factsBlock.isEmpty()) {
             dynamicContext.append(factsBlock);
         }
+
+        List<PendingChangesManager.PendingChange> pending = PendingChangesManager.getInstance().getChanges(workspaceRoot, sessionId);
+        if (!pending.isEmpty()) {
+            dynamicContext.append("\n[Pending Changes]\n");
+            int limit = Math.min(pending.size(), 8);
+            for (int i = 0; i < limit; i++) {
+                PendingChangesManager.PendingChange change = pending.get(i);
+                dynamicContext.append("- ").append(change.path).append(" (").append(change.type).append(")\n");
+            }
+            if (pending.size() > limit) {
+                dynamicContext.append("- ... (").append(pending.size() - limit).append(" more)\n");
+            }
+        }
+
         if (!readFiles.isEmpty()) {
             dynamicContext.append("\n[Read Files]\n");
             for (String rf : readFiles) {
@@ -753,7 +761,7 @@ public class JsonReActAgent {
                 h = renderObservation(h, true);
                 // If rendered content is still too long, truncate safely
                 if (h.length() > 2000) {
-                     h = h.substring(0, 2000) + "\n... (Content truncated, see [Confirmed Facts] or read file again)";
+                     h = h.substring(0, 2000) + "\n... (Content truncated, see [Verified Facts] or read file again)";
                 }
             }
 
@@ -1031,6 +1039,41 @@ public class JsonReActAgent {
                                .append("\n");
                          }
                      }
+                }
+            } else if ("EDIT_FILE".equals(tool) || "CREATE_FILE".equals(tool) || "DELETE_FILE".equals(tool) ||
+                    "INSERT_LINE".equals(tool) || "APPLY_PATCH".equals(tool) || "BATCH_REPLACE".equals(tool) ||
+                    "REPLACE_LINES".equals(tool) || "MOVE_PATH".equals(tool) || "CREATE_DIRECTORY".equals(tool) ||
+                    "APPLY_PENDING_DIFF".equals(tool)) {
+                String path = node.path("result").path("filePath").asText("");
+                if (path.isEmpty()) {
+                    path = node.path("args").path("path").asText("");
+                }
+                if (path.isEmpty()) {
+                    path = node.path("args").path("sourcePath").asText("");
+                }
+                if (path.isEmpty()) {
+                    path = "unknown";
+                }
+                String err = node.path("result").path("error").asText("");
+                if (err.isEmpty()) {
+                    err = node.path("error").asText("");
+                }
+                boolean preview = node.path("result").path("preview").asBoolean(false);
+                sb.append("Tool Output (").append(tool).append(" ").append(path).append("): ");
+                if (!err.isEmpty()) {
+                    sb.append("Error: ").append(err);
+                } else if ("APPLY_PENDING_DIFF".equals(tool)) {
+                    boolean rejected = node.path("result").path("rejected").asBoolean(false);
+                    JsonNode applied = node.path("applied");
+                    int count = applied.isArray() ? applied.size() : 0;
+                    sb.append(rejected ? "Rejected pending changes" : "Applied pending changes");
+                    if (count > 0) {
+                        sb.append(" (").append(count).append(" file");
+                        if (count != 1) sb.append("s");
+                        sb.append(")");
+                    }
+                } else {
+                    sb.append(preview ? "Preview staged (pending apply)" : "Applied");
                 }
             } else {
                 // Default fallback for other tools
@@ -1355,43 +1398,31 @@ public class JsonReActAgent {
         // SOTA Optimization: Condensed instructions, strict JSON enforcement, hidden thought.
         sb.append("Role: Expert Software Engineer. Goal: Solve user task using available tools. ");
         sb.append("Protocol: ");
-        sb.append("0. No Terminal: You do NOT have access to a terminal. Do not try to run commands (e.g. git, gradlew). ");
-        sb.append("1. Evidence First: Prefer REPO_MAP then OPEN_FILE_VIEW/SCROLL_FILE_VIEW/GOTO_FILE_VIEW/SEARCH_FILE for long files; use SEARCH_KNOWLEDGE/LIST_FILES/GREP/READ_FILE to gather facts. Don't guess. ");
-        sb.append("2. Efficient Search: If SEARCH_KNOWLEDGE hits=0, fallback to LIST_FILES -> GREP. Stop searching if efficient (<50% new info). ");
-        sb.append("3. No Redundancy: Do NOT READ_FILE the same file twice (unless paging). Reuse context. ");
-        sb.append("4. Constraints: Prioritize ProjectMemory/LongTermMemory/IDEContext. ");
-        sb.append("5. Facts: Update 'facts' object after every step with confirmed technical details. ");
-        sb.append("6. Output: STRICT JSON only. No markdown. No chatter. ");
-        sb.append("7. FinalAnswer must be user-facing without tool/system details. ");
-        sb.append("8. Code Output: Show only CORE LOGIC or CHANGED lines. Do NOT dump full files unless requested. ");
+        sb.append("1. Evidence: Use the most direct tool. If IDEContext already shows relevant files, skip REPO_MAP/STRUCTURE_MAP and READ_FILE directly. ");
+        sb.append("2. Search: If SEARCH_KNOWLEDGE hits=0, fallback to LIST_FILES -> GREP. Stop searching if inefficient (<50% new info). ");
+        sb.append("3. No Redundancy: Avoid reading the same file range repeatedly (paging is OK). ");
+        sb.append("4. Constraints: Prioritize ProjectMemory/LongTermMemory/IDEContext when relevant. ");
+        sb.append("5. Facts: Only record facts supported by tool output or explicit user input. Previewed edits are pending. Do NOT claim changes are applied unless APPLY_PENDING_DIFF succeeded. ");
+        sb.append("6. Edits: Use preview/dry-run for file changes when available. Do NOT ask the user to confirm in chat; rely on UI confirmation or call APPLY_PENDING_DIFF only if the user explicitly authorizes apply. ");
+        sb.append("7. Output: STRICT JSON only. Do not include markdown outside JSON. finalAnswer may include markdown/code fences. ");
+        sb.append("8. FinalAnswer must be user-facing and omit tool/system details. ");
+        sb.append("9. Thought: Provide a brief, non-sensitive, one-sentence thought in the user's language. ");
+        sb.append("10. Code Output: Show only core logic or changed lines unless the user requests the full file. ");
         
-        sb.append("\nTools: ");
-        sb.append("REPO_MAP() | ");
-        sb.append("OPEN_FILE_VIEW(path, startLine, window, maxChars) | ");
-        sb.append("SCROLL_FILE_VIEW(direction, lines, overlap, maxChars, path) | ");
-        sb.append("GOTO_FILE_VIEW(path, lineNumber, window, maxChars) | ");
-        sb.append("SEARCH_FILE(path, pattern, maxMatches, maxLines) | ");
-        sb.append("SEARCH_KNOWLEDGE(query, topK=5) | ");
-        sb.append("LIST_FILES(path, glob, maxResults=2000) | ");
-        sb.append("GREP(pattern, root, file_glob) | ");
-        sb.append("READ_FILE(path, startLine, endLine) | ");
-        sb.append("EDIT_FILE(path, old_str, new_str) | ");
-        sb.append("CREATE_FILE(path, content) | ");
-        sb.append("DELETE_FILE(path) | ");
-        sb.append("INSERT_LINE(path, lineNumber, content) | ");
-        sb.append("UNDO_EDIT(path) | ");
-        sb.append("APPLY_PATCH(diff) | ");
-        sb.append("BATCH_REPLACE(path, glob, old_str, new_str, maxFiles, maxReplacements, preview) | ");
-        sb.append("RUN_COMMAND(command, cwd, timeoutMs, mode, runtimeType) | ");
-        sb.append("TRIGGER_INDEX(mode='kafka') | ");
-        sb.append("LOAD_SKILL(skill_name)");
+        String toolList = buildToolListLine();
+        if (!toolList.isEmpty()) {
+            sb.append("\nTools: ").append(toolList);
+        }
 
         String specLine = buildToolSpecLine();
         if (!specLine.isEmpty()) {
             sb.append("\nTool Versions: ").append(specLine);
         }
+        if (!isRunCommandEnabled()) {
+            sb.append("\nNote: RUN_COMMAND is currently disabled for safety.");
+        }
 
-        sb.append("\nFormat: {\"thought\":\"Brief reasoning (optional, keep empty if simple)\",\"type\":\"tool\"|\"final\",\"tool\":\"NAME\",\"version\":\"v1\",\"args\":{...},\"facts\":{\"Title\":\"Detail\"},\"finalAnswer\":\"...\"}");
+        sb.append("\nFormat: {\"thought\":\"One short sentence (required, no sensitive details)\",\"type\":\"tool\"|\"final\",\"tool\":\"NAME\",\"version\":\"v1\",\"args\":{...},\"facts\":{\"Title\":\"Detail\"},\"finalAnswer\":\"...\"}");
         return sb.toString();
     }
 
@@ -1472,7 +1503,27 @@ public class JsonReActAgent {
         return sb.toString();
     }
 
-    private String buildToolSpecLine() {
+    private boolean isRunCommandEnabled() {
+        if (toolExecutionService == null) {
+            return false;
+        }
+        return toolExecutionService.isRunCommandEnabled();
+    }
+
+    private boolean isToolAllowed(String name) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+        if ("RUN_COMMAND".equalsIgnoreCase(name)) {
+            return isRunCommandEnabled();
+        }
+        return true;
+    }
+
+    private String buildToolListLine() {
+        if (toolExecutionService == null) {
+            return "";
+        }
         List<ToolProtocol.ToolSpec> specs = toolExecutionService.listToolSpecs();
         if (specs == null || specs.isEmpty()) {
             return "";
@@ -1482,13 +1533,38 @@ public class JsonReActAgent {
             if (spec == null || spec.getName().isEmpty()) {
                 continue;
             }
+            String name = spec.getName();
+            if (!isToolAllowed(name)) {
+                continue;
+            }
+            if (sb.length() > 0) {
+                sb.append(" | ");
+            }
+            sb.append(name);
+        }
+        return sb.toString();
+    }
+
+    private String buildToolSpecLine() {
+        if (toolExecutionService == null) {
+            return "";
+        }
+        List<ToolProtocol.ToolSpec> specs = toolExecutionService.listToolSpecs();
+        if (specs == null || specs.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (ToolProtocol.ToolSpec spec : specs) {
+            if (spec == null || spec.getName().isEmpty()) {
+                continue;
+            }
+            if (!isToolAllowed(spec.getName())) {
+                continue;
+            }
             if (sb.length() > 0) {
                 sb.append(" | ");
             }
             sb.append(spec.getName()).append("@").append(spec.getVersion());
-            if (!spec.getDescription().isEmpty()) {
-                sb.append("(").append(spec.getDescription()).append(")");
-            }
         }
         return sb.toString();
     }
@@ -1498,7 +1574,7 @@ public class JsonReActAgent {
             return "";
         }
         StringBuilder sb = new StringBuilder();
-        sb.append("[Confirmed Facts]\n");
+        sb.append("[Verified Facts]\n");
         List<String> keys = new ArrayList<>(knownFacts.keySet());
         keys.sort((a, b) -> {
             int pa = factPriority.getOrDefault(a, 0);
