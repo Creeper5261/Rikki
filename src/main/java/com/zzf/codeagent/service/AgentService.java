@@ -107,9 +107,9 @@ public final class AgentService {
             String sessionRoot = sessionWorkspace.getSessionRoot() != null ? sessionWorkspace.getSessionRoot().toString() : workspaceRoot;
             eventStream = new EventStream(mapper, traceId, sessionRoot);
             
-            // Restore PendingChangesManager state from workspace_state.json
+            // Restore PendingChangesManager state from workspace_state.json (session-scoped)
             try {
-                PendingChangesManager.getInstance().loadFromState(eventStream.getStore().getWorkspaceState());
+                PendingChangesManager.getInstance().loadFromState(eventStream.getStore().getWorkspaceState(), workspaceRoot, traceId);
             } catch (Exception e) {
                 logger.warn("chat.init failed to load pending changes state", e);
             }
@@ -481,9 +481,9 @@ public final class AgentService {
                     }
                 });
 
-                // Restore PendingChanges
+                // Restore PendingChanges (session-scoped)
                 try {
-                    PendingChangesManager.getInstance().loadFromState(eventStream.getStore().getWorkspaceState());
+                    PendingChangesManager.getInstance().loadFromState(eventStream.getStore().getWorkspaceState(), workspaceRoot, traceId);
                 } catch (Exception e) {
                     logger.warn("chat.init failed to load pending changes state", e);
                 }

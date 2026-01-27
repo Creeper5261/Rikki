@@ -144,6 +144,51 @@ public class PendingChangesManager {
         }
     }
 
+    public void loadFromState(JsonNode rootNode, String workspaceRoot, String sessionId) {
+        if (rootNode == null) return;
+        changes.removeIf(c -> scopeMatches(c, workspaceRoot, sessionId));
+
+        JsonNode array = rootNode.path("pending_changes");
+        if (array.isArray()) {
+            for (JsonNode node : array) {
+                String path = node.path("path").asText(null);
+                if (path != null) {
+                    changes.add(new PendingChange(
+                        node.path("id").asText(UUID.randomUUID().toString()),
+                        path,
+                        node.path("type").asText("EDIT"),
+                        node.path("old_content").asText(null),
+                        node.path("new_content").asText(null),
+                        node.path("preview").asText(null),
+                        node.path("timestamp").asLong(System.currentTimeMillis()),
+                        node.path("workspace_root").asText(workspaceRoot),
+                        node.path("session_id").asText(sessionId)
+                    ));
+                }
+            }
+        }
+
+        if (array.isMissingNode() || !array.isArray() || !array.elements().hasNext()) {
+            JsonNode pending = rootNode.path("pending_diff");
+            if (!pending.isMissingNode() && !pending.isNull()) {
+                String path = pending.path("path").asText(null);
+                if (path != null) {
+                    changes.add(new PendingChange(
+                        UUID.randomUUID().toString(),
+                        path,
+                        "EDIT",
+                        pending.path("old_content").asText(null),
+                        pending.path("new_content").asText(null),
+                        null,
+                        System.currentTimeMillis(),
+                        pending.path("workspace_root").asText(workspaceRoot),
+                        pending.path("session_id").asText(sessionId)
+                    ));
+                }
+            }
+        }
+    }
+
     public JsonNode toJson(ObjectMapper mapper) {
         ArrayNode array = mapper.createArrayNode();
         for (PendingChange c : changes) {

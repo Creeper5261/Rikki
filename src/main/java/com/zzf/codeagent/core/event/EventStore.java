@@ -35,7 +35,7 @@ public final class EventStore {
         this.eventsDir = sessionDir.resolve("events");
         this.cacheDir = sessionDir.resolve("event_cache");
         this.sessionStateFile = sessionDir.resolve("session_state.json");
-        this.workspaceStateFile = base.resolve(".codeagent").resolve("workspace_state.json");
+        this.workspaceStateFile = sessionDir.resolve("workspace_state.json");
         try {
             Files.createDirectories(eventsDir);
             Files.createDirectories(cacheDir);
