@@ -213,11 +213,16 @@ public final class AgentService {
             meta.put("intent", intent.name());
             meta.put("route", route);
             meta.put("pendingChanges", pendingChanges);
+            meta.put("latency_ms_total", totalMs);
+            meta.put("latency_ms_pipeline", pipelineMs);
+            meta.put("latency_ms_agent", agentMs);
             if (agentUsed != null) {
                 meta.put("tool_calls", agentUsed.getToolCallCount());
                 meta.put("tool_errors", agentUsed.getToolErrorCount());
                 meta.put("turns_used", agentUsed.getTurnsUsed());
                 meta.put("auto_skills", agentUsed.getAutoSkillsLoaded());
+                meta.put("edits_applied", agentUsed.getEditsApplied());
+                meta.put("edits_rejected", agentUsed.getEditsRejected());
             }
             meta.put("total_ms", totalMs);
             meta.put("classify_ms", classifyMs);
@@ -507,6 +512,8 @@ public final class AgentService {
                 
                 String answer;
                 String route;
+                long pipelineMs = 0L;
+                long agentMs = 0L;
                 List<Map<String, Object>> pendingChanges = new ArrayList<>();
                 JsonReActAgent agentUsed = null;
 
@@ -517,7 +524,9 @@ public final class AgentService {
                     emitter.send(SseEmitter.event().name("agent_step").data(mapper.writeValueAsString(thoughtPayload)));
 
                     SmartRetrievalPipeline pipeline = new SmartRetrievalPipeline(hybridCodeSearchService, fastModel, workspaceRoot);
+                    long tPipeline = System.nanoTime();
                     answer = pipeline.run(req.goal);
+                    pipelineMs = (System.nanoTime() - tPipeline) / 1_000_000L;
 
                     if (isInsufficientAnswer(answer)) {
                         route = "SmartRetrieval->JsonReActAgent";
@@ -527,14 +536,18 @@ public final class AgentService {
                         JsonReActAgent agent = new JsonReActAgent(mapper, model, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
                         agentUsed = agent;
                         String augmentedGoal = req.goal + "\n\n(Note: Automatic search failed to find enough context. Please use tools like LIST_FILES or READ_FILE to explore the project structure and key config files explicitly.)";
+                        long tAgent = System.nanoTime();
                         answer = agent.run(augmentedGoal);
+                        agentMs = (System.nanoTime() - tAgent) / 1_000_000L;
                         pendingChanges.addAll(agent.getPendingChanges());
                     }
                 } else {
                     route = "JsonReActAgent";
                     JsonReActAgent agent = new JsonReActAgent(mapper, model, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
                     agentUsed = agent;
+                    long tAgent = System.nanoTime();
                     answer = agent.run(req.goal);
+                    agentMs = (System.nanoTime() - tAgent) / 1_000_000L;
                 }
 
                 // Sync pending changes
@@ -555,15 +568,21 @@ public final class AgentService {
 
                 answer = contextService.fixMojibakeIfNeeded(answer);
                 
+                long totalMs = (System.nanoTime() - t0) / 1_000_000L;
                 Map<String, Object> meta = new HashMap<>();
                 meta.put("intent", intent.name());
                 meta.put("route", route);
                 meta.put("pendingChanges", pendingChanges);
+                meta.put("latency_ms_total", totalMs);
+                meta.put("latency_ms_pipeline", pipelineMs);
+                meta.put("latency_ms_agent", agentMs);
                 if (agentUsed != null) {
                     meta.put("tool_calls", agentUsed.getToolCallCount());
                     meta.put("tool_errors", agentUsed.getToolErrorCount());
                     meta.put("turns_used", agentUsed.getTurnsUsed());
                     meta.put("auto_skills", agentUsed.getAutoSkillsLoaded());
+                    meta.put("edits_applied", agentUsed.getEditsApplied());
+                    meta.put("edits_rejected", agentUsed.getEditsRejected());
                 }
                 
                 ChatResponse resp = new ChatResponse(traceId, answer, topic.isNewTopic, topic.title, meta);

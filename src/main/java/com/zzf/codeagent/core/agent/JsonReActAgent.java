@@ -117,6 +117,8 @@ public class JsonReActAgent {
     private int toolErrorCount = 0;
     private int consecutiveToolErrors = 0;
     private int turnsUsed = 0;
+    private int editsApplied = 0;
+    private int editsRejected = 0;
     private final List<String> autoSkillsLoaded = new ArrayList<>();
     private String lastFailedTool;
     private int toolBudgetLimit = MAX_TOOL_CALLS;
@@ -185,6 +187,14 @@ public class JsonReActAgent {
 
     public int getTurnsUsed() {
         return turnsUsed;
+    }
+
+    public int getEditsApplied() {
+        return editsApplied;
+    }
+
+    public int getEditsRejected() {
+        return editsRejected;
     }
 
     public List<String> getAutoSkillsLoaded() {
@@ -276,9 +286,11 @@ public class JsonReActAgent {
                         .put("hint", "Tool call budget exceeded. Stop calling tools and provide a final answer based on current facts.")
                         .set("args", args == null ? MissingNode.getInstance() : args)
                         .toString();
-                logToolResult(tool, obs);
-                emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
-                updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
+            logToolResult(tool, obs);
+            trackEditMetrics(tool, obs);
+            trackEditMetrics(tool, obs);
+            emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
+            updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
                 String obsLine = "OBS " + StringUtils.truncate(obs, MAX_OBS_CHARS);
                 history.add(obsLine);
                 lastObsLine = obsLine;
@@ -308,9 +320,10 @@ public class JsonReActAgent {
                         .put("hint", "Repeated READ_FILE on the same file range more than twice. Change range or use another tool.")
                         .set("args", args == null ? MissingNode.getInstance() : args)
                         .toString();
-                logToolResult(tool, obs);
-                emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
-                updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
+            logToolResult(tool, obs);
+            trackEditMetrics(tool, obs);
+            emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
+            updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
                 String obsLine = "OBS " + StringUtils.truncate(obs, MAX_OBS_CHARS);
                 history.add(obsLine);
                 lastObsLine = obsLine;
@@ -396,6 +409,7 @@ public class JsonReActAgent {
                             .toString();
                 }
                 logToolResult(tool, obs);
+                trackEditMetrics(tool, obs);
                 emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
                 updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
                 String obsLine = "OBS " + StringUtils.truncate(obs, MAX_OBS_CHARS);
@@ -422,9 +436,10 @@ public class JsonReActAgent {
                         .put("hint", "Recent attempts failed. Adjust args, switch tools, or provide final answer.")
                         .set("args", args == null ? MissingNode.getInstance() : args)
                         .toString();
-                logToolResult(tool, obs);
-                emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
-                updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
+            logToolResult(tool, obs);
+            trackEditMetrics(tool, obs);
+            emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
+            updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
                 String obsLine = "OBS " + StringUtils.truncate(obs, MAX_OBS_CHARS);
                 history.add(obsLine);
                 lastObsLine = obsLine;
@@ -1067,6 +1082,30 @@ public class JsonReActAgent {
             return false;
         } catch (Exception e) {
             return obs.contains("\"error\"");
+        }
+    }
+
+    private void trackEditMetrics(String tool, String obs) {
+        if (tool == null || !"APPLY_PENDING_DIFF".equals(tool)) {
+            return;
+        }
+        if (obs == null || obs.trim().isEmpty()) {
+            return;
+        }
+        try {
+            JsonNode node = mapper.readTree(obs);
+            JsonNode applied = node.path("applied");
+            int count = applied.isArray() ? applied.size() : 0;
+            boolean rejected = node.path("result").path("rejected").asBoolean(false);
+            if (count <= 0) {
+                return;
+            }
+            if (rejected) {
+                editsRejected += count;
+            } else {
+                editsApplied += count;
+            }
+        } catch (Exception ignored) {
         }
     }
 
