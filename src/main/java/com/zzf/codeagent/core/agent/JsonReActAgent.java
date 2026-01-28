@@ -2,6 +2,7 @@ package com.zzf.codeagent.core.agent;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.MissingNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzf.codeagent.core.event.AgentEvent;
@@ -94,6 +95,7 @@ public class JsonReActAgent {
     private boolean memoryIndexed;
     private final List<String> history = new ArrayList<>();
     private String lastObsLine;
+    private String lastThoughtEmitted;
     private final Map<String, String> knownFacts = new LinkedHashMap<>();
     private final Map<String, Integer> factPriority = new HashMap<>();
     private final Map<String, Long> factSeq = new HashMap<>();
@@ -254,12 +256,15 @@ public class JsonReActAgent {
             }
             logger.info("llm.parsed traceId={} type={}", traceId, type);
             String thought = node.path("thought").asText();
-            if (thought != null && thought.trim().length() > 0) {
-                String thoughtText = StringUtils.truncate(thought, 300);
-                history.add("THOUGHT " + thoughtText);
-                emitAgentStepEvent("thought", thought, i, null);
+            String thoughtText;
+            if (thought != null && !thought.trim().isEmpty()) {
+                thoughtText = StringUtils.truncate(thought.trim(), 300);
             } else {
-                emitAgentStepEvent("thought", defaultThoughtForTurn(goal), i, null);
+                thoughtText = StringUtils.truncate(defaultThoughtForTurn(goal), 300);
+            }
+            if (thoughtText != null && !thoughtText.isEmpty() && !thoughtText.equals(lastThoughtEmitted)) {
+                emitAgentStepEvent("thought", thoughtText, i, null);
+                lastThoughtEmitted = thoughtText;
             }
             if ("final".equalsIgnoreCase(type)) {
                 captureFacts(node, false);
@@ -299,12 +304,7 @@ public class JsonReActAgent {
             trackEditMetrics(tool, obs);
             emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
             updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
-                String obsLine = "OBS " + StringUtils.truncate(obs, MAX_OBS_CHARS);
-                history.add(obsLine);
-                lastObsLine = obsLine;
-                if (planState != null) {
-                    planState.recordObservation(obs);
-                }
+                recordObservationLine(tool, obs);
                 String forced = forceFinalAnswer(goal);
                 history.add("FINAL " + StringUtils.truncate(forced, 400));
                 return forced;
@@ -332,12 +332,7 @@ public class JsonReActAgent {
             trackEditMetrics(tool, obs);
             emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
             updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
-                String obsLine = "OBS " + StringUtils.truncate(obs, MAX_OBS_CHARS);
-                history.add(obsLine);
-                lastObsLine = obsLine;
-                if (planState != null) {
-                    planState.recordObservation(obs);
-                }
+                recordObservationLine(tool, obs);
                 continue;
             }
             String preCalculatedObs = null;
@@ -420,9 +415,7 @@ public class JsonReActAgent {
                 trackEditMetrics(tool, obs);
                 emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
                 updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
-                String obsLine = "OBS " + StringUtils.truncate(obs, MAX_OBS_CHARS);
-                history.add(obsLine);
-                lastObsLine = obsLine;
+                recordObservationLine(tool, obs);
                 if ("READ_FILE".equals(tool) && sigCount >= 3) {
                     String forced = forceFinalAnswer(goal);
                     history.add("FINAL " + StringUtils.truncate(forced, 400));
@@ -448,12 +441,7 @@ public class JsonReActAgent {
             trackEditMetrics(tool, obs);
             emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
             updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
-                String obsLine = "OBS " + StringUtils.truncate(obs, MAX_OBS_CHARS);
-                history.add(obsLine);
-                lastObsLine = obsLine;
-                if (planState != null) {
-                    planState.recordObservation(obs);
-                }
+                recordObservationLine(tool, obs);
                 if (i == MAX_TURNS - 1) {
                     String forced = forceFinalAnswer(goal);
                     history.add("FINAL " + StringUtils.truncate(forced, 400));
@@ -513,9 +501,7 @@ public class JsonReActAgent {
                             .put("hint", "Too many repeated search queries. Please change keywords/use LIST_FILES/GREP/READ_FILE, or output type=final")
                             .toString();
                     logToolResult(tool, loopObs);
-                    String loopObsLine = "OBS " + StringUtils.truncate(loopObs, MAX_OBS_CHARS);
-                    history.add(loopObsLine);
-                    lastObsLine = loopObsLine;
+                    recordObservationLine(tool, loopObs);
                     if (hasSufficientEvidence()) {
                         logger.info("agent.tool.repeat_query.force_final traceId={} q={}", traceId, StringUtils.truncate(q, 200));
                         String forced = forceFinalAnswer(goal);
@@ -552,9 +538,7 @@ public class JsonReActAgent {
                             .put("hint", "Search efficiency is too low (new info < 50% for 3 consecutive turns). You have reached the limit of ineffective searches. Stop searching and use other tools (LIST_FILES, GREP, READ_FILE) or provide Final Answer.")
                             .toString();
                     logToolResult(tool, stopObs);
-                    String stopObsLine = "OBS " + StringUtils.truncate(stopObs, MAX_OBS_CHARS);
-                    history.add(stopObsLine);
-                    lastObsLine = stopObsLine;
+                    recordObservationLine(tool, stopObs);
                     
                     // Relaxed policy: Allow agent to recover using other tools, do not force final answer immediately.
                     // Only if it's the very last turn, then force final answer.
@@ -566,12 +550,7 @@ public class JsonReActAgent {
                     continue;
                 }
             }
-            String obsLine = "OBS " + StringUtils.truncate(obs, MAX_OBS_CHARS);
-            history.add(obsLine);
-            lastObsLine = obsLine;
-            if (planState != null) {
-                planState.recordObservation(obs);
-            }
+            recordObservationLine(tool, obs);
 
             if (toolError && consecutiveToolErrors >= MAX_CONSECUTIVE_TOOL_ERRORS) {
                 String errObs = mapper.createObjectNode()
@@ -581,12 +560,7 @@ public class JsonReActAgent {
                         .put("hint", "Too many tool errors. Switch strategy or provide final answer based on available facts.")
                         .toString();
                 logToolResult(tool, errObs);
-                String errLine = "OBS " + StringUtils.truncate(errObs, MAX_OBS_CHARS);
-                history.add(errLine);
-                lastObsLine = errLine;
-                if (planState != null) {
-                    planState.recordObservation(errObs);
-                }
+                recordObservationLine(tool, errObs);
                 if (hasSufficientEvidence() || i == MAX_TURNS - 1) {
                     String forced = forceFinalAnswer(goal);
                     history.add("FINAL " + StringUtils.truncate(forced, 400));
@@ -903,6 +877,262 @@ public class JsonReActAgent {
         return advice.toString();
     }
 
+    private void recordObservationLine(String tool, String obs) {
+        String summary = summarizeObservation(tool, obs);
+        String obsLine = "OBS " + StringUtils.truncate(summary, MAX_OBS_CHARS);
+        history.add(obsLine);
+        lastObsLine = obsLine;
+        if (planState != null) {
+            planState.recordObservation(summary);
+        }
+    }
+
+    private String summarizeObservation(String tool, String obs) {
+        String safeTool = tool == null ? "" : tool.trim();
+        if (obs == null || obs.trim().isEmpty()) {
+            ObjectNode empty = mapper.createObjectNode();
+            if (!safeTool.isEmpty()) {
+                empty.put("tool", safeTool);
+            }
+            empty.put("error", "empty_observation");
+            return empty.toString();
+        }
+        try {
+            JsonNode node = mapper.readTree(obs);
+            ObjectNode out = mapper.createObjectNode();
+            String toolName = !safeTool.isEmpty() ? safeTool : node.path("tool").asText("");
+            if (!toolName.isEmpty()) {
+                out.put("tool", toolName);
+            }
+            String status = node.path("status").asText("");
+            if (!status.isEmpty()) {
+                out.put("status", status);
+            }
+            String error = node.path("error").asText("");
+            if (!error.isEmpty()) {
+                out.put("error", StringUtils.truncate(error, 300));
+            }
+            String hint = node.path("hint").asText("");
+            if (!hint.isEmpty()) {
+                out.put("hint", StringUtils.truncate(hint, 300));
+            }
+
+            JsonNode args = node.path("args");
+            if (args != null && args.isObject()) {
+                ObjectNode argsOut = out.putObject("args");
+                copyArgIfPresent(argsOut, args, "path");
+                copyArgIfPresent(argsOut, args, "sourcePath");
+                copyArgIfPresent(argsOut, args, "destPath");
+                copyArgIfPresent(argsOut, args, "pattern");
+                copyArgIfPresent(argsOut, args, "query");
+                copyArgIfPresent(argsOut, args, "glob");
+            }
+
+            JsonNode result = node.path("result");
+            ObjectNode resOut = out.putObject("result");
+            String t = toolName == null ? "" : toolName.trim().toUpperCase();
+
+            if ("READ_FILE".equals(t)) {
+                if (result.isObject()) {
+                    String path = result.path("filePath").asText("");
+                    if (path.isEmpty() && args != null) {
+                        path = args.path("path").asText("");
+                    }
+                    if (!path.isEmpty()) {
+                        resOut.put("filePath", path);
+                    }
+                    resOut.put("startLine", result.path("startLine").asInt());
+                    resOut.put("endLine", result.path("endLine").asInt());
+                    resOut.put("truncated", result.path("truncated").asBoolean(false));
+                    String err = result.path("error").asText("");
+                    if (!err.isEmpty()) {
+                        resOut.put("error", StringUtils.truncate(err, 200));
+                    }
+                    String content = result.path("content").asText("");
+                    if (!content.isEmpty()) {
+                        resOut.put("contentChars", content.length());
+                    }
+                }
+            } else if ("OPEN_FILE_VIEW".equals(t) || "SCROLL_FILE_VIEW".equals(t) || "GOTO_FILE_VIEW".equals(t)) {
+                if (result.isObject()) {
+                    String path = result.path("filePath").asText("");
+                    if (!path.isEmpty()) {
+                        resOut.put("filePath", path);
+                    }
+                    resOut.put("startLine", result.path("startLine").asInt());
+                    resOut.put("endLine", result.path("endLine").asInt());
+                    resOut.put("totalLines", result.path("totalLines").asInt());
+                    resOut.put("truncated", result.path("truncated").asBoolean(false));
+                    String err = result.path("error").asText("");
+                    if (!err.isEmpty()) {
+                        resOut.put("error", StringUtils.truncate(err, 200));
+                    }
+                }
+            } else if ("LIST_FILES".equals(t)) {
+                if (result.isObject()) {
+                    JsonNode files = result.path("files");
+                    ArrayNode items = resOut.putArray("files");
+                    if (files.isArray()) {
+                        int limit = 10;
+                        int count = 0;
+                        for (JsonNode f : files) {
+                            if (count++ >= limit) {
+                                break;
+                            }
+                            items.add(f.asText());
+                        }
+                        resOut.put("total", files.size());
+                    }
+                    resOut.put("truncated", result.path("truncated").asBoolean(false));
+                    String err = result.path("error").asText("");
+                    if (!err.isEmpty()) {
+                        resOut.put("error", StringUtils.truncate(err, 200));
+                    }
+                }
+            } else if ("GREP".equals(t)) {
+                if (result.isObject()) {
+                    JsonNode matches = result.path("matches");
+                    ArrayNode items = resOut.putArray("matches");
+                    if (matches.isArray()) {
+                        int limit = 5;
+                        int count = 0;
+                        for (JsonNode m : matches) {
+                            if (count++ >= limit) {
+                                break;
+                            }
+                            ObjectNode item = mapper.createObjectNode();
+                            item.put("filePath", m.path("filePath").asText(""));
+                            item.put("line", m.path("line").asInt(m.path("lineNumber").asInt(0)));
+                            String text = m.path("text").asText(m.path("lineContent").asText(""));
+                            if (!text.isEmpty()) {
+                                item.put("text", StringUtils.truncate(text, 120));
+                            }
+                            items.add(item);
+                        }
+                        resOut.put("total", matches.size());
+                    }
+                    resOut.put("truncated", result.path("truncated").asBoolean(false));
+                }
+            } else if ("SEARCH_KNOWLEDGE".equals(t)) {
+                if (result.isObject()) {
+                    JsonNode hits = result.path("hits");
+                    ArrayNode items = resOut.putArray("hits");
+                    if (hits.isArray()) {
+                        int limit = 3;
+                        int count = 0;
+                        for (JsonNode h : hits) {
+                            if (count++ >= limit) {
+                                break;
+                            }
+                            ObjectNode item = mapper.createObjectNode();
+                            item.put("filePath", h.path("filePath").asText(""));
+                            item.put("startLine", h.path("startLine").asInt());
+                            String sn = h.path("symbolName").asText("");
+                            if (!sn.isEmpty()) {
+                                item.put("symbolName", sn);
+                            }
+                            items.add(item);
+                        }
+                        resOut.put("total", hits.size());
+                    }
+                }
+            } else if ("REPO_MAP".equals(t) || "STRUCTURE_MAP".equals(t)) {
+                if (result.isObject()) {
+                    String content = result.path("content").asText("");
+                    if (!content.isEmpty()) {
+                        resOut.put("contentChars", content.length());
+                    }
+                    resOut.put("totalFiles", result.path("totalFiles").asInt());
+                    resOut.put("truncated", result.path("truncated").asBoolean(false));
+                    String err = result.path("error").asText("");
+                    if (!err.isEmpty()) {
+                        resOut.put("error", StringUtils.truncate(err, 200));
+                    }
+                }
+            } else if ("APPLY_PATCH".equals(t)) {
+                if (result.isObject()) {
+                    resOut.put("success", result.path("success").asBoolean(false));
+                    resOut.put("files", result.path("files").asInt());
+                    resOut.put("filesApplied", result.path("filesApplied").asInt());
+                    resOut.put("linesAdded", result.path("linesAdded").asInt());
+                    resOut.put("linesRemoved", result.path("linesRemoved").asInt());
+                    resOut.put("preview", result.path("preview").asBoolean(false));
+                    String err = result.path("error").asText("");
+                    if (!err.isEmpty()) {
+                        resOut.put("error", StringUtils.truncate(err, 200));
+                    }
+                }
+            } else if ("BATCH_REPLACE".equals(t)) {
+                if (result.isObject()) {
+                    resOut.put("success", result.path("success").asBoolean(false));
+                    resOut.put("filesScanned", result.path("filesScanned").asInt());
+                    resOut.put("filesChanged", result.path("filesChanged").asInt());
+                    resOut.put("replacements", result.path("replacements").asInt());
+                    resOut.put("preview", result.path("preview").asBoolean(false));
+                    String err = result.path("error").asText("");
+                    if (!err.isEmpty()) {
+                        resOut.put("error", StringUtils.truncate(err, 200));
+                    }
+                }
+            } else if ("EDIT_FILE".equals(t) || "CREATE_FILE".equals(t) || "DELETE_FILE".equals(t)
+                    || "INSERT_LINE".equals(t) || "REPLACE_LINES".equals(t) || "UNDO_EDIT".equals(t)
+                    || "CREATE_DIRECTORY".equals(t) || "MOVE_PATH".equals(t) || "STR_REPLACE_EDITOR".equals(t)
+                    || "APPLY_PENDING_DIFF".equals(t)) {
+                if (result.isObject()) {
+                    String path = result.path("filePath").asText("");
+                    if (path.isEmpty() && args != null) {
+                        path = args.path("path").asText(args.path("sourcePath").asText(""));
+                    }
+                    if (!path.isEmpty()) {
+                        resOut.put("filePath", path);
+                    }
+                    resOut.put("success", result.path("success").asBoolean(true));
+                    resOut.put("preview", result.path("preview").asBoolean(false));
+                    resOut.put("prevExist", result.path("prevExist").asBoolean(false));
+                    String err = result.path("error").asText("");
+                    if (!err.isEmpty()) {
+                        resOut.put("error", StringUtils.truncate(err, 200));
+                    }
+                }
+            } else {
+                if (result.isObject()) {
+                    copyResultIfPresent(resOut, result, "success");
+                    copyResultIfPresent(resOut, result, "error");
+                    copyResultIfPresent(resOut, result, "truncated");
+                }
+            }
+
+            return out.toString();
+        } catch (Exception e) {
+            ObjectNode fallback = mapper.createObjectNode();
+            if (!safeTool.isEmpty()) {
+                fallback.put("tool", safeTool);
+            }
+            fallback.put("error", "observation_parse_failed");
+            return fallback.toString();
+        }
+    }
+
+    private void copyArgIfPresent(ObjectNode target, JsonNode source, String field) {
+        if (target == null || source == null || field == null) {
+            return;
+        }
+        JsonNode val = source.get(field);
+        if (val != null && !val.isMissingNode() && !val.isNull()) {
+            target.set(field, val);
+        }
+    }
+
+    private void copyResultIfPresent(ObjectNode target, JsonNode source, String field) {
+        if (target == null || source == null || field == null) {
+            return;
+        }
+        JsonNode val = source.get(field);
+        if (val != null && !val.isMissingNode() && !val.isNull()) {
+            target.set(field, val);
+        }
+    }
+
     private String renderObservation(String obsLine) {
         return renderObservation(obsLine, false);
     }
@@ -951,11 +1181,14 @@ public class JsonReActAgent {
                 if (node.has("result")) {
                     JsonNode result = node.get("result");
                     String fileContent = result.path("content").asText("");
+                    int contentChars = result.path("contentChars").asInt(0);
                     String error = result.path("error").asText("");
                     if (!error.isEmpty()) {
                         sb.append("Error: ").append(error);
                     } else {
-                        if (compact && fileContent.length() > 500) {
+                        if (fileContent.isEmpty() && contentChars > 0) {
+                            sb.append("Content chars: ").append(contentChars);
+                        } else if (compact && fileContent.length() > 500) {
                             sb.append("```\n").append(fileContent.substring(0, 500)).append("\n... (truncated for brevity, see previous full output or file view)\n```");
                         } else {
                             sb.append("```\n").append(fileContent).append("\n```");
@@ -967,11 +1200,14 @@ public class JsonReActAgent {
                  if (node.has("result")) {
                      JsonNode result = node.get("result");
                      String mapContent = result.path("content").asText("");
+                     int mapChars = result.path("contentChars").asInt(0);
                      String error = result.path("error").asText("");
                      if (!error.isEmpty()) {
                          sb.append("Error: ").append(error);
                      } else {
-                         if (compact && mapContent.length() > 500) {
+                         if (mapContent.isEmpty() && mapChars > 0) {
+                             sb.append("Content chars: ").append(mapChars);
+                         } else if (compact && mapContent.length() > 500) {
                              sb.append("```\n").append(mapContent.substring(0, 500)).append("\n... (truncated)\n```");
                          } else {
                              sb.append("```\n").append(mapContent).append("\n```");
