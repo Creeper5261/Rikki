@@ -805,6 +805,7 @@ final class ChatPanel {
         private final JTextArea textArea;
         private boolean expanded = false;
         private String contentText = "";
+        private String lastAppend = "";
         
         CollapsiblePanel(String title, String contentText, boolean animate) {
             this.contentText = contentText == null ? "" : contentText;
@@ -863,6 +864,10 @@ final class ChatPanel {
 
         void appendContent(String text) {
             if (text == null) return;
+            String trimmed = text.trim();
+            if (trimmed.isEmpty()) return;
+            if (trimmed.equals(lastAppend)) return;
+            lastAppend = trimmed;
             this.contentText += text;
             this.textArea.setText(this.contentText);
         }

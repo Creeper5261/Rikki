@@ -680,7 +680,9 @@ public class JsonReActAgent {
         base.append(staticSystem);
         base.append(staticContext);
         base.append(dynamicContext);
-        base.append("\nHistory:\n");
+        if (!history.isEmpty()) {
+            base.append("\nHistory:\n");
+        }
 
         String baseText = base.toString();
         if (baseText.length() > MAX_PROMPT_CHARS) {
