@@ -120,6 +120,42 @@ public class FileSystemToolServiceTest {
     }
 
     @Test
+    public void testApplyOpencodePatch(@TempDir Path tempDir) throws Exception {
+        Path fileA = tempDir.resolve("src/A.txt");
+        Path fileC = tempDir.resolve("src/C.txt");
+        Files.createDirectories(fileA.getParent());
+        Files.writeString(fileA, "line1\nline2\nline3\n", StandardCharsets.UTF_8);
+        Files.writeString(fileC, "gone\n", StandardCharsets.UTF_8);
+
+        String patch = ""
+                + "*** Begin Patch\n"
+                + "*** Update File: src/A.txt\n"
+                + "@@\n"
+                + "-line2\n"
+                + "+LINE2\n"
+                + "*** Add File: src/B.txt\n"
+                + "+hello\n"
+                + "+world\n"
+                + "*** Delete File: src/C.txt\n"
+                + "*** End Patch\n";
+
+        FileSystemToolService service = new FileSystemToolService(tempDir);
+        FileSystemToolService.PatchApplyResult result = service.applyPatch(patch, false);
+        assertTrue(result.success);
+
+        FileSystemToolService.ReadFileResult updatedA = service.readFile("src/A.txt", 1, 10, 2000);
+        assertTrue(updatedA.content.contains("LINE2"));
+        assertFalse(updatedA.content.contains("line2"));
+
+        FileSystemToolService.ReadFileResult createdB = service.readFile("src/B.txt", 1, 10, 2000);
+        assertTrue(createdB.content.contains("hello"));
+        assertTrue(createdB.content.contains("world"));
+
+        FileSystemToolService.ReadFileResult deletedC = service.readFile("src/C.txt", 1, 10, 2000);
+        assertTrue(deletedC.error != null);
+    }
+
+    @Test
     public void testBatchReplacePreviewAndApply(@TempDir Path tempDir) throws Exception {
         Path fileA = tempDir.resolve("src/A.txt");
         Path fileB = tempDir.resolve("src/B.txt");

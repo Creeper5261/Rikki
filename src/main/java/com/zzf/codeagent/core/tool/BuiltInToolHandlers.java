@@ -1237,7 +1237,7 @@ public final class BuiltInToolHandlers {
                             "newContent", stringSchema(mapper)
                     ), new String[] {}))
             ), new String[] { "success", "error", "files", "filesApplied", "linesAdded", "linesRemoved", "summary", "preview", "results" });
-            this.spec = new ToolSpec("APPLY_PATCH", ToolProtocol.DEFAULT_VERSION, "Apply unified diff patches in workspace", input, output);
+            this.spec = new ToolSpec("APPLY_PATCH", ToolProtocol.DEFAULT_VERSION, "Apply patches (unified diff or Begin/End patch format) in workspace", input, output);
         }
 
         @Override

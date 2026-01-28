@@ -1271,7 +1271,11 @@ public final class FileSystemToolService {
         if (diffText == null || diffText.trim().isEmpty()) {
             return new PatchApplyResult(false, "diff_required", 0, 0, 0, 0, Collections.emptyList(), "files=0", dryRun);
         }
-        List<PatchFile> patches = parseUnifiedDiff(diffText);
+        String normalizedInput = normalizePatchInput(diffText);
+        if (looksLikeOpencodePatch(normalizedInput)) {
+            return applyOpencodePatch(normalizedInput, dryRun);
+        }
+        List<PatchFile> patches = parseUnifiedDiff(normalizedInput);
         if (patches.isEmpty()) {
             return new PatchApplyResult(false, "diff_parse_failed", 0, 0, 0, 0, Collections.emptyList(), "files=0", dryRun);
         }
@@ -1616,6 +1620,476 @@ public final class FileSystemToolService {
         }
         String p = path.trim();
         return "/dev/null".equals(p) || "dev/null".equals(p);
+    }
+
+    private String normalizePatchInput(String input) {
+        if (input == null) {
+            return "";
+        }
+        return input.replace("\r\n", "\n").replace("\r", "\n");
+    }
+
+    private boolean looksLikeOpencodePatch(String input) {
+        if (input == null) {
+            return false;
+        }
+        String trimmed = input.trim();
+        return trimmed.startsWith("*** Begin Patch");
+    }
+
+    private PatchApplyResult applyOpencodePatch(String patchText, boolean dryRun) {
+        String normalized = normalizePatchInput(stripHeredoc(patchText.trim()));
+        List<OpencodePatchOp> ops;
+        try {
+            ops = parseOpencodePatch(normalized);
+        } catch (Exception e) {
+            return new PatchApplyResult(false, "diff_parse_failed", 0, 0, 0, 0, Collections.emptyList(), "files=0", dryRun);
+        }
+        if (ops.isEmpty()) {
+            return new PatchApplyResult(false, "diff_parse_failed", 0, 0, 0, 0, Collections.emptyList(), "files=0", dryRun);
+        }
+
+        List<PatchFileResult> results = new ArrayList<>();
+        int filesApplied = 0;
+        int totalAdded = 0;
+        int totalRemoved = 0;
+
+        for (OpencodePatchOp op : ops) {
+            if (op == null || op.path == null || op.path.trim().isEmpty()) {
+                results.add(new PatchFileResult("", false, "path_missing", false, false, 0, 0));
+                continue;
+            }
+            String path = op.path;
+            boolean isAdd = "add".equals(op.type);
+            boolean isDelete = "delete".equals(op.type);
+            boolean isUpdate = "update".equals(op.type);
+            Path target = resolveUnderWorkspace(path);
+            if (target == null) {
+                results.add(new PatchFileResult(path, false, "path_outside_workspace", isAdd, isDelete, 0, 0));
+                continue;
+            }
+
+            try {
+                if (isAdd) {
+                    if (isOverlayExists(target)) {
+                        results.add(new PatchFileResult(path, false, "file_already_exists", true, false, 0, 0));
+                        continue;
+                    }
+                    String content = op.content == null ? "" : op.content;
+                    if (!dryRun) {
+                        String relPath = workspaceRoot.relativize(target).toString().replace('\\', '/');
+                        submitPendingChange(relPath, "CREATE", content, null);
+                    }
+                    int added = countLinesFromContent(content);
+                    results.add(new PatchFileResult(path, true, null, true, false, added, 0, null, content));
+                    filesApplied++;
+                    totalAdded += added;
+                    continue;
+                }
+
+                if (isDelete) {
+                    if (!isOverlayExists(target)) {
+                        results.add(new PatchFileResult(path, false, "path_not_found", false, true, 0, 0));
+                        continue;
+                    }
+                    if (Files.isDirectory(target)) {
+                        results.add(new PatchFileResult(path, false, "path_is_directory", false, true, 0, 0));
+                        continue;
+                    }
+                    if (isBinary(target)) {
+                        results.add(new PatchFileResult(path, false, "file_is_binary", false, true, 0, 0));
+                        continue;
+                    }
+                    String content = getOverlayContent(target);
+                    if (!dryRun) {
+                        String relPath = workspaceRoot.relativize(target).toString().replace('\\', '/');
+                        submitPendingChange(relPath, "DELETE", null, content);
+                    }
+                    int removed = countLinesFromContent(content);
+                    results.add(new PatchFileResult(path, true, null, false, true, 0, removed, content, null));
+                    filesApplied++;
+                    totalRemoved += removed;
+                    continue;
+                }
+
+                if (isUpdate) {
+                    if (!isOverlayExists(target) || Files.isDirectory(target)) {
+                        results.add(new PatchFileResult(path, false, "file_not_found", false, false, 0, 0));
+                        continue;
+                    }
+                    if (isBinary(target)) {
+                        results.add(new PatchFileResult(path, false, "file_is_binary", false, false, 0, 0));
+                        continue;
+                    }
+                    String content = getOverlayContent(target);
+                    if (content.getBytes(StandardCharsets.UTF_8).length > MAX_FILE_BYTES_DEFAULT) {
+                        results.add(new PatchFileResult(path, false, "file_too_large", false, false, 0, 0));
+                        continue;
+                    }
+                    OpencodeUpdateResult updateResult;
+                    try {
+                        updateResult = deriveOpencodeUpdate(content, op.chunks);
+                    } catch (Exception e) {
+                        results.add(new PatchFileResult(path, false, "apply_failed", false, false, 0, 0, content, null));
+                        continue;
+                    }
+
+                    String updated = updateResult.updated;
+                    if (op.movePath != null && !op.movePath.trim().isEmpty()) {
+                        Path dest = resolveUnderWorkspace(op.movePath);
+                        if (dest == null) {
+                            results.add(new PatchFileResult(op.movePath, false, "path_outside_workspace", true, false, 0, 0));
+                            continue;
+                        }
+                        if (!dryRun) {
+                            String relDest = workspaceRoot.relativize(dest).toString().replace('\\', '/');
+                            submitPendingChange(relDest, "CREATE", updated, null);
+                            String relSrc = workspaceRoot.relativize(target).toString().replace('\\', '/');
+                            submitPendingChange(relSrc, "DELETE", null, content);
+                        }
+                        results.add(new PatchFileResult(op.movePath, true, null, true, false, updateResult.added, updateResult.removed, null, updated));
+                        results.add(new PatchFileResult(path, true, null, false, true, 0, updateResult.removed, content, null));
+                        filesApplied++;
+                        totalAdded += updateResult.added;
+                        totalRemoved += updateResult.removed;
+                        continue;
+                    }
+
+                    if (!dryRun) {
+                        String relPath = workspaceRoot.relativize(target).toString().replace('\\', '/');
+                        submitPendingChange(relPath, "EDIT", updated, content);
+                    }
+                    results.add(new PatchFileResult(path, true, null, false, false, updateResult.added, updateResult.removed, content, updated));
+                    filesApplied++;
+                    totalAdded += updateResult.added;
+                    totalRemoved += updateResult.removed;
+                    continue;
+                }
+
+                results.add(new PatchFileResult(path, false, "unsupported_patch", false, false, 0, 0));
+            } catch (Exception e) {
+                results.add(new PatchFileResult(path, false, "io_error:" + e.getClass().getSimpleName(), false, false, 0, 0));
+            }
+        }
+
+        boolean success = filesApplied == results.size();
+        String error = success ? null : "partial_failure";
+        String summary = "files=" + results.size() + " applied=" + filesApplied + " added=" + totalAdded + " removed=" + totalRemoved + " preview=" + dryRun;
+        return new PatchApplyResult(success, error, results.size(), filesApplied, totalAdded, totalRemoved, results, summary, dryRun);
+    }
+
+    private String stripHeredoc(String input) {
+        if (input == null) {
+            return "";
+        }
+        String text = input.trim();
+        Pattern heredoc = Pattern.compile("^(?:cat\\s+)?<<['\"]?(\\w+)['\"]?\\s*\\n([\\s\\S]*?)\\n\\1\\s*$");
+        Matcher m = heredoc.matcher(text);
+        if (m.find()) {
+            return m.group(2);
+        }
+        return text;
+    }
+
+    private List<OpencodePatchOp> parseOpencodePatch(String patchText) {
+        String normalized = normalizePatchInput(patchText);
+        String[] rawLines = normalized.split("\n");
+        List<String> lines = Arrays.asList(rawLines);
+        int beginIdx = -1;
+        int endIdx = -1;
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i).trim();
+            if ("*** Begin Patch".equals(line)) {
+                beginIdx = i;
+            } else if ("*** End Patch".equals(line)) {
+                endIdx = i;
+            }
+        }
+        if (beginIdx < 0 || endIdx < 0 || beginIdx >= endIdx) {
+            return Collections.emptyList();
+        }
+
+        List<OpencodePatchOp> ops = new ArrayList<>();
+        int i = beginIdx + 1;
+        while (i < endIdx) {
+            OpencodeHeader header = parseOpencodeHeader(lines, i);
+            if (header == null) {
+                i++;
+                continue;
+            }
+            String line = lines.get(i);
+            if (line.startsWith("*** Add File:")) {
+                OpencodeAddParse add = parseOpencodeAddContent(lines, header.nextIdx, endIdx);
+                ops.add(new OpencodePatchOp("add", header.path, null, add.content, Collections.emptyList()));
+                i = add.nextIdx;
+            } else if (line.startsWith("*** Delete File:")) {
+                ops.add(new OpencodePatchOp("delete", header.path, null, null, Collections.emptyList()));
+                i = header.nextIdx;
+            } else if (line.startsWith("*** Update File:")) {
+                OpencodeUpdateParse update = parseOpencodeUpdateChunks(lines, header.nextIdx, endIdx);
+                ops.add(new OpencodePatchOp("update", header.path, header.movePath, null, update.chunks));
+                i = update.nextIdx;
+            } else {
+                i++;
+            }
+        }
+        return ops;
+    }
+
+    private OpencodeHeader parseOpencodeHeader(List<String> lines, int startIdx) {
+        if (startIdx < 0 || startIdx >= lines.size()) {
+            return null;
+        }
+        String line = lines.get(startIdx);
+        if (line.startsWith("*** Add File:")) {
+            String filePath = line.split(":", 2)[1].trim();
+            return filePath.isEmpty() ? null : new OpencodeHeader(filePath, null, startIdx + 1);
+        }
+        if (line.startsWith("*** Delete File:")) {
+            String filePath = line.split(":", 2)[1].trim();
+            return filePath.isEmpty() ? null : new OpencodeHeader(filePath, null, startIdx + 1);
+        }
+        if (line.startsWith("*** Update File:")) {
+            String filePath = line.split(":", 2)[1].trim();
+            if (filePath.isEmpty()) {
+                return null;
+            }
+            String movePath = null;
+            int nextIdx = startIdx + 1;
+            if (nextIdx < lines.size() && lines.get(nextIdx).startsWith("*** Move to:")) {
+                movePath = lines.get(nextIdx).split(":", 2)[1].trim();
+                nextIdx++;
+            }
+            return new OpencodeHeader(filePath, movePath, nextIdx);
+        }
+        return null;
+    }
+
+    private OpencodeUpdateParse parseOpencodeUpdateChunks(List<String> lines, int startIdx, int endIdx) {
+        List<OpencodePatchChunk> chunks = new ArrayList<>();
+        int i = startIdx;
+        while (i < endIdx && i < lines.size() && !lines.get(i).startsWith("***")) {
+            String line = lines.get(i);
+            if (line.startsWith("@@")) {
+                String context = line.substring(2).trim();
+                i++;
+                List<String> oldLines = new ArrayList<>();
+                List<String> newLines = new ArrayList<>();
+                boolean eof = false;
+                int added = 0;
+                int removed = 0;
+                while (i < endIdx && i < lines.size() && !lines.get(i).startsWith("@@") && !lines.get(i).startsWith("***")) {
+                    String changeLine = lines.get(i);
+                    if ("*** End of File".equals(changeLine)) {
+                        eof = true;
+                        i++;
+                        break;
+                    }
+                    if (changeLine.startsWith(" ")) {
+                        String content = changeLine.substring(1);
+                        oldLines.add(content);
+                        newLines.add(content);
+                    } else if (changeLine.startsWith("-")) {
+                        oldLines.add(changeLine.substring(1));
+                        removed++;
+                    } else if (changeLine.startsWith("+")) {
+                        newLines.add(changeLine.substring(1));
+                        added++;
+                    }
+                    i++;
+                }
+                chunks.add(new OpencodePatchChunk(oldLines, newLines, context.isEmpty() ? null : context, eof, added, removed));
+            } else {
+                i++;
+            }
+        }
+        return new OpencodeUpdateParse(chunks, i);
+    }
+
+    private OpencodeAddParse parseOpencodeAddContent(List<String> lines, int startIdx, int endIdx) {
+        StringBuilder content = new StringBuilder();
+        int i = startIdx;
+        while (i < endIdx && i < lines.size() && !lines.get(i).startsWith("***")) {
+            String line = lines.get(i);
+            if (line.startsWith("+")) {
+                content.append(line.substring(1)).append("\n");
+            }
+            i++;
+        }
+        String text = content.toString();
+        if (text.endsWith("\n")) {
+            text = text.substring(0, text.length() - 1);
+        }
+        return new OpencodeAddParse(text, i);
+    }
+
+    private OpencodeUpdateResult deriveOpencodeUpdate(String content, List<OpencodePatchChunk> chunks) {
+        List<String> originalLines = new ArrayList<>(Arrays.asList(content.split("\n", -1)));
+        if (!originalLines.isEmpty() && originalLines.get(originalLines.size() - 1).isEmpty()) {
+            originalLines.remove(originalLines.size() - 1);
+        }
+        List<PatchReplacement> replacements = computeOpencodeReplacements(originalLines, chunks);
+        List<String> newLines = applyOpencodeReplacements(originalLines, replacements);
+        if (newLines.isEmpty() || !newLines.get(newLines.size() - 1).isEmpty()) {
+            newLines.add("");
+        }
+        String updated = String.join("\n", newLines);
+        int added = 0;
+        int removed = 0;
+        for (OpencodePatchChunk chunk : chunks) {
+            added += chunk.added;
+            removed += chunk.removed;
+        }
+        return new OpencodeUpdateResult(updated, added, removed);
+    }
+
+    private List<PatchReplacement> computeOpencodeReplacements(List<String> originalLines, List<OpencodePatchChunk> chunks) {
+        List<PatchReplacement> replacements = new ArrayList<>();
+        int lineIndex = 0;
+
+        for (OpencodePatchChunk chunk : chunks) {
+            if (chunk.changeContext != null && !chunk.changeContext.isEmpty()) {
+                int contextIdx = seekSequence(originalLines, Collections.singletonList(chunk.changeContext), lineIndex, false);
+                if (contextIdx < 0) {
+                    throw new IllegalStateException("context_not_found");
+                }
+                lineIndex = contextIdx + 1;
+            }
+
+            if (chunk.oldLines.isEmpty()) {
+                int insertionIdx = originalLines.size();
+                if (!originalLines.isEmpty() && originalLines.get(originalLines.size() - 1).isEmpty()) {
+                    insertionIdx = originalLines.size() - 1;
+                }
+                replacements.add(new PatchReplacement(insertionIdx, 0, chunk.newLines));
+                continue;
+            }
+
+            List<String> pattern = new ArrayList<>(chunk.oldLines);
+            List<String> newSlice = new ArrayList<>(chunk.newLines);
+            int found = seekSequence(originalLines, pattern, lineIndex, chunk.endOfFile);
+            if (found < 0 && !pattern.isEmpty() && pattern.get(pattern.size() - 1).isEmpty()) {
+                pattern = pattern.subList(0, pattern.size() - 1);
+                if (!newSlice.isEmpty() && newSlice.get(newSlice.size() - 1).isEmpty()) {
+                    newSlice = newSlice.subList(0, newSlice.size() - 1);
+                }
+                found = seekSequence(originalLines, pattern, lineIndex, chunk.endOfFile);
+            }
+            if (found < 0) {
+                throw new IllegalStateException("pattern_not_found");
+            }
+            replacements.add(new PatchReplacement(found, pattern.size(), newSlice));
+            lineIndex = found + pattern.size();
+        }
+
+        replacements.sort(Comparator.comparingInt(r -> r.startIdx));
+        return replacements;
+    }
+
+    private List<String> applyOpencodeReplacements(List<String> lines, List<PatchReplacement> replacements) {
+        List<String> result = new ArrayList<>(lines);
+        for (int i = replacements.size() - 1; i >= 0; i--) {
+            PatchReplacement repl = replacements.get(i);
+            int start = repl.startIdx;
+            int end = Math.min(result.size(), start + repl.oldLen);
+            for (int j = end - 1; j >= start; j--) {
+                result.remove(j);
+            }
+            for (int j = 0; j < repl.newSegment.size(); j++) {
+                result.add(start + j, repl.newSegment.get(j));
+            }
+        }
+        return result;
+    }
+
+    private int seekSequence(List<String> lines, List<String> pattern, int startIndex, boolean eof) {
+        if (pattern == null || pattern.isEmpty()) {
+            return -1;
+        }
+        int exact = tryMatch(lines, pattern, startIndex, (a, b) -> a.equals(b), eof);
+        if (exact >= 0) return exact;
+        int rstrip = tryMatch(lines, pattern, startIndex, (a, b) -> rstrip(a).equals(rstrip(b)), eof);
+        if (rstrip >= 0) return rstrip;
+        int trim = tryMatch(lines, pattern, startIndex, (a, b) -> a.trim().equals(b.trim()), eof);
+        if (trim >= 0) return trim;
+        return tryMatch(lines, pattern, startIndex, (a, b) -> normalizeUnicode(a.trim()).equals(normalizeUnicode(b.trim())), eof);
+    }
+
+    private int tryMatch(List<String> lines, List<String> pattern, int startIndex, java.util.function.BiPredicate<String, String> comparator, boolean eof) {
+        if (lines == null || pattern == null) {
+            return -1;
+        }
+        int maxStart = lines.size() - pattern.size();
+        if (eof) {
+            int fromEnd = lines.size() - pattern.size();
+            if (fromEnd >= startIndex) {
+                boolean matches = true;
+                for (int j = 0; j < pattern.size(); j++) {
+                    if (!comparator.test(lines.get(fromEnd + j), pattern.get(j))) {
+                        matches = false;
+                        break;
+                    }
+                }
+                if (matches) {
+                    return fromEnd;
+                }
+            }
+        }
+        for (int i = Math.max(0, startIndex); i <= maxStart; i++) {
+            boolean matches = true;
+            for (int j = 0; j < pattern.size(); j++) {
+                if (!comparator.test(lines.get(i + j), pattern.get(j))) {
+                    matches = false;
+                    break;
+                }
+            }
+            if (matches) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private String rstrip(String input) {
+        if (input == null) return "";
+        int end = input.length();
+        while (end > 0 && Character.isWhitespace(input.charAt(end - 1))) {
+            end--;
+        }
+        return input.substring(0, end);
+    }
+
+    private String normalizeUnicode(String input) {
+        if (input == null) return "";
+        return input
+                .replace('\u2018', '\'')
+                .replace('\u2019', '\'')
+                .replace('\u201A', '\'')
+                .replace('\u201B', '\'')
+                .replace('\u201C', '"')
+                .replace('\u201D', '"')
+                .replace('\u201E', '"')
+                .replace('\u201F', '"')
+                .replace('\u2010', '-')
+                .replace('\u2011', '-')
+                .replace('\u2012', '-')
+                .replace('\u2013', '-')
+                .replace('\u2014', '-')
+                .replace('\u2015', '-')
+                .replace("\u2026", "...")
+                .replace('\u00A0', ' ');
+    }
+
+    private static final class OpencodeUpdateResult {
+        private final String updated;
+        private final int added;
+        private final int removed;
+
+        private OpencodeUpdateResult(String updated, int added, int removed) {
+            this.updated = updated;
+            this.added = added;
+            this.removed = removed;
+        }
     }
 
     private List<PatchFile> parseUnifiedDiff(String diffText) {
@@ -2591,6 +3065,84 @@ public final class FileSystemToolService {
         private PatchLine(char type, String text) {
             this.type = type;
             this.text = text;
+        }
+    }
+
+    private static final class OpencodePatchOp {
+        private final String type; // add, delete, update
+        private final String path;
+        private final String movePath;
+        private final String content;
+        private final List<OpencodePatchChunk> chunks;
+
+        private OpencodePatchOp(String type, String path, String movePath, String content, List<OpencodePatchChunk> chunks) {
+            this.type = type;
+            this.path = path;
+            this.movePath = movePath;
+            this.content = content;
+            this.chunks = chunks == null ? Collections.emptyList() : chunks;
+        }
+    }
+
+    private static final class OpencodePatchChunk {
+        private final List<String> oldLines;
+        private final List<String> newLines;
+        private final String changeContext;
+        private final boolean endOfFile;
+        private final int added;
+        private final int removed;
+
+        private OpencodePatchChunk(List<String> oldLines, List<String> newLines, String changeContext, boolean endOfFile, int added, int removed) {
+            this.oldLines = oldLines == null ? Collections.emptyList() : oldLines;
+            this.newLines = newLines == null ? Collections.emptyList() : newLines;
+            this.changeContext = changeContext;
+            this.endOfFile = endOfFile;
+            this.added = added;
+            this.removed = removed;
+        }
+    }
+
+    private static final class PatchReplacement {
+        private final int startIdx;
+        private final int oldLen;
+        private final List<String> newSegment;
+
+        private PatchReplacement(int startIdx, int oldLen, List<String> newSegment) {
+            this.startIdx = startIdx;
+            this.oldLen = oldLen;
+            this.newSegment = newSegment == null ? Collections.emptyList() : newSegment;
+        }
+    }
+
+    private static final class OpencodeHeader {
+        private final String path;
+        private final String movePath;
+        private final int nextIdx;
+
+        private OpencodeHeader(String path, String movePath, int nextIdx) {
+            this.path = path;
+            this.movePath = movePath;
+            this.nextIdx = nextIdx;
+        }
+    }
+
+    private static final class OpencodeUpdateParse {
+        private final List<OpencodePatchChunk> chunks;
+        private final int nextIdx;
+
+        private OpencodeUpdateParse(List<OpencodePatchChunk> chunks, int nextIdx) {
+            this.chunks = chunks == null ? Collections.emptyList() : chunks;
+            this.nextIdx = nextIdx;
+        }
+    }
+
+    private static final class OpencodeAddParse {
+        private final String content;
+        private final int nextIdx;
+
+        private OpencodeAddParse(String content, int nextIdx) {
+            this.content = content;
+            this.nextIdx = nextIdx;
         }
     }
 
