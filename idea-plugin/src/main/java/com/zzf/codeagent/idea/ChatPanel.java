@@ -331,8 +331,13 @@ final class ChatPanel {
                     }
                     if ("thought".equals(stepType)) {
                          String thought = node.path("text").asText();
+                         boolean append = node.path("append").asBoolean(false);
                          if (ui.thoughtPanel != null) {
-                             ui.thoughtPanel.appendContent(thought + "\n");
+                             if (append) {
+                                 ui.thoughtPanel.appendContent(thought, true);
+                             } else {
+                                 ui.thoughtPanel.appendContent(thought + "\n");
+                             }
                          }
                     }
                 } else if ("finish".equals(event)) {
@@ -868,6 +873,18 @@ final class ChatPanel {
             if (trimmed.isEmpty()) return;
             if (trimmed.equals(lastAppend)) return;
             lastAppend = trimmed;
+            this.contentText += text;
+            this.textArea.setText(this.contentText);
+        }
+
+        void appendContent(String text, boolean append) {
+            if (!append) {
+                appendContent(text);
+                return;
+            }
+            if (text == null || text.isEmpty()) {
+                return;
+            }
             this.contentText += text;
             this.textArea.setText(this.contentText);
         }

@@ -31,6 +31,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.File;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
@@ -59,6 +61,9 @@ public class JsonReActAgent {
     private static final int MAX_LONG_TERM_MEMORY_CHARS = 8000;
     private static final int MAX_SKILL_CONTENT_CHARS = 2500;
     private static final int MAX_AUTO_SKILLS = 2;
+    private static final int THOUGHT_CHUNK_SIZE = 160;
+    private static final String SYSTEM_HEADER_RESOURCE = "prompt/codex_header.txt";
+    private static volatile String SYSTEM_HEADER_CACHE;
     
     private static final Pattern SENSITIVE_KV = Pattern.compile("(?i)(password|passwd|secret|token|apikey|accesskey|secretkey)\\s*[:=]\\s*([\"']?)([^\"'\\\\\\r\\n\\s]{1,160})\\2");
     private static final Pattern SENSITIVE_JSON_KV = Pattern.compile("(?i)(\"(?:password|passwd|secret|token|apiKey|accessKey|secretKey)\"\\s*:\\s*\")([^\"]{1,160})(\")");
@@ -263,7 +268,7 @@ public class JsonReActAgent {
                 thoughtText = StringUtils.truncate(defaultThoughtForTurn(goal), 300);
             }
             if (thoughtText != null && !thoughtText.isEmpty() && !thoughtText.equals(lastThoughtEmitted)) {
-                emitAgentStepEvent("thought", thoughtText, i, null);
+                emitThoughtChunks(thoughtText, i);
                 lastThoughtEmitted = thoughtText;
             }
             if ("final".equalsIgnoreCase(type)) {
@@ -604,8 +609,10 @@ public class JsonReActAgent {
     private String buildPrompt(String g) {
         StringBuilder staticSystem = new StringBuilder();
         // 1. Static System Prompt (Role & Tool Protocol)
-        staticSystem.append("You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\n\n");
-        staticSystem.append("IMPORTANT: Always respond to the user in the same language as the user's input, or as explicitly requested by the user. If the user speaks Chinese, your final answer and thought process should be in Chinese (except for code and technical terms). If the user speaks English, use English.\n\n");
+        String systemHeader = loadSystemHeader();
+        if (systemHeader != null && !systemHeader.isEmpty()) {
+            staticSystem.append(systemHeader.trim()).append("\n\n");
+        }
         staticSystem.append(buildToolProtocolPrompt());
         staticSystem.append(buildSkillsPrompt());
         staticSystem.append(buildAutoSkillPrompt(g));
@@ -731,6 +738,34 @@ public class JsonReActAgent {
             out.append(pinned);
         }
         return out.toString();
+    }
+
+    private String loadSystemHeader() {
+        String cached = SYSTEM_HEADER_CACHE;
+        if (cached != null) {
+            return cached;
+        }
+        String header = "";
+        try (InputStream input = JsonReActAgent.class.getClassLoader().getResourceAsStream(SYSTEM_HEADER_RESOURCE)) {
+            if (input != null) {
+                header = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+            }
+        } catch (Exception e) {
+            logger.warn("system.header.load.fail traceId={} resource={} err={}", traceId, SYSTEM_HEADER_RESOURCE, e.toString());
+        }
+        header = header == null ? "" : header.trim();
+        if (header.isEmpty()) {
+            header = defaultSystemHeader();
+        }
+        SYSTEM_HEADER_CACHE = header;
+        return header;
+    }
+
+    private String defaultSystemHeader() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.\n\n");
+        sb.append("IMPORTANT: Always respond to the user in the same language as the user's input, or as explicitly requested by the user. If the user speaks Chinese, your final answer and thought process should be in Chinese (except for code and technical terms). If the user speaks English, use English.");
+        return sb.toString();
     }
 
     // Package-private for testing
@@ -2275,7 +2310,38 @@ public class JsonReActAgent {
         return head + "|args=" + StringUtils.truncate(a.toString(), 200);
     }
 
+    private void emitThoughtChunks(String thoughtText, Integer turn) {
+        if (thoughtText == null) {
+            return;
+        }
+        String text = thoughtText.trim();
+        if (text.isEmpty()) {
+            return;
+        }
+        int len = text.length();
+        if (len <= THOUGHT_CHUNK_SIZE) {
+            emitAgentStepEvent("thought", text, turn, null);
+            return;
+        }
+        int start = 0;
+        while (start < len) {
+            int end = Math.min(len, start + THOUGHT_CHUNK_SIZE);
+            String chunk = text.substring(start, end);
+            boolean last = end >= len;
+            if (last) {
+                emitAgentStepEvent("thought", chunk, turn, null);
+            } else {
+                emitAgentStepEvent("thought", chunk, turn, null, true);
+            }
+            start = end;
+        }
+    }
+
     private void emitAgentStepEvent(String stage, String text, Integer turn, Long cause) {
+        emitAgentStepEvent(stage, text, turn, cause, false);
+    }
+
+    private void emitAgentStepEvent(String stage, String text, Integer turn, Long cause, boolean append) {
         if (eventStream == null) {
             return;
         }
@@ -2287,6 +2353,9 @@ public class JsonReActAgent {
         }
         if (text != null && !text.isEmpty()) {
             payload.put("text", StringUtils.truncate(text, 800));
+        }
+        if (append) {
+            payload.put("append", true);
         }
         AgentEvent event = new AgentEvent(EventType.AGENT_STEP, stage, payload);
         if (cause != null && cause.longValue() >= 0) {
