@@ -1461,9 +1461,10 @@ public class JsonReActAgent {
 
     // Phase F: Real-time Context Refresh
     private void refreshIdeContext() {
-        if (workspaceRoot != null && !workspaceRoot.isEmpty()) {
+        String root = (sessionRoot != null && !sessionRoot.isEmpty()) ? sessionRoot : workspaceRoot;
+        if (root != null && !root.isEmpty()) {
              try {
-                 DynamicContextBuilder contextBuilder = new DynamicContextBuilder(workspaceRoot);
+                 DynamicContextBuilder contextBuilder = new DynamicContextBuilder(root);
                  List<String> activeFiles = new ArrayList<>();
                  if (ideContextPath != null && !ideContextPath.isEmpty() && !ideContextPath.equals(workspaceRoot)) {
                      activeFiles.add(ideContextPath);
@@ -1515,6 +1516,9 @@ public class JsonReActAgent {
             return;
         }
         claudeMemoryLoaded = true;
+        if (!isMemoryEnabled()) {
+            return;
+        }
         if (workspaceRoot == null || workspaceRoot.trim().isEmpty()) {
             return;
         }
@@ -1551,6 +1555,9 @@ public class JsonReActAgent {
             return;
         }
         longTermMemoryLoaded = true;
+        if (!isMemoryEnabled()) {
+            return;
+        }
         if (workspaceRoot == null || workspaceRoot.trim().isEmpty()) {
             return;
         }
@@ -1609,6 +1616,18 @@ public class JsonReActAgent {
         } catch (Exception e) {
             logger.warn("agent.memory.load_fail traceId={} file={} err={}", traceId, name, e.toString());
         }
+    }
+
+    private boolean isMemoryEnabled() {
+        String prop = System.getProperty("codeagent.memory.enabled");
+        if (prop != null && !prop.trim().isEmpty()) {
+            return Boolean.parseBoolean(prop.trim());
+        }
+        String env = System.getenv("CODEAGENT_MEMORY_ENABLED");
+        if (env != null && !env.trim().isEmpty()) {
+            return Boolean.parseBoolean(env.trim());
+        }
+        return false;
     }
 
     private void captureFacts(JsonNode node, boolean required) {

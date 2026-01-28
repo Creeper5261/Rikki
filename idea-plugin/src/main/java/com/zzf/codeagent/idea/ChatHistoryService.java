@@ -19,6 +19,7 @@ import java.util.stream.Collectors;
 @State(name = "CodeAgentChatHistory", storages = @Storage(StoragePathMacros.WORKSPACE_FILE))
 public final class ChatHistoryService implements PersistentStateComponent<ChatHistoryService.State> {
     private State state = new State();
+    private static final boolean PERSIST_HISTORY = resolvePersistHistory();
 
     // Legacy support: redirect to current session
     public synchronized List<String> getLines() {
@@ -90,11 +91,15 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
 
     @Override
     public synchronized @Nullable State getState() {
-        return state;
+        return PERSIST_HISTORY ? state : new State();
     }
 
     @Override
     public synchronized void loadState(@NotNull State state) {
+        if (!PERSIST_HISTORY) {
+            this.state = new State();
+            return;
+        }
         this.state = state;
         
         // Migration: If sessions empty but lines exist, create a default session
@@ -108,6 +113,18 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
             this.state.currentSessionId = legacy.id;
             this.state.lines.clear(); // Clear legacy lines
         }
+    }
+
+    private static boolean resolvePersistHistory() {
+        String prop = System.getProperty("codeagent.history.persist");
+        if (prop != null && !prop.trim().isEmpty()) {
+            return Boolean.parseBoolean(prop.trim());
+        }
+        String env = System.getenv("CODEAGENT_HISTORY_PERSIST");
+        if (env != null && !env.trim().isEmpty()) {
+            return Boolean.parseBoolean(env.trim());
+        }
+        return false;
     }
 
     public static final class State {
