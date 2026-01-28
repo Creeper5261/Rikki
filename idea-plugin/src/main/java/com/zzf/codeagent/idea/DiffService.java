@@ -38,6 +38,17 @@ public class DiffService {
         this.project = project;
     }
 
+    public void applyChange(PendingChangesManager.PendingChange change) {
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) return;
+            try {
+                applyPendingChange(change, false);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
     public void confirmChange(PendingChangesManager.PendingChange change) {
         ApplicationManager.getApplication().invokeLater(() -> {
             if (project.isDisposed()) return;

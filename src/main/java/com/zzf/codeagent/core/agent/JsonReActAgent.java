@@ -17,7 +17,6 @@ import com.zzf.codeagent.core.runtime.RuntimeService;
 import com.zzf.codeagent.core.skill.Skill;
 import com.zzf.codeagent.core.skill.SkillManager;
 import com.zzf.codeagent.core.skill.SkillSelector;
-import com.zzf.codeagent.core.tool.PendingChangesManager;
 import com.zzf.codeagent.core.tool.ToolExecutionContext;
 import com.zzf.codeagent.core.tool.ToolExecutionService;
 import com.zzf.codeagent.core.tool.ToolProtocol;
@@ -125,7 +124,6 @@ public class JsonReActAgent {
     private String lastFailedTool;
     private int toolBudgetLimit = MAX_TOOL_CALLS;
     private PlanExecutionState planState;
-    private final List<Map<String, Object>> pendingChanges = new ArrayList<>();
 
     public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager) {
         this(mapper, model, null, search, hybridSearch, traceId, workspaceRoot, workspaceRoot, traceId, workspaceRoot, indexingWorker, kafkaBootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
@@ -157,7 +155,7 @@ public class JsonReActAgent {
         } catch (Exception e) {
             rootPath = null;
         }
-        this.fs = new FileSystemToolService(rootPath, this.sessionId, publicWorkspaceRoot);
+        this.fs = new FileSystemToolService(rootPath, this.sessionId, publicWorkspaceRoot, true);
         this.memory = null;
         this.memoryIndexed = false;
         this.lastObsLine = null;
@@ -176,9 +174,6 @@ public class JsonReActAgent {
         this.toolBudgetLimit = MAX_TOOL_CALLS;
     }
 
-    public List<Map<String, Object>> getPendingChanges() {
-        return pendingChanges;
-    }
 
     public int getToolCallCount() {
         return toolCallCount;
@@ -476,25 +471,6 @@ public class JsonReActAgent {
             }
             logToolResult(tool, obs);
             
-            if ("EDIT_FILE".equals(tool) || "CREATE_FILE".equals(tool) || "DELETE_FILE".equals(tool) || "APPLY_PATCH".equals(tool) || "BATCH_REPLACE".equals(tool) || "INSERT_LINE".equals(tool)) {
-                try {
-                    JsonNode obsNode = mapper.readTree(obs);
-                    if (obsNode.has("result")) {
-                        JsonNode res = obsNode.get("result");
-                        if (res.has("preview") && res.get("preview").asBoolean()) {
-                            Map<String, Object> change = mapper.convertValue(res, Map.class);
-                            if (!change.containsKey("type")) {
-                                if ("EDIT_FILE".equals(tool)) change.put("type", "EDIT");
-                                else if ("CREATE_FILE".equals(tool)) change.put("type", "CREATE");
-                                else if ("DELETE_FILE".equals(tool)) change.put("type", "DELETE");
-                                else if ("INSERT_LINE".equals(tool)) change.put("type", "INSERT");
-                            }
-                            pendingChanges.add(change);
-                        }
-                    }
-                } catch (Exception ignored) {}
-            }
-
             emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
             updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
             
@@ -693,19 +669,6 @@ public class JsonReActAgent {
         String factsBlock = formatKnownFacts();
         if (!factsBlock.isEmpty()) {
             dynamicContext.append(factsBlock);
-        }
-
-        List<PendingChangesManager.PendingChange> pending = PendingChangesManager.getInstance().getChanges(workspaceRoot, sessionId);
-        if (!pending.isEmpty()) {
-            dynamicContext.append("\n[Pending Changes]\n");
-            int limit = Math.min(pending.size(), 8);
-            for (int i = 0; i < limit; i++) {
-                PendingChangesManager.PendingChange change = pending.get(i);
-                dynamicContext.append("- ").append(change.path).append(" (").append(change.type).append(")\n");
-            }
-            if (pending.size() > limit) {
-                dynamicContext.append("- ... (").append(pending.size() - limit).append(" more)\n");
-            }
         }
 
         if (!readFiles.isEmpty()) {
@@ -1085,7 +1048,7 @@ public class JsonReActAgent {
                         sb.append(")");
                     }
                 } else {
-                    sb.append(preview ? "Preview staged (pending apply)" : "Applied");
+                    sb.append(preview ? "Preview only" : "Applied");
                 }
             } else {
                 // Default fallback for other tools
@@ -1424,8 +1387,8 @@ public class JsonReActAgent {
         sb.append("2. Search: If SEARCH_KNOWLEDGE hits=0, fallback to LIST_FILES -> GREP. Stop searching if inefficient (<50% new info). ");
         sb.append("3. No Redundancy: Avoid reading the same file range repeatedly (paging is OK). ");
         sb.append("4. Constraints: Prioritize ProjectMemory/LongTermMemory/IDEContext when relevant. ");
-        sb.append("5. Facts: Only record facts supported by tool output or explicit user input. Previewed edits are pending. Do NOT claim changes are applied unless APPLY_PENDING_DIFF succeeded. ");
-        sb.append("6. Edits: Use preview/dry-run for file changes when available. Do NOT ask the user to confirm in chat; rely on UI confirmation or call APPLY_PENDING_DIFF only if the user explicitly authorizes apply. ");
+        sb.append("5. Facts: Only record facts supported by tool output or explicit user input. Do NOT claim changes are applied unless the tool call succeeded. ");
+        sb.append("6. Edits: Apply file changes directly (no preview by default). Do NOT ask the user to confirm in chat. ");
         sb.append("7. Tool Args: Keep tool arguments minimal. Avoid embedding full file contents in tool args; prefer APPLY_PATCH or small EDIT_FILE/REPLACE_LINES. ");
         sb.append("8. Output: STRICT JSON only. Do not include markdown outside JSON. finalAnswer may include markdown/code fences. ");
         sb.append("9. FinalAnswer must be user-facing and omit tool/system details. ");
@@ -1539,6 +1502,9 @@ public class JsonReActAgent {
         }
         if ("RUN_COMMAND".equalsIgnoreCase(name)) {
             return isRunCommandEnabled();
+        }
+        if ("APPLY_PENDING_DIFF".equalsIgnoreCase(name)) {
+            return false;
         }
         return true;
     }

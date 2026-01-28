@@ -731,9 +731,9 @@ public final class BuiltInToolHandlers {
             String path = env.getArgs().path("path").asText();
             String oldStr = env.getArgs().path("old_str").asText();
             String newStr = env.getArgs().path("new_str").asText();
-            // Default dry_run to true for safety/preview unless explicitly set to false
+            // Default dry_run to false (apply immediately) unless explicitly set to true
             JsonNode dryRunNode = env.getArgs().path("dry_run");
-            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? true : dryRunNode.asBoolean();
+            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? false : dryRunNode.asBoolean();
             
             logger.info("tool.call traceId={} tool={} path={} oldLen={} newLen={} dryRun={}", ctx.traceId, env.getTool(), truncate(path, 200), oldStr.length(), newStr.length(), dryRun);
             FileSystemToolService.EditFileResult r = ctx.fs.editFile(path, oldStr, newStr, dryRun);
@@ -745,10 +745,10 @@ public final class BuiltInToolHandlers {
             if (!r.success) {
                 out = out.withHint("EDIT_FILE failed. Check if file exists and old_str matches (must be exact). Suggest READ_FILE to confirm content.");
             } else if (r.preview) {
-                out = out.withHint("Changes applied successfully.");
+                out = out.withHint("Preview only. No changes applied.");
                 updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "edit_file", r.oldContent, r.newContent, true, r.prevExist, ctx.workspaceRoot, ctx.traceId);
             } else {
-                out = out.withHint("File edited successfully. Suggestions: 1. Run relevant tests to verify; 2. If task done, update facts and output type=final.");
+                out = out.withHint("File edited successfully. Suggestions: 1. Run relevant tests to verify; 2. If task done, output type=final.");
                 updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "edit_file", r.oldContent, r.newContent, false, r.prevExist, ctx.workspaceRoot, ctx.traceId);
             }
             out = out.withExtra("path", ctx.mapper.valueToTree(path));
@@ -817,9 +817,9 @@ public final class BuiltInToolHandlers {
             if (r.success) {
                 updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "create", r.oldContent, r.newContent, r.preview, r.prevExist, ctx.workspaceRoot, ctx.traceId);
                 if (!r.preview) {
-                    out = out.withHint("File created successfully in sandbox. You MUST NOT ask for confirmation. Proceed with next steps or output type=final.");
+                    out = out.withHint("File created successfully. Proceed with next steps or output type=final.");
                 } else {
-                    out = out.withHint("File created successfully (Dry Run). To apply changes to sandbox, set dry_run=false.");
+                    out = out.withHint("Preview only. No changes applied.");
                 }
             } else {
                 out = out.withHint("CREATE_FILE failed. Check path and parent directory.");
@@ -872,9 +872,9 @@ public final class BuiltInToolHandlers {
                         ? (contentAlt2 == null || contentAlt2.isNull() ? null : contentAlt2.asText(""))
                         : contentAlt.asText(""))
                     : contentNode.asText("");
-            // Default dry_run to true for safety/preview unless explicitly set to false
+            // Default dry_run to false (apply immediately) unless explicitly set to true
             JsonNode dryRunNode = env.getArgs().path("dry_run");
-            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? true : dryRunNode.asBoolean();
+            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? false : dryRunNode.asBoolean();
             
             logger.info("tool.call traceId={} tool={} path={} line={} dryRun={}", ctx.traceId, env.getTool(), truncate(path, 200), lineNumber, dryRun);
             if (path.isEmpty()) {
@@ -900,7 +900,7 @@ public final class BuiltInToolHandlers {
                 if (!r.preview) {
                     out = out.withHint("Line inserted successfully. Suggestions: 1. Continue editing; 2. Verify if needed.");
                 } else {
-                    out = out.withHint("Line inserted successfully.");
+                    out = out.withHint("Preview only. No changes applied.");
                 }
             } else {
                 out = out.withHint("INSERT_LINE failed. Check lineNumber and file existence.");
@@ -1031,7 +1031,7 @@ public final class BuiltInToolHandlers {
             Integer window = JsonUtils.intOrNull(env.getArgs(), "window", "view_window");
             Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
             JsonNode dryRunNode = env.getArgs().path("dry_run");
-            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? true : dryRunNode.asBoolean();
+            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? false : dryRunNode.asBoolean();
             logger.info("tool.call traceId={} tool={} cmd={} path={} dryRun={}", ctx.traceId, env.getTool(), command, truncate(path, 200), dryRun);
             if (command.isEmpty()) {
                 return ToolResult.error(env.getTool(), env.getVersion(), "command_required")
@@ -1175,7 +1175,7 @@ public final class BuiltInToolHandlers {
             long t0 = System.nanoTime();
             String path = env.getArgs().path("path").asText("").trim();
             JsonNode dryRunNode = env.getArgs().path("dry_run");
-            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? true : dryRunNode.asBoolean();
+            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? false : dryRunNode.asBoolean();
             Boolean effectivePreview = dryRun;
             logger.info("tool.call traceId={} tool={} path={} preview={}", ctx.traceId, env.getTool(), truncate(path, 200), effectivePreview);
             if (path.isEmpty()) {
@@ -1191,10 +1191,11 @@ public final class BuiltInToolHandlers {
             if (r.success) {
                 if (!r.preview) {
                     updateWorkspaceDelete(ctx.eventStream, ctx.mapper, path);
+                    updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "delete_file", r.oldContent, r.newContent, false, r.prevExist, ctx.workspaceRoot, ctx.traceId);
                     out = out.withHint("Path deleted. Continue with next steps.");
                 } else {
                     updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "delete_file", r.oldContent, r.newContent, r.preview, r.prevExist, ctx.workspaceRoot, ctx.traceId);
-                    out = out.withHint("File deleted successfully.");
+                    out = out.withHint("Preview only. No changes applied.");
                 }
             } else {
                 out = out.withHint("DELETE_FILE failed. Check if path exists and directory is empty.");
@@ -1249,9 +1250,9 @@ public final class BuiltInToolHandlers {
             long t0 = System.nanoTime();
             String diff = JsonUtils.textOrFallback(env.getArgs(), "diff", "patch");
             Boolean preview = env.getArgs().path("preview").isMissingNode() ? null : env.getArgs().path("preview").asBoolean();
-            // Default dry_run to true for safety/preview unless explicitly set to false
+            // Default dry_run to false (apply immediately) unless explicitly set to true
             JsonNode dryRunNode = env.getArgs().path("dry_run");
-            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? true : dryRunNode.asBoolean();
+            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? false : dryRunNode.asBoolean();
             Boolean effectivePreview = dryRun;
             if (diff == null || diff.trim().isEmpty()) {
                 return ToolResult.error(env.getTool(), env.getVersion(), "diff_required")
@@ -1265,22 +1266,22 @@ public final class BuiltInToolHandlers {
                     : ToolResult.error(env.getTool(), env.getVersion(), r.error == null || r.error.isEmpty() ? "apply_patch_failed" : r.error)
                         .withExtra("result", ctx.mapper.valueToTree(r));
             if (r.success) {
-                String path = r.results.isEmpty() ? "" : r.results.get(0).filePath;
-                String oldContent = null;
-                String newContent = null;
-                boolean prevExist = true;
-                if (!r.results.isEmpty()) {
-                    FileSystemToolService.PatchFileResult item = r.results.get(0);
-                    oldContent = item.oldContent;
-                    newContent = item.newContent;
-                    prevExist = !item.created;
+                if (r.results != null && !r.results.isEmpty()) {
+                    for (FileSystemToolService.PatchFileResult item : r.results) {
+                        if (!item.success) {
+                            continue;
+                        }
+                        boolean prevExist = !item.created;
+                        updateWorkspaceEdit(ctx.eventStream, ctx.mapper, item.filePath, "apply_patch", item.oldContent, item.newContent, r.preview, prevExist, ctx.workspaceRoot, ctx.traceId);
+                    }
+                } else {
+                    updateWorkspaceEdit(ctx.eventStream, ctx.mapper, "", "apply_patch", null, null, r.preview, true, ctx.workspaceRoot, ctx.traceId);
                 }
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "apply_patch", oldContent, newContent, r.preview, prevExist, ctx.workspaceRoot, ctx.traceId);
 
                 if (!r.preview) {
                     out = out.withHint("Patch applied. Review changes if needed.");
                 } else {
-                    out = out.withHint("Patch applied successfully.");
+                    out = out.withHint("Preview only. No changes applied.");
                 }
             } else {
                 out = out.withHint("APPLY_PATCH had failures. Check diff context and paths.");
@@ -1342,9 +1343,9 @@ public final class BuiltInToolHandlers {
             Integer maxFiles = JsonUtils.intOrNull(env.getArgs(), "maxFiles", "max_files");
             Integer maxReplacements = JsonUtils.intOrNull(env.getArgs(), "maxReplacements", "max_replacements");
             Boolean preview = env.getArgs().path("preview").isMissingNode() ? null : env.getArgs().path("preview").asBoolean();
-            // Default dry_run to true for safety/preview unless explicitly set to false
+            // Default dry_run to false (apply immediately) unless explicitly set to true
             JsonNode dryRunNode = env.getArgs().path("dry_run");
-            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? true : dryRunNode.asBoolean();
+            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? false : dryRunNode.asBoolean();
             Boolean effectivePreview = dryRun;
             logger.info("tool.call traceId={} tool={} path={} glob={} oldLen={} newLen={}", ctx.traceId, env.getTool(), truncate(path, 200), truncate(glob, 200), oldStr.length(), newStr.length());
             FileSystemToolService.BatchReplaceResult r = ctx.fs.batchReplace(path, glob, oldStr, newStr, maxFiles, maxReplacements, effectivePreview);
@@ -1354,20 +1355,17 @@ public final class BuiltInToolHandlers {
                     : ToolResult.error(env.getTool(), env.getVersion(), r.error == null || r.error.isEmpty() ? "batch_replace_failed" : r.error)
                         .withExtra("result", ctx.mapper.valueToTree(r));
             if (r.success) {
-                String p = path;
-                String oldC = null;
-                String newC = null;
                 if (r.items != null && !r.items.isEmpty()) {
-                    FileSystemToolService.BatchReplaceItem item = r.items.get(0);
-                    p = item.filePath;
-                    oldC = item.oldContent;
-                    newC = item.newContent;
+                    for (FileSystemToolService.BatchReplaceItem item : r.items) {
+                        updateWorkspaceEdit(ctx.eventStream, ctx.mapper, item.filePath, "batch_replace", item.oldContent, item.newContent, r.preview, true, ctx.workspaceRoot, ctx.traceId);
+                    }
+                } else {
+                    updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "batch_replace", null, null, r.preview, true, ctx.workspaceRoot, ctx.traceId);
                 }
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, p, "batch_replace", oldC, newC, r.preview, true, ctx.workspaceRoot, ctx.traceId);
                 if (!r.preview) {
                     out = out.withHint("Batch replace completed. Review summary and items.");
                 } else {
-                    out = out.withHint("Preview mode: Batch replace would complete successfully.");
+                    out = out.withHint("Preview only. No changes applied.");
                 }
             } else {
                 out = out.withHint("BATCH_REPLACE failed. Check path and parameters.");
@@ -1676,6 +1674,25 @@ public final class BuiltInToolHandlers {
             diff.put("oldContent", oldContent);
             diff.put("newContent", newContent);
             update.set("latestFileDiff", diff);
+
+            if (!preview && !"move_path".equalsIgnoreCase(command)) {
+                String changeType = "EDIT";
+                if (newContent == null) {
+                    changeType = "DELETE";
+                } else if (!prevExist) {
+                    changeType = "CREATE";
+                }
+                AppliedChangesManager.getInstance().addChange(
+                        new AppliedChangesManager.AppliedChange(
+                                path,
+                                changeType,
+                                oldContent,
+                                newContent,
+                                workspaceRoot,
+                                sessionId
+                        )
+                );
+            }
 
             if (preview) {
                 // Add to PendingChangesManager only if not already added by FileSystemToolService
@@ -2022,7 +2039,7 @@ public final class BuiltInToolHandlers {
                 if (!r.preview) {
                     out = out.withHint("Lines replaced. Verify content.");
                 } else {
-                    out = out.withHint("Preview mode: Replacement staged. Please ask the user to confirm via the 'Confirm Changes' button, or call APPLY_PENDING_DIFF if authorized.");
+                    out = out.withHint("Preview only. No changes applied.");
                 }
             } else {
                 out = out.withHint("REPLACE_LINES failed. Check path and line numbers.");
@@ -2060,9 +2077,9 @@ public final class BuiltInToolHandlers {
             long t0 = System.nanoTime();
             String path = env.getArgs().path("path").asText("").trim();
             Boolean preview = env.getArgs().path("preview").isMissingNode() ? null : env.getArgs().path("preview").asBoolean();
-            // Default dry_run to true for safety/preview unless explicitly set to false
+            // Default dry_run to false (apply immediately) unless explicitly set to true
             JsonNode dryRunNode = env.getArgs().path("dry_run");
-            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? true : dryRunNode.asBoolean();
+            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? false : dryRunNode.asBoolean();
             Boolean effectivePreview = dryRun;
             
             logger.info("tool.call traceId={} tool={} path={} preview={}", ctx.traceId, env.getTool(), path, effectivePreview);
@@ -2081,7 +2098,7 @@ public final class BuiltInToolHandlers {
                 if (!r.preview) {
                     out = out.withHint("Directory created.");
                 } else {
-                    out = out.withHint("Directory created successfully.");
+                    out = out.withHint("Preview only. No changes applied.");
                 }
             }
             return out.withTookMs((System.nanoTime() - t0) / 1_000_000L);
@@ -2119,9 +2136,9 @@ public final class BuiltInToolHandlers {
             String source = env.getArgs().path("source").asText("").trim();
             String destination = env.getArgs().path("destination").asText("").trim();
             Boolean preview = env.getArgs().path("preview").isMissingNode() ? null : env.getArgs().path("preview").asBoolean();
-            // Default dry_run to true for safety/preview unless explicitly set to false
+            // Default dry_run to false (apply immediately) unless explicitly set to true
             JsonNode dryRunNode = env.getArgs().path("dry_run");
-            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? true : dryRunNode.asBoolean();
+            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? false : dryRunNode.asBoolean();
             Boolean effectivePreview = dryRun;
             
             logger.info("tool.call traceId={} tool={} source={} dest={} preview={}", ctx.traceId, env.getTool(), source, destination, effectivePreview);
@@ -2140,7 +2157,7 @@ public final class BuiltInToolHandlers {
                 if (!r.preview) {
                     out = out.withHint("Path moved successfully.");
                 } else {
-                    out = out.withHint("Preview mode: Path would be moved.");
+                    out = out.withHint("Preview only. No changes applied.");
                 }
             }
             return out.withTookMs((System.nanoTime() - t0) / 1_000_000L);

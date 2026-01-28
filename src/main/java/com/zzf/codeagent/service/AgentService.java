@@ -20,7 +20,7 @@ import com.zzf.codeagent.core.rag.search.HybridCodeSearchService;
 import com.zzf.codeagent.core.runtime.RuntimeService;
 import com.zzf.codeagent.core.session.SessionWorkspace;
 import com.zzf.codeagent.core.skill.SkillManager;
-import com.zzf.codeagent.core.tool.PendingChangesManager;
+import com.zzf.codeagent.core.tool.AppliedChangesManager;
 import com.zzf.codeagent.core.tool.ToolExecutionService;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import org.slf4j.Logger;
@@ -84,6 +84,7 @@ public final class AgentService {
         SessionWorkspace sessionWorkspace = null;
         String sessionStatus = "ok";
         String sessionError = "";
+        String workspaceRoot = "";
         try {
             long t0 = System.nanoTime();
             logger.info("chat.recv traceId={} reqNull={}", traceId, req == null);
@@ -91,7 +92,7 @@ public final class AgentService {
                 logger.info("chat.reject traceId={} reason=goal_blank", traceId);
                 return jsonStatus(HttpStatus.BAD_REQUEST, new ChatResponse(traceId, "goal is blank"));
             }
-            String workspaceRoot = req.workspaceRoot == null ? "" : req.workspaceRoot.trim();
+            workspaceRoot = req.workspaceRoot == null ? "" : req.workspaceRoot.trim();
             String workspaceName = req.workspaceName == null ? "" : req.workspaceName.trim();
             List<String> chatHistory = normalizeChatHistory(req.history);
             chatHistory = maybeCompressHistory(chatHistory, req.goal);
@@ -107,13 +108,9 @@ public final class AgentService {
             sessionWorkspace = SessionWorkspace.create(workspaceRoot, traceId);
             String sessionRoot = sessionWorkspace.getSessionRoot() != null ? sessionWorkspace.getSessionRoot().toString() : workspaceRoot;
             eventStream = new EventStream(mapper, traceId, sessionRoot);
-            
-            // Restore PendingChangesManager state from workspace_state.json (session-scoped)
-            try {
-                PendingChangesManager.getInstance().loadFromState(eventStream.getStore().getWorkspaceState(), workspaceRoot, traceId);
-            } catch (Exception e) {
-                logger.warn("chat.init failed to load pending changes state", e);
-            }
+
+            // Reset applied change log for this session
+            AppliedChangesManager.getInstance().clear(workspaceRoot, traceId);
 
             AgentEvent sessionStart = new AgentEvent(EventType.SESSION_START, "session_start", mapper.createObjectNode()
                     .put("traceId", traceId)
@@ -153,7 +150,7 @@ public final class AgentService {
             String route;
             long pipelineMs = 0L;
             long agentMs = 0L;
-            List<Map<String, Object>> pendingChanges = new ArrayList<>();
+            List<Map<String, Object>> appliedChanges = new ArrayList<>();
             JsonReActAgent agentUsed = null;
 
             if (intent == IntentClassifier.Intent.SEARCH || intent == IntentClassifier.Intent.EXPLAIN) {
@@ -175,7 +172,7 @@ public final class AgentService {
                     logger.info("agent.run.start traceId={} route=SmartRetrievalFallback goalChars={}", traceId, augmentedGoal.length());
                     long tAgent = System.nanoTime();
                     answer = agent.run(augmentedGoal);
-                    pendingChanges.addAll(agent.getPendingChanges());
+                    // Applied changes tracked separately; no action here.
                     agentMs = (System.nanoTime() - tAgent) / 1_000_000L;
                     logger.info("agent.run.done traceId={} route=SmartRetrievalFallback answerChars={}", traceId, answer == null ? 0 : answer.length());
                 }
@@ -191,20 +188,19 @@ public final class AgentService {
                 logger.info("agent.run.done traceId={} route=JsonReActAgent answerChars={}", traceId, answer == null ? 0 : answer.length());
             }
 
-            // Sync pending changes from Singleton to ensure Tool updates are captured
-            pendingChanges.clear();
-            for (PendingChangesManager.PendingChange pc : PendingChangesManager.getInstance().getChanges(workspaceRoot, traceId)) {
+            // Collect applied changes for UI
+            appliedChanges.clear();
+            for (AppliedChangesManager.AppliedChange pc : AppliedChangesManager.getInstance().getChanges(workspaceRoot, traceId)) {
                 Map<String, Object> map = new HashMap<>();
                 map.put("id", pc.id);
                 map.put("path", pc.path);
                 map.put("type", pc.type);
                 map.put("oldContent", pc.oldContent);
                 map.put("newContent", pc.newContent);
-                map.put("preview", pc.preview);
                 map.put("timestamp", pc.timestamp);
                 map.put("workspaceRoot", pc.workspaceRoot);
                 map.put("sessionId", pc.sessionId);
-                pendingChanges.add(map);
+                appliedChanges.add(map);
             }
 
             answer = contextService.fixMojibakeIfNeeded(answer);
@@ -213,7 +209,7 @@ public final class AgentService {
             Map<String, Object> meta = new HashMap<String, Object>();
             meta.put("intent", intent.name());
             meta.put("route", route);
-            meta.put("pendingChanges", pendingChanges);
+            meta.put("appliedChanges", appliedChanges);
             meta.put("latency_ms_total", totalMs);
             meta.put("latency_ms_pipeline", pipelineMs);
             meta.put("latency_ms_agent", agentMs);
@@ -261,6 +257,7 @@ public final class AgentService {
             if (sessionWorkspace != null) {
                 sessionWorkspace.cleanup();
             }
+            AppliedChangesManager.getInstance().clear(workspaceRoot, traceId);
             MDC.remove("traceId");
         }
     }
@@ -576,6 +573,7 @@ public final class AgentService {
             MDC.put("traceId", traceId);
             EventStream eventStream = null;
             SessionWorkspace sessionWorkspace = null;
+            String workspaceRoot = "";
             try {
                 long t0 = System.nanoTime();
                 if (req == null || req.goal == null || req.goal.trim().isEmpty()) {
@@ -583,7 +581,7 @@ public final class AgentService {
                     emitter.complete();
                     return;
                 }
-                String workspaceRoot = req.workspaceRoot == null ? "" : req.workspaceRoot.trim();
+                workspaceRoot = req.workspaceRoot == null ? "" : req.workspaceRoot.trim();
                 List<String> chatHistory = normalizeChatHistory(req.history);
                 chatHistory = maybeCompressHistory(chatHistory, req.goal);
                 String ideContextPath = req.ideContextPath == null ? "" : req.ideContextPath.trim();
@@ -603,12 +601,8 @@ public final class AgentService {
                     }
                 });
 
-                // Restore PendingChanges (session-scoped)
-                try {
-                    PendingChangesManager.getInstance().loadFromState(eventStream.getStore().getWorkspaceState(), workspaceRoot, traceId);
-                } catch (Exception e) {
-                    logger.warn("chat.init failed to load pending changes state", e);
-                }
+                // Reset applied change log for this session
+                AppliedChangesManager.getInstance().clear(workspaceRoot, traceId);
 
                 String apiKey = contextService.resolveDeepSeekApiKey();
                 if (apiKey == null || apiKey.trim().isEmpty()) {
@@ -631,7 +625,7 @@ public final class AgentService {
                 String route;
                 long pipelineMs = 0L;
                 long agentMs = 0L;
-                List<Map<String, Object>> pendingChanges = new ArrayList<>();
+                List<Map<String, Object>> appliedChanges = new ArrayList<>();
                 JsonReActAgent agentUsed = null;
 
                 if (intent == IntentClassifier.Intent.SEARCH || intent == IntentClassifier.Intent.EXPLAIN) {
@@ -656,7 +650,7 @@ public final class AgentService {
                         long tAgent = System.nanoTime();
                         answer = agent.run(augmentedGoal);
                         agentMs = (System.nanoTime() - tAgent) / 1_000_000L;
-                        pendingChanges.addAll(agent.getPendingChanges());
+                        // Applied changes tracked separately; no action here.
                     }
                 } else {
                     route = "JsonReActAgent";
@@ -667,20 +661,19 @@ public final class AgentService {
                     agentMs = (System.nanoTime() - tAgent) / 1_000_000L;
                 }
 
-                // Sync pending changes
-                pendingChanges.clear();
-                for (PendingChangesManager.PendingChange pc : PendingChangesManager.getInstance().getChanges(workspaceRoot, traceId)) {
+                // Collect applied changes
+                appliedChanges.clear();
+                for (AppliedChangesManager.AppliedChange pc : AppliedChangesManager.getInstance().getChanges(workspaceRoot, traceId)) {
                     Map<String, Object> map = new HashMap<>();
                     map.put("id", pc.id);
                     map.put("path", pc.path);
                     map.put("type", pc.type);
                     map.put("oldContent", pc.oldContent);
                     map.put("newContent", pc.newContent);
-                    map.put("preview", pc.preview);
                     map.put("timestamp", pc.timestamp);
                     map.put("workspaceRoot", pc.workspaceRoot);
                     map.put("sessionId", pc.sessionId);
-                    pendingChanges.add(map);
+                    appliedChanges.add(map);
                 }
 
                 answer = contextService.fixMojibakeIfNeeded(answer);
@@ -689,7 +682,7 @@ public final class AgentService {
                 Map<String, Object> meta = new HashMap<>();
                 meta.put("intent", intent.name());
                 meta.put("route", route);
-                meta.put("pendingChanges", pendingChanges);
+                meta.put("appliedChanges", appliedChanges);
                 meta.put("latency_ms_total", totalMs);
                 meta.put("latency_ms_pipeline", pipelineMs);
                 meta.put("latency_ms_agent", agentMs);
@@ -719,6 +712,7 @@ public final class AgentService {
                 if (sessionWorkspace != null) {
                     sessionWorkspace.cleanup();
                 }
+                AppliedChangesManager.getInstance().clear(workspaceRoot, traceId);
                 MDC.remove("traceId");
             }
         });

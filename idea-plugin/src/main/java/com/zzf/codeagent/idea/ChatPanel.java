@@ -69,7 +69,6 @@ final class ChatPanel {
     private FileSystemToolService fsService;
     private EventStream eventStream;
     private final DiffService diffService;
-    private final PendingChangesPanel pendingPanel;
 
     ChatPanel(Project project) {
         this.project = project;
@@ -111,58 +110,6 @@ final class ChatPanel {
         this.workspaceName = resolveWorkspaceName(workspaceRoot);
         this.history = project.getService(ChatHistoryService.class);
         
-        // Initialize Pending Changes Panel
-        this.pendingPanel = new PendingChangesPanel();
-
-        // Register Listener for Pending Changes
-        PendingChangesManager.getInstance().addChangeListener(change -> {
-             boolean match = false;
-             if (change.workspaceRoot == null) {
-                 match = true; 
-             } else {
-                 try {
-                     if (change.workspaceRoot.equals(this.workspaceRoot)) {
-                         match = true;
-                     } else if (Path.of(change.workspaceRoot).toAbsolutePath().normalize().equals(Path.of(this.workspaceRoot).toAbsolutePath().normalize())) {
-                         match = true;
-                     }
-                 } catch (Exception e) {
-                 }
-             }
-
-             boolean sessionMatch = true;
-             if (currentSessionId != null && !currentSessionId.isEmpty()) {
-                 sessionMatch = currentSessionId.equals(change.sessionId);
-             } else if (change.sessionId != null && !change.sessionId.isEmpty()) {
-                 sessionMatch = false;
-             }
-             
-             if (match && sessionMatch) {
-                 SwingUtilities.invokeLater(() -> {
-                     if (project.isDisposed()) return;
-                     pendingPanel.refresh();
-                 });
-                 diffService.applyWithNotification(change, () -> {
-                     PendingChangesManager.getInstance().removeChange(change.id);
-                     addSystemMessage("User accepted changes for " + change.path);
-                     SwingUtilities.invokeLater(() -> {
-                         if (!project.isDisposed()) pendingPanel.refresh();
-                     });
-                 }, () -> {
-                     PendingChangesManager.getInstance().removeChange(change.id);
-                     addSystemMessage("User rejected changes for " + change.path);
-                     SwingUtilities.invokeLater(() -> {
-                         if (!project.isDisposed()) pendingPanel.refresh();
-                     });
-                 });
-             }
-        });
-        
-        // Initial Refresh
-        SwingUtilities.invokeLater(() -> {
-             if (!project.isDisposed()) pendingPanel.refresh();
-        });
-
         input.setLineWrap(true);
         input.setWrapStyleWord(true);
         
@@ -182,7 +129,7 @@ final class ChatPanel {
         
         headerPanel.add(titleBar);
         headerPanel.add(Box.createVerticalStrut(5));
-        headerPanel.add(pendingPanel);
+        // No pending changes panel in direct-apply mode.
         
         JPanel bottom = new JPanel(new BorderLayout(6, 6));
         bottom.add(new JBScrollPane(input), BorderLayout.CENTER);
@@ -401,6 +348,9 @@ final class ChatPanel {
                     }
                     
                     if (resp.changes != null && !resp.changes.isEmpty()) {
+                         for (PendingChangesManager.PendingChange change : resp.changes) {
+                             diffService.applyChange(change);
+                         }
                          JPanel changesPanel = new JPanel();
                          changesPanel.setLayout(new BoxLayout(changesPanel, BoxLayout.Y_AXIS));
                          changesPanel.setBorder(BorderFactory.createTitledBorder("Modified Files"));
@@ -495,6 +445,9 @@ final class ChatPanel {
             
             // 3. Embedded File Changes
             if (response != null && response.changes != null && !response.changes.isEmpty()) {
+                for (PendingChangesManager.PendingChange change : response.changes) {
+                    diffService.applyChange(change);
+                }
                 messagePanel.add(Box.createVerticalStrut(10));
                 JPanel changesPanel = new JPanel();
                 changesPanel.setLayout(new BoxLayout(changesPanel, BoxLayout.Y_AXIS));
@@ -700,24 +653,21 @@ final class ChatPanel {
 
             if (rootNode.has("meta")) {
                 JsonNode meta = rootNode.get("meta");
-                if (meta.has("pendingChanges")) {
-                    JsonNode changes = meta.get("pendingChanges");
-                    if (changes.isArray()) {
-                        for (JsonNode changeNode : changes) {
-                             String path = changeNode.path("filePath").asText(changeNode.path("path").asText());
-                             String type = changeNode.path("type").asText("EDIT");
-                             String oldContent = changeNode.path("oldContent").asText("");
-                             String newContent = changeNode.path("newContent").asText("");
-                             String preview = changeNode.path("preview").asText("");
-                             String wsRoot = changeNode.path("workspaceRoot").asText(changeNode.path("workspace_root").asText(null));
-                             String sessionId = changeNode.path("sessionId").asText(changeNode.path("session_id").asText(response.traceId));
-                             String id = changeNode.path("id").asText(java.util.UUID.randomUUID().toString());
-                             long ts = changeNode.path("timestamp").asLong(System.currentTimeMillis());
-                             
-                             PendingChangesManager.PendingChange pc = new PendingChangesManager.PendingChange(id, path, type, oldContent, newContent, preview, ts, wsRoot, sessionId);
-                             PendingChangesManager.getInstance().addChange(pc);
-                             response.changes.add(pc);
-                        }
+                JsonNode changes = meta.has("appliedChanges") ? meta.get("appliedChanges") : meta.get("pendingChanges");
+                if (changes != null && changes.isArray()) {
+                    for (JsonNode changeNode : changes) {
+                        String path = changeNode.path("filePath").asText(changeNode.path("path").asText());
+                        String type = changeNode.path("type").asText("EDIT");
+                        String oldContent = changeNode.path("oldContent").asText("");
+                        String newContent = changeNode.path("newContent").asText("");
+                        String preview = changeNode.path("preview").asText("");
+                        String wsRoot = changeNode.path("workspaceRoot").asText(changeNode.path("workspace_root").asText(null));
+                        String sessionId = changeNode.path("sessionId").asText(changeNode.path("session_id").asText(response.traceId));
+                        String id = changeNode.path("id").asText(java.util.UUID.randomUUID().toString());
+                        long ts = changeNode.path("timestamp").asLong(System.currentTimeMillis());
+
+                        PendingChangesManager.PendingChange pc = new PendingChangesManager.PendingChange(id, path, type, oldContent, newContent, preview, ts, wsRoot, sessionId);
+                        response.changes.add(pc);
                     }
                 }
             }
@@ -918,83 +868,4 @@ final class ChatPanel {
         }
     }
     
-    private class PendingChangesPanel extends JPanel {
-        private final JPanel listPanel;
-        
-        PendingChangesPanel() {
-            setLayout(new BorderLayout());
-            setBorder(BorderFactory.createTitledBorder("Changed Files (Global)"));
-            
-            listPanel = new JPanel();
-            listPanel.setLayout(new BoxLayout(listPanel, BoxLayout.Y_AXIS));
-            
-            add(new JBScrollPane(listPanel), BorderLayout.CENTER);
-            
-            JButton commitAll = new JButton("Commit All");
-            commitAll.addActionListener(e -> onCommitAll());
-            add(commitAll, BorderLayout.SOUTH);
-            
-            setVisible(false);
-        }
-        
-        void refresh() {
-            if (project.isDisposed()) return;
-            
-            listPanel.removeAll();
-            List<PendingChangesManager.PendingChange> changes = PendingChangesManager.getInstance().getChanges(workspaceRoot, currentSessionId);
-            
-            if (changes.isEmpty()) {
-                setVisible(false);
-                return;
-            }
-            
-            setVisible(true);
-            for (PendingChangesManager.PendingChange change : changes) {
-                JPanel item = new JPanel(new BorderLayout(5, 0));
-                JLabel name = new JLabel(change.path);
-                name.setToolTipText(change.path);
-                
-                JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 2, 0));
-                JButton undo = new JButton("Undo");
-                undo.addActionListener(e -> {
-                    diffService.revertChange(change);
-                    PendingChangesManager.getInstance().removeChange(change.id);
-                    refresh();
-                    addSystemMessage("User undid changes for " + change.path);
-                });
-                
-                JButton confirm = new JButton("Confirm");
-                confirm.addActionListener(e -> {
-                    diffService.confirmChange(change);
-                    PendingChangesManager.getInstance().removeChange(change.id);
-                    refresh();
-                    addSystemMessage("User confirmed changes for " + change.path);
-                });
-                
-                buttons.add(undo);
-                buttons.add(confirm);
-                
-                item.add(name, BorderLayout.CENTER);
-                item.add(buttons, BorderLayout.EAST);
-                item.setMaximumSize(new Dimension(Integer.MAX_VALUE, 35));
-                item.setBorder(BorderFactory.createEmptyBorder(2, 2, 2, 2));
-                
-                listPanel.add(item);
-            }
-            
-            listPanel.revalidate();
-            listPanel.repaint();
-            revalidate();
-        }
-        
-        void onCommitAll() {
-             List<PendingChangesManager.PendingChange> changes = new ArrayList<>(PendingChangesManager.getInstance().getChanges(workspaceRoot, currentSessionId));
-             for (PendingChangesManager.PendingChange change : changes) {
-                 diffService.confirmChange(change);
-                 PendingChangesManager.getInstance().removeChange(change.id);
-             }
-             refresh();
-             addSystemMessage("User committed all " + changes.size() + " changes.");
-        }
-    }
 }

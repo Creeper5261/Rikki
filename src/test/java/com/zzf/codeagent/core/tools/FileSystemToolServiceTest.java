@@ -75,7 +75,10 @@ public class FileSystemToolServiceTest {
         FileSystemToolService.EditFileResult undoInsert = service.undoEdit("src/New.txt");
         assertTrue(undoInsert.success);
         FileSystemToolService.ReadFileResult afterUndoInsert = service.readFile("src/New.txt", 1, 10, 2000);
-        assertTrue(afterUndoInsert.error != null);
+        assertEquals(null, afterUndoInsert.error);
+        assertTrue(afterUndoInsert.content.contains("a"));
+        assertTrue(afterUndoInsert.content.contains("b"));
+        assertFalse(afterUndoInsert.content.contains("x"));
 
         Files.writeString(tempDir.resolve("src/New.txt"), "a\nb\n", StandardCharsets.UTF_8);
 

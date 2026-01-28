@@ -47,6 +47,14 @@ public class ToolExecutionService {
                 ObjectNode out = result.toJson(ctx.mapper, env);
                 return sanitizeObservation(out.toString());
             }
+            if ("APPLY_PENDING_DIFF".equalsIgnoreCase(tool)) {
+                ToolEnvelope env = new ToolEnvelope(tool, registry.resolveVersion(tool, version), args, ctx.traceId, requestId);
+                ToolResult result = ToolResult.error(tool, env.getVersion(), "tool_disabled")
+                        .withHint("Pending-diff workflow is disabled. Changes are applied directly.")
+                        .withTookMs((System.nanoTime() - t0) / 1_000_000L);
+                ObjectNode out = result.toJson(ctx.mapper, env);
+                return sanitizeObservation(out.toString());
+            }
             int argChars = args == null ? 0 : args.toString().length();
             int maxArgs = resolveToolArgsLimit(tool);
             if (argChars > maxArgs) {

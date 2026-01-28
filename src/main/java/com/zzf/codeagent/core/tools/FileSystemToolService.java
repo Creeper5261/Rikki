@@ -69,19 +69,28 @@ public final class FileSystemToolService {
     private final Path workspaceRoot;
     private final String sessionId;
     private final String publicWorkspaceRoot;
+    private final boolean directWrite;
     private final Map<Path, Deque<FileSnapshot>> editHistory = new ConcurrentHashMap<Path, Deque<FileSnapshot>>();
 
     public FileSystemToolService(Path workspaceRoot) {
-        this(workspaceRoot, null, workspaceRoot == null ? null : workspaceRoot.toAbsolutePath().normalize().toString());
+        this(workspaceRoot, null, workspaceRoot == null ? null : workspaceRoot.toAbsolutePath().normalize().toString(), true);
     }
 
     public FileSystemToolService(Path workspaceRoot, String sessionId, String publicWorkspaceRoot) {
+        this(workspaceRoot, sessionId, publicWorkspaceRoot, true);
+    }
+
+    public FileSystemToolService(Path workspaceRoot, String sessionId, String publicWorkspaceRoot, boolean directWrite) {
         this.workspaceRoot = workspaceRoot == null ? null : workspaceRoot.toAbsolutePath().normalize();
         this.sessionId = sessionId == null || sessionId.isEmpty() ? null : sessionId;
         this.publicWorkspaceRoot = publicWorkspaceRoot == null || publicWorkspaceRoot.isEmpty() ? null : publicWorkspaceRoot;
+        this.directWrite = directWrite;
     }
 
     private String getOverlayContent(Path file) throws IOException {
+        if (directWrite) {
+            return Files.readString(file, StandardCharsets.UTF_8);
+        }
         try {
             String relPath = workspaceRoot.relativize(file).toString().replace('\\', '/');
             Optional<PendingChange> pending = PendingChangesManager.getInstance().getPendingChange(relPath, publicWorkspaceRoot, sessionId);
@@ -99,6 +108,9 @@ public final class FileSystemToolService {
 
     private boolean isOverlayExists(Path file) {
         if (file == null) return false;
+        if (directWrite) {
+            return Files.exists(file);
+        }
         try {
             String relPath = workspaceRoot.relativize(file).toString().replace('\\', '/');
             Optional<PendingChange> pending = PendingChangesManager.getInstance().getPendingChange(relPath, publicWorkspaceRoot, sessionId);
@@ -192,7 +204,7 @@ public final class FileSystemToolService {
             });
             
             // Merge pending new files
-            if (out.size() < limit) {
+            if (!directWrite && out.size() < limit) {
                 List<PendingChange> pendingChanges = PendingChangesManager.getInstance().getChanges(publicWorkspaceRoot, sessionId);
                 for (PendingChange pc : pendingChanges) {
                     if ("DELETE".equals(pc.type)) continue;
@@ -1107,6 +1119,14 @@ public final class FileSystemToolService {
     }
 
     private void submitPendingChange(String relPath, String type, String newContent, String currentOverlayContent) {
+        if (directWrite) {
+            boolean isDelete = "DELETE".equals(type);
+            EditFileResult applied = applyToFile(relPath, newContent, isDelete);
+            if (!applied.success) {
+                throw new IllegalStateException(applied.error == null ? "apply_failed" : applied.error);
+            }
+            return;
+        }
         String originalContent = currentOverlayContent;
         Optional<PendingChange> existing = PendingChangesManager.getInstance().getPendingChange(relPath, publicWorkspaceRoot, sessionId);
         if (existing.isPresent()) {
@@ -1140,13 +1160,17 @@ public final class FileSystemToolService {
         if (Files.exists(p)) {
             return new EditFileResult(path, false, "path_already_exists", false, null, null, true);
         }
-        // In Sandbox/Transactional mode, we do not support creating empty directories directly.
-        // Directories are created automatically when files are created inside them.
         boolean dryRun = preview != null && preview.booleanValue();
         if (!dryRun) {
-             return new EditFileResult(path, false, "directory_creation_not_supported_use_create_file", dryRun, null, null, false);
+            try {
+                Files.createDirectories(p);
+                notifyChange(p);
+                return new EditFileResult(path, true, null, false, null, null, false);
+            } catch (Exception e) {
+                return new EditFileResult(path, false, "io_error:" + e.getClass().getSimpleName(), dryRun, null, null, false);
+            }
         }
-        return new EditFileResult(path, true, null, dryRun, null, null, false);
+        return new EditFileResult(path, true, null, true, null, null, false);
     }
 
     public EditFileResult movePath(String sourcePath, String destPath, Boolean preview) {
