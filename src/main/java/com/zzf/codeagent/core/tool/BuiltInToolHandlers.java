@@ -292,7 +292,8 @@ public final class BuiltInToolHandlers {
                     "path", stringSchema(mapper),
                     "startLine", integerSchema(mapper),
                     "endLine", integerSchema(mapper),
-                    "maxChars", integerSchema(mapper)
+                    "maxChars", integerSchema(mapper),
+                    "range", stringSchema(mapper)
             ), new String[] { "path" });
             ObjectNode output = objectSchema(mapper, Map.of(
                     "filePath", stringSchema(mapper),
@@ -317,6 +318,29 @@ public final class BuiltInToolHandlers {
             Integer start = JsonUtils.intOrNull(env.getArgs(), "startLine", "start_line");
             Integer end = JsonUtils.intOrNull(env.getArgs(), "endLine", "end_line");
             Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
+            if (start == null && end == null) {
+                String range = env.getArgs().path("range").asText("");
+                if (range != null && !range.trim().isEmpty()) {
+                    String trimmed = range.trim();
+                    int dash = trimmed.indexOf('-');
+                    try {
+                        if (dash >= 0) {
+                            String left = trimmed.substring(0, dash).trim();
+                            String right = trimmed.substring(dash + 1).trim();
+                            if (!left.isEmpty()) {
+                                start = Integer.parseInt(left);
+                            }
+                            if (!right.isEmpty()) {
+                                end = Integer.parseInt(right);
+                            }
+                        } else {
+                            start = Integer.parseInt(trimmed);
+                        }
+                    } catch (NumberFormatException ignore) {
+                        // Ignore invalid range, fall back to default behavior.
+                    }
+                }
+            }
             logger.info("tool.call traceId={} tool={} path={} startLine={} endLine={} maxChars={}", ctx.traceId, env.getTool(), truncate(path, 200), start, end, maxChars);
             FileSystemToolService.ReadFileResult r = ctx.fs.readFile(path, start, end, maxChars);
             logger.info("tool.result traceId={} tool={} filePath={} truncated={} error={}", ctx.traceId, env.getTool(), r.filePath, r.truncated, r.error);

@@ -61,6 +61,7 @@ public class JsonReActAgent {
     private static final int MAX_LONG_TERM_MEMORY_CHARS = 8000;
     private static final int MAX_SKILL_CONTENT_CHARS = 2500;
     private static final int MAX_AUTO_SKILLS = 2;
+    private static final int READ_FILE_PREVIEW_CHARS = 1200;
     private static final int THOUGHT_CHUNK_SIZE = 160;
     private static final String SYSTEM_HEADER_RESOURCE = "prompt/codex_header.txt";
     private static volatile String SYSTEM_HEADER_CACHE;
@@ -101,6 +102,7 @@ public class JsonReActAgent {
     private final List<String> history = new ArrayList<>();
     private String lastObsLine;
     private String lastThoughtEmitted;
+    private String lastThoughtFingerprint;
     private final Map<String, String> knownFacts = new LinkedHashMap<>();
     private final Map<String, Integer> factPriority = new HashMap<>();
     private final Map<String, Long> factSeq = new HashMap<>();
@@ -267,9 +269,11 @@ public class JsonReActAgent {
             } else {
                 thoughtText = StringUtils.truncate(defaultThoughtForTurn(goal), 300);
             }
-            if (thoughtText != null && !thoughtText.isEmpty() && !thoughtText.equals(lastThoughtEmitted)) {
+            String thoughtFingerprint = normalizeThought(thoughtText);
+            if (thoughtFingerprint != null && !thoughtFingerprint.isEmpty() && !thoughtFingerprint.equals(lastThoughtFingerprint)) {
                 emitThoughtChunks(thoughtText, i);
                 lastThoughtEmitted = thoughtText;
+                lastThoughtFingerprint = thoughtFingerprint;
             }
             if ("final".equalsIgnoreCase(type)) {
                 captureFacts(node, false);
@@ -296,7 +300,18 @@ public class JsonReActAgent {
             long toolCallEventId = emitToolCallEvent(tool, toolVersion, sig, args, i);
             logToolRequest(tool, args);
             toolCallCount++;
-            if (toolCallCount > toolBudgetLimit) {
+            boolean isModifyTool = isModificationTool(tool);
+            if (toolCallCount > toolBudgetLimit && !isModifyTool) {
+                String cached = "READ_FILE".equals(tool) ? signatureToObs.get(sig) : null;
+                if (cached != null && !cached.trim().isEmpty()) {
+                    String obs = buildCachedObservation(tool, sig, args, cached,
+                            "Tool call budget exceeded. Returning cached result. Proceed without further READ_FILE.");
+                    logToolResult(tool, obs);
+                    emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
+                    updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
+                    recordObservationLine(tool, obs);
+                    continue;
+                }
                 String obs = mapper.createObjectNode()
                         .put("tool", tool)
                         .put("error", "tool_budget_exceeded")
@@ -304,11 +319,10 @@ public class JsonReActAgent {
                         .put("hint", "Tool call budget exceeded. Stop calling tools and provide a final answer based on current facts.")
                         .set("args", args == null ? MissingNode.getInstance() : args)
                         .toString();
-            logToolResult(tool, obs);
-            trackEditMetrics(tool, obs);
-            trackEditMetrics(tool, obs);
-            emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
-            updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
+                logToolResult(tool, obs);
+                trackEditMetrics(tool, obs);
+                emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
+                updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
                 recordObservationLine(tool, obs);
                 String forced = forceFinalAnswer(goal);
                 history.add("FINAL " + StringUtils.truncate(forced, 400));
@@ -326,20 +340,6 @@ public class JsonReActAgent {
             Integer seen = signatureCounts.get(sig);
             signatureCounts.put(sig, seen == null ? 1 : (seen.intValue() + 1));
             int sigCount = signatureCounts.get(sig).intValue();
-            if ("READ_FILE".equals(tool) && sigCount >= 3) {
-                String obs = mapper.createObjectNode()
-                        .put("tool", tool)
-                        .put("error", "repeated_read_range")
-                        .put("hint", "Repeated READ_FILE on the same file range more than twice. Change range or use another tool.")
-                        .set("args", args == null ? MissingNode.getInstance() : args)
-                        .toString();
-            logToolResult(tool, obs);
-            trackEditMetrics(tool, obs);
-            emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
-            updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
-                recordObservationLine(tool, obs);
-                continue;
-            }
             String preCalculatedObs = null;
             boolean isLoop = (sameToolSignatureCount >= 1 || sigCount >= 2);
 
@@ -388,25 +388,8 @@ public class JsonReActAgent {
                 String cached = signatureToObs.get(sig);
                 String obs;
                 if (cached != null && !cached.trim().isEmpty()) {
-                    ObjectNode on = mapper.createObjectNode();
-                    on.put("tool", tool);
-                    on.put("signature", sig);
-                    on.put("cached", true);
-                    on.set("args", args == null ? MissingNode.getInstance() : args);
-                    try {
-                        JsonNode cachedNode = mapper.readTree(cached);
-                        on.set("cachedResult", cachedNode);
-                        if (cachedNode.has("result")) {
-                            on.set("result", cachedNode.get("result"));
-                        }
-                        if (cachedNode.has("error")) {
-                            on.set("error", cachedNode.get("error"));
-                        }
-                    } catch (Exception ex) {
-                        on.put("cachedResult", StringUtils.truncate(cached, 1200));
-                    }
-                    on.put("hint", "Repeated call with same tool+args, cached result returned. Please use another tool or output type=final");
-                    obs = on.toString();
+                    obs = buildCachedObservation(tool, sig, args, cached,
+                            "Repeated call with same tool+args, cached result returned. Please use another tool or output type=final");
                 } else {
                     obs = mapper.createObjectNode()
                             .put("tool", tool)
@@ -421,11 +404,6 @@ public class JsonReActAgent {
                 emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
                 updateToolState(tool, toolVersion, sig, args, obs, i, toolCallEventId);
                 recordObservationLine(tool, obs);
-                if ("READ_FILE".equals(tool) && sigCount >= 3) {
-                    String forced = forceFinalAnswer(goal);
-                    history.add("FINAL " + StringUtils.truncate(forced, 400));
-                    return forced;
-                }
                 if (i == MAX_TURNS - 1) {
                     logger.warn("agent.turn.last_used_by_repeat traceId={} tool={} sig={}", traceId, tool, StringUtils.truncate(sig, 300));
                     String forced = forceFinalAnswer(goal);
@@ -988,6 +966,11 @@ public class JsonReActAgent {
                     String content = result.path("content").asText("");
                     if (!content.isEmpty()) {
                         resOut.put("contentChars", content.length());
+                        String preview = content;
+                        if (preview.length() > READ_FILE_PREVIEW_CHARS) {
+                            preview = preview.substring(0, READ_FILE_PREVIEW_CHARS) + "\n... (truncated)";
+                        }
+                        resOut.put("content", preview);
                     }
                 }
             } else if ("OPEN_FILE_VIEW".equals(t) || "SCROLL_FILE_VIEW".equals(t) || "GOTO_FILE_VIEW".equals(t)) {
@@ -1877,6 +1860,36 @@ public class JsonReActAgent {
         trimFacts();
     }
 
+    private String normalizeThought(String text) {
+        if (text == null) {
+            return "";
+        }
+        String lower = text.trim().toLowerCase(Locale.ROOT);
+        if (lower.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(lower.length());
+        boolean lastSpace = false;
+        for (int i = 0; i < lower.length(); i++) {
+            char c = lower.charAt(i);
+            if (Character.isLetterOrDigit(c)) {
+                sb.append(c);
+                lastSpace = false;
+            } else if (Character.isWhitespace(c)) {
+                if (!lastSpace) {
+                    sb.append(' ');
+                    lastSpace = true;
+                }
+            } else {
+                if (!lastSpace) {
+                    sb.append(' ');
+                    lastSpace = true;
+                }
+            }
+        }
+        return sb.toString().trim();
+    }
+
     private void trimFacts() {
         if (knownFacts.size() <= MAX_FACTS) {
             return;
@@ -2289,9 +2302,14 @@ public class JsonReActAgent {
             String path = a.path("path").asText("");
             Integer startLine = JsonUtils.intOrNull(a, "startLine", "start_line");
             Integer endLine = JsonUtils.intOrNull(a, "endLine", "end_line");
+            String range = "";
+            if (startLine == null && endLine == null) {
+                range = a.path("range").asText("");
+            }
             return head + "|path=" + StringUtils.truncate(path == null ? "" : path.trim(), 200)
                     + "|startLine=" + String.valueOf(startLine)
-                    + "|endLine=" + String.valueOf(endLine);
+                    + "|endLine=" + String.valueOf(endLine)
+                    + (range == null || range.trim().isEmpty() ? "" : "|range=" + StringUtils.truncate(range.trim(), 50));
         }
         if ("TRIGGER_INDEX".equals(t)) {
             String mode = a.path("mode").asText("kafka");
@@ -2408,6 +2426,12 @@ public class JsonReActAgent {
                     String range = "all";
                     Integer sl = JsonUtils.intOrNull(safeArgs, "startLine", "start_line");
                     Integer el = JsonUtils.intOrNull(safeArgs, "endLine", "end_line");
+                    if (sl == null && el == null) {
+                        String rawRange = safeArgs.path("range").asText("");
+                        if (rawRange != null && !rawRange.trim().isEmpty()) {
+                            range = rawRange.trim();
+                        }
+                    }
                     if (sl != null || el != null) {
                         range = (sl != null ? sl : 1) + "-" + (el != null ? el : "EOF");
                     }
@@ -2577,6 +2601,32 @@ public class JsonReActAgent {
             event.setCause(causeId);
         }
         eventStream.addEvent(event, EventSource.AGENT);
+    }
+
+    private String buildCachedObservation(String tool, String signature, JsonNode args, String cached, String hint) {
+        ObjectNode on = mapper.createObjectNode();
+        on.put("tool", tool == null ? "" : tool);
+        on.put("signature", signature == null ? "" : signature);
+        on.put("cached", true);
+        on.set("args", args == null ? MissingNode.getInstance() : args);
+        if (cached != null) {
+            try {
+                JsonNode cachedNode = mapper.readTree(cached);
+                on.set("cachedResult", cachedNode);
+                if (cachedNode.has("result")) {
+                    on.set("result", cachedNode.get("result"));
+                }
+                if (cachedNode.has("error")) {
+                    on.set("error", cachedNode.get("error"));
+                }
+            } catch (Exception ex) {
+                on.put("cachedResult", StringUtils.truncate(cached, 1200));
+            }
+        }
+        if (hint != null && !hint.isEmpty()) {
+            on.put("hint", hint);
+        }
+        return on.toString();
     }
 
     private String maskSensitive(String text) {
