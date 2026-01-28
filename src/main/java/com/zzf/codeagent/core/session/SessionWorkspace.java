@@ -250,7 +250,15 @@ public final class SessionWorkspace {
         if (!added) {
             return false;
         }
-        return runGit(worktreePath, "reset", "--hard");
+        if (!runGit(worktreePath, "reset", "--hard")) {
+            return false;
+        }
+        // Best-effort cleanup to match opencode reset behavior.
+        runGit(worktreePath, "clean", "-fdx");
+        runGit(worktreePath, "submodule", "update", "--init", "--recursive", "--force");
+        runGit(worktreePath, "submodule", "foreach", "--recursive", "git reset --hard");
+        runGit(worktreePath, "submodule", "foreach", "--recursive", "git clean -fdx");
+        return true;
     }
 
     private static void removeWorktree(Path repoRoot, Path worktreePath, String branch) {
