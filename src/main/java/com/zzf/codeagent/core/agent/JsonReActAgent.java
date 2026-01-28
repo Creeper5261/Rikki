@@ -74,6 +74,7 @@ public class JsonReActAgent {
 
     private final ObjectMapper mapper;
     private final OpenAiChatModel model;
+    private final OpenAiChatModel fastModel;
     private final ElasticsearchCodeSearchService search;
     private final HybridCodeSearchService hybridSearch;
     private final String traceId;
@@ -127,12 +128,13 @@ public class JsonReActAgent {
     private final List<Map<String, Object>> pendingChanges = new ArrayList<>();
 
     public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager) {
-        this(mapper, model, search, hybridSearch, traceId, workspaceRoot, workspaceRoot, traceId, workspaceRoot, indexingWorker, kafkaBootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+        this(mapper, model, null, search, hybridSearch, traceId, workspaceRoot, workspaceRoot, traceId, workspaceRoot, indexingWorker, kafkaBootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
     }
 
-    public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, String fileSystemRoot, String sessionId, String publicWorkspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager) {
+    public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, OpenAiChatModel fastModel, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, String fileSystemRoot, String sessionId, String publicWorkspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager) {
         this.mapper = mapper;
         this.model = model;
+        this.fastModel = fastModel;
         this.search = search;
         this.hybridSearch = hybridSearch;
         this.traceId = traceId;
@@ -235,10 +237,18 @@ public class JsonReActAgent {
             emitAgentStepEvent("turn_start", goal, i, null);
             String prompt = buildPrompt(goal);
             logger.info("llm.prompt traceId={} chars={}", traceId, prompt.length());
-            logModelRequest("turn", prompt);
-            String raw = model.chat(prompt);
+            OpenAiChatModel activeModel = shouldUseFastModelForTurn(i) ? fastModel : model;
+            String stage = activeModel == fastModel ? "turn_fast" : "turn";
+            logModelRequest(stage, prompt);
+            String raw = activeModel.chat(prompt);
             logger.info("llm.raw traceId={} raw={}", traceId, StringUtils.truncate(raw, 2000));
             JsonNode node = parseWithRetry(prompt, raw);
+            if (activeModel == fastModel && !"tool".equalsIgnoreCase(node.path("type").asText())) {
+                logModelRequest("turn", prompt);
+                raw = model.chat(prompt);
+                logger.info("llm.raw traceId={} raw={}", traceId, StringUtils.truncate(raw, 2000));
+                node = parseWithRetry(prompt, raw);
+            }
             String type = node.path("type").asText();
             // Phase 2.1: Cognitive Auto-Correction
             // If agent outputs type="final" but includes a tool call, assume it meant to use the tool.
@@ -253,6 +263,8 @@ public class JsonReActAgent {
                 String thoughtText = StringUtils.truncate(thought, 300);
                 history.add("THOUGHT " + thoughtText);
                 emitAgentStepEvent("thought", thought, i, null);
+            } else {
+                emitAgentStepEvent("thought", defaultThoughtForTurn(goal), i, null);
             }
             if ("final".equalsIgnoreCase(type)) {
                 captureFacts(node, false);
@@ -1100,6 +1112,16 @@ public class JsonReActAgent {
         return tool.equals(lastFailedTool);
     }
 
+    private boolean shouldUseFastModelForTurn(int turn) {
+        if (fastModel == null) {
+            return false;
+        }
+        if (turn > 1) {
+            return false;
+        }
+        return !hasEvidence && readFiles.isEmpty();
+    }
+
     private boolean isToolError(String obs) {
         if (obs == null || obs.trim().isEmpty()) {
             return true;
@@ -1859,6 +1881,11 @@ public class JsonReActAgent {
             }
         }
         return false;
+    }
+
+    private String defaultThoughtForTurn(String goal) {
+        boolean chinese = containsCjk(goal);
+        return chinese ? "正在处理当前步骤，准备下一步操作。" : "Working on the next step.";
     }
 
     private String formatEvidenceSources() {

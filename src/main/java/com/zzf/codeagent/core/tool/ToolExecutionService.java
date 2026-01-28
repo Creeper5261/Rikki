@@ -21,6 +21,7 @@ public class ToolExecutionService {
     private final ToolRegistry registry;
     private final ToolRouter router;
     private final boolean runCommandEnabled;
+    private final int defaultMaxArgsChars;
 
     public ToolExecutionService() {
         ToolRegistry reg = new ToolRegistry();
@@ -28,6 +29,7 @@ public class ToolExecutionService {
         this.registry = reg;
         this.router = new ToolRouter(reg);
         this.runCommandEnabled = resolveRunCommandEnabled();
+        this.defaultMaxArgsChars = resolveIntEnv("CODEAGENT_TOOL_ARGS_MAX", "codeagent.tool.args.max", 12000);
     }
 
     public boolean isRunCommandEnabled() {
@@ -42,6 +44,18 @@ public class ToolExecutionService {
                 ToolEnvelope env = new ToolEnvelope(tool, registry.resolveVersion(tool, version), args, ctx.traceId, requestId);
                 ToolResult result = ToolResult.error(tool, env.getVersion(), "tool_disabled")
                         .withHint("RUN_COMMAND is disabled for safety.").withTookMs((System.nanoTime() - t0) / 1_000_000L);
+                ObjectNode out = result.toJson(ctx.mapper, env);
+                return sanitizeObservation(out.toString());
+            }
+            int argChars = args == null ? 0 : args.toString().length();
+            int maxArgs = resolveToolArgsLimit(tool);
+            if (argChars > maxArgs) {
+                ToolEnvelope env = new ToolEnvelope(tool, registry.resolveVersion(tool, version), args, ctx.traceId, requestId);
+                ToolResult result = ToolResult.error(tool, env.getVersion(), "tool_args_too_large")
+                        .withHint("Tool args too large (" + argChars + " > " + maxArgs + "). Use APPLY_PATCH or smaller edits.")
+                        .withExtra("maxArgsChars", ctx.mapper.valueToTree(maxArgs))
+                        .withExtra("argsChars", ctx.mapper.valueToTree(argChars))
+                        .withTookMs((System.nanoTime() - t0) / 1_000_000L);
                 ObjectNode out = result.toJson(ctx.mapper, env);
                 return sanitizeObservation(out.toString());
             }
@@ -89,5 +103,42 @@ public class ToolExecutionService {
         String env = System.getenv("CODEAGENT_RUN_COMMAND_ENABLED");
         String val = (sys != null && !sys.isBlank()) ? sys : env;
         return "true".equalsIgnoreCase(val);
+    }
+
+    private int resolveToolArgsLimit(String tool) {
+        if (tool == null || tool.isEmpty()) {
+            return defaultMaxArgsChars;
+        }
+        String upper = tool.toUpperCase();
+        int override = resolveIntEnv("CODEAGENT_TOOL_ARGS_MAX_" + upper, "codeagent.tool.args.max." + tool.toLowerCase(), -1);
+        if (override > 0) {
+            return override;
+        }
+        if ("STR_REPLACE_EDITOR".equals(upper)) {
+            return Math.min(defaultMaxArgsChars, 8000);
+        }
+        if ("EDIT_FILE".equals(upper) || "REPLACE_LINES".equals(upper)) {
+            return Math.min(defaultMaxArgsChars, 16000);
+        }
+        if ("APPLY_PATCH".equals(upper)) {
+            return Math.max(defaultMaxArgsChars, 20000);
+        }
+        return defaultMaxArgsChars;
+    }
+
+    private int resolveIntEnv(String envKey, String propKey, int fallback) {
+        String prop = System.getProperty(propKey);
+        if (prop != null && !prop.trim().isEmpty()) {
+            try {
+                return Integer.parseInt(prop.trim());
+            } catch (Exception ignored) {}
+        }
+        String env = System.getenv(envKey);
+        if (env != null && !env.trim().isEmpty()) {
+            try {
+                return Integer.parseInt(env.trim());
+            } catch (Exception ignored) {}
+        }
+        return fallback;
     }
 }

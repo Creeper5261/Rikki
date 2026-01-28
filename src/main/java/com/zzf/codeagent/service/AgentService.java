@@ -94,6 +94,7 @@ public final class AgentService {
             String workspaceRoot = req.workspaceRoot == null ? "" : req.workspaceRoot.trim();
             String workspaceName = req.workspaceName == null ? "" : req.workspaceName.trim();
             List<String> chatHistory = normalizeChatHistory(req.history);
+            chatHistory = maybeCompressHistory(chatHistory, req.goal);
             String ideContextPath = req.ideContextPath == null ? "" : req.ideContextPath.trim();
             int rawHistorySize = req.history == null ? 0 : req.history.size();
             int ideContextChars = req.ideContextContent == null ? 0 : req.ideContextContent.length();
@@ -168,7 +169,7 @@ public final class AgentService {
                 if (isInsufficientAnswer(answer)) {
                     route = "SmartRetrieval->JsonReActAgent";
                     logger.info("chat.fallback traceId={} reason=InsufficientRetrieval", traceId);
-                    JsonReActAgent agent = new JsonReActAgent(mapper, model, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+                    JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
                     agentUsed = agent;
                     String augmentedGoal = req.goal + "\n\n(Note: Automatic search failed to find enough context. Please use tools like LIST_FILES or READ_FILE to explore the project structure and key config files explicitly.)";
                     logger.info("agent.run.start traceId={} route=SmartRetrievalFallback goalChars={}", traceId, augmentedGoal.length());
@@ -181,7 +182,7 @@ public final class AgentService {
             } else {
                 route = "JsonReActAgent";
                 logger.info("chat.route traceId={} intent={} pipeline=JsonReActAgent", traceId, intent);
-                JsonReActAgent agent = new JsonReActAgent(mapper, model, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+                JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
                 agentUsed = agent;
                 logger.info("agent.run.start traceId={} route=JsonReActAgent goalChars={}", traceId, req.goal.trim().length());
                 long tAgent = System.nanoTime();
@@ -367,6 +368,120 @@ public final class AgentService {
         return out;
     }
 
+    private List<String> maybeCompressHistory(List<String> history, String goal) {
+        if (!isHistoryCompressionEnabled()) {
+            return history;
+        }
+        if (history == null || history.isEmpty()) {
+            return history;
+        }
+        if (hasSummaryLine(history)) {
+            return history;
+        }
+        int maxLines = resolveIntEnv("CODEAGENT_HISTORY_COMPRESS_MAX_LINES", "codeagent.history.compress.max_lines", 24);
+        int maxChars = resolveIntEnv("CODEAGENT_HISTORY_COMPRESS_MAX_CHARS", "codeagent.history.compress.max_chars", 4000);
+        int keepTail = resolveIntEnv("CODEAGENT_HISTORY_COMPRESS_KEEP_TAIL", "codeagent.history.compress.keep_tail", 8);
+        int totalChars = countChars(history);
+        if (history.size() <= maxLines && totalChars <= maxChars) {
+            return history;
+        }
+
+        List<String> tail = new ArrayList<>();
+        int start = Math.max(0, history.size() - Math.max(2, keepTail));
+        for (int i = start; i < history.size(); i++) {
+            tail.add(history.get(i));
+        }
+
+        String apiKey = contextService.resolveDeepSeekApiKey();
+        if (apiKey == null || apiKey.trim().isEmpty()) {
+            return tail;
+        }
+
+        try {
+            List<String> h = normalizeHistoryForCompression(history);
+            String summary = summarizeHistory(h, goal == null ? "" : goal.trim(), apiKey);
+            if (summary == null || summary.isBlank()) {
+                return tail;
+            }
+            summary = contextService.fixMojibakeIfNeeded(summary.trim());
+            if (summary.length() > 800) {
+                summary = summary.substring(0, 800);
+            }
+            List<String> out = new ArrayList<>();
+            out.add("Summary: " + summary);
+            out.addAll(tail);
+            return out;
+        } catch (Exception e) {
+            return tail;
+        }
+    }
+
+    private String summarizeHistory(List<String> history, String goalHint, String apiKey) {
+        String joined = String.join("\n", history);
+        if (joined.length() > 24000) {
+            joined = joined.substring(0, 24000);
+        }
+        StringBuilder p = new StringBuilder();
+        p.append("Summarize the conversation into <= 800 characters. ");
+        p.append("Preserve user requests, constraints, file paths, and decisions. ");
+        p.append("Plain text only, no markdown or bullets.\n");
+        if (goalHint != null && !goalHint.isEmpty()) {
+            p.append("Goal: ").append(contextService.truncate(goalHint, 200)).append("\n");
+        }
+        p.append("Conversation:\n").append(joined);
+        OpenAiChatModel model = contextService.createFastChatModel(apiKey);
+        String summary = model.chat(p.toString());
+        return summary == null ? "" : summary.trim();
+    }
+
+    private boolean hasSummaryLine(List<String> history) {
+        for (String line : history) {
+            if (line == null) continue;
+            String t = line.trim();
+            if (t.startsWith("Summary:")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private int countChars(List<String> history) {
+        int total = 0;
+        for (String s : history) {
+            if (s == null) continue;
+            total += s.length();
+        }
+        return total;
+    }
+
+    private boolean isHistoryCompressionEnabled() {
+        String prop = System.getProperty("codeagent.history.compress.enabled");
+        if (prop != null && !prop.trim().isEmpty()) {
+            return "true".equalsIgnoreCase(prop.trim());
+        }
+        String env = System.getenv("CODEAGENT_HISTORY_COMPRESS_ENABLED");
+        if (env != null && !env.trim().isEmpty()) {
+            return "true".equalsIgnoreCase(env.trim());
+        }
+        return true;
+    }
+
+    private int resolveIntEnv(String envKey, String propKey, int fallback) {
+        String prop = System.getProperty(propKey);
+        if (prop != null && !prop.trim().isEmpty()) {
+            try {
+                return Integer.parseInt(prop.trim());
+            } catch (Exception ignored) {}
+        }
+        String env = System.getenv(envKey);
+        if (env != null && !env.trim().isEmpty()) {
+            try {
+                return Integer.parseInt(env.trim());
+            } catch (Exception ignored) {}
+        }
+        return fallback;
+    }
+
     private void logChatRequest(String traceId, ChatRequest req) {
         try {
             String json = mapper.writeValueAsString(req);
@@ -470,6 +585,7 @@ public final class AgentService {
                 }
                 String workspaceRoot = req.workspaceRoot == null ? "" : req.workspaceRoot.trim();
                 List<String> chatHistory = normalizeChatHistory(req.history);
+                chatHistory = maybeCompressHistory(chatHistory, req.goal);
                 String ideContextPath = req.ideContextPath == null ? "" : req.ideContextPath.trim();
                 String indexName = ElasticsearchIndexNames.codeAgentV2IndexForWorkspaceRoot(workspaceRoot);
                 logChatRequest(traceId, req);
@@ -534,7 +650,7 @@ public final class AgentService {
                         ObjectNode fallbackPayload = mapper.createObjectNode().put("text", "SmartRetrieval insufficient, falling back to Agent...");
                         emitter.send(SseEmitter.event().name("agent_step").data(mapper.writeValueAsString(fallbackPayload)));
 
-                        JsonReActAgent agent = new JsonReActAgent(mapper, model, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+                        JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
                         agentUsed = agent;
                         String augmentedGoal = req.goal + "\n\n(Note: Automatic search failed to find enough context. Please use tools like LIST_FILES or READ_FILE to explore the project structure and key config files explicitly.)";
                         long tAgent = System.nanoTime();
@@ -544,7 +660,7 @@ public final class AgentService {
                     }
                 } else {
                     route = "JsonReActAgent";
-                    JsonReActAgent agent = new JsonReActAgent(mapper, model, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+                    JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
                     agentUsed = agent;
                     long tAgent = System.nanoTime();
                     answer = agent.run(req.goal);
