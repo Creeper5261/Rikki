@@ -6,6 +6,7 @@ import com.zzf.codeagent.api.AgentChatController.ChatRequest;
 import com.zzf.codeagent.api.AgentChatController.ChatResponse;
 import com.zzf.codeagent.api.AgentChatController.CompressHistoryRequest;
 import com.zzf.codeagent.api.AgentChatController.PendingChangeRequest;
+import com.zzf.codeagent.config.AgentConfig;
 import com.zzf.codeagent.core.agent.JsonReActAgent;
 import com.zzf.codeagent.core.agent.TopicResult;
 import com.zzf.codeagent.core.event.AgentEvent;
@@ -69,11 +70,12 @@ public final class AgentService {
     private final RetrievalService retrievalService;
     private final ContextService contextService;
     private final SkillManager skillManager;
+    private final AgentConfig agentConfig;
 
     @Value("${spring.kafka.bootstrap-servers:localhost:9092}")
     private String bootstrapServers;
 
-    public AgentService(ObjectMapper mapper, HybridCodeSearchService hybridCodeSearchService, IndexingWorker indexingWorker, ToolExecutionService toolExecutionService, RuntimeService runtimeService, RetrievalService retrievalService, ContextService contextService, SkillManager skillManager) {
+    public AgentService(ObjectMapper mapper, HybridCodeSearchService hybridCodeSearchService, IndexingWorker indexingWorker, ToolExecutionService toolExecutionService, RuntimeService runtimeService, RetrievalService retrievalService, ContextService contextService, SkillManager skillManager, AgentConfig agentConfig) {
         this.mapper = mapper;
         this.hybridCodeSearchService = hybridCodeSearchService;
         this.indexingWorker = indexingWorker;
@@ -82,6 +84,7 @@ public final class AgentService {
         this.retrievalService = retrievalService;
         this.contextService = contextService;
         this.skillManager = skillManager;
+        this.agentConfig = agentConfig;
     }
 
     public ResponseEntity<ChatResponse> chat(ChatRequest req) {
@@ -146,7 +149,7 @@ public final class AgentService {
             OpenAiChatModel model = contextService.createChatModel(apiKey);
             OpenAiChatModel fastModel = contextService.createFastChatModel(apiKey);
 
-            TopicResult topic = JsonReActAgent.detectNewTopic(model, req.goal, mapper);
+            TopicResult topic = JsonReActAgent.detectNewTopic(model, req.goal, mapper, agentConfig, traceId);
             logger.info("chat.topic traceId={} isNewTopic={} title={}", traceId, topic.isNewTopic, contextService.truncate(topic.title, 100));
 
             IntentClassifier classifier = new IntentClassifier(fastModel, mapper);
@@ -173,7 +176,7 @@ public final class AgentService {
                 if (isInsufficientAnswer(answer)) {
                     route = "SmartRetrieval->JsonReActAgent";
                     logger.info("chat.fallback traceId={} reason=InsufficientRetrieval", traceId);
-                    JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+                    JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, agentConfig);
                     agentUsed = agent;
                     String augmentedGoal = req.goal + "\n\n(Note: Automatic search failed to find enough context. Please use tools like LIST_FILES or READ_FILE to explore the project structure and key config files explicitly.)";
                     logger.info("agent.run.start traceId={} route=SmartRetrievalFallback goalChars={}", traceId, augmentedGoal.length());
@@ -186,7 +189,7 @@ public final class AgentService {
             } else {
                 route = "JsonReActAgent";
                 logger.info("chat.route traceId={} intent={} pipeline=JsonReActAgent", traceId, intent);
-                JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+                JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, agentConfig);
                 agentUsed = agent;
                 logger.info("agent.run.start traceId={} route=JsonReActAgent goalChars={}", traceId, req.goal.trim().length());
                 long tAgent = System.nanoTime();

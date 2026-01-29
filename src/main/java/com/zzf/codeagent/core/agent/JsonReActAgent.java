@@ -22,8 +22,8 @@ import com.zzf.codeagent.core.tool.ToolExecutionContext;
 import com.zzf.codeagent.core.tool.ToolExecutionService;
 import com.zzf.codeagent.core.tool.ToolProtocol;
 import com.zzf.codeagent.core.tools.FileSystemToolService;
-import com.zzf.codeagent.core.util.JsonUtils;
 import com.zzf.codeagent.core.util.StringUtils;
+import com.zzf.codeagent.config.AgentConfig;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,41 +42,37 @@ import java.util.regex.Pattern;
 public class JsonReActAgent {
     private static final Logger logger = LoggerFactory.getLogger(JsonReActAgent.class);
 
-    private static final int MAX_TURNS = 30;
-    private static final int MAX_TOOL_CALLS = 18;
-    private static final int MAX_CONSECUTIVE_TOOL_ERRORS = 3;
-    private static final int TOOL_BACKOFF_THRESHOLD = 2;
-    private static final int MAX_OBS_CHARS = 4000;
-    private static final int MAX_PROMPT_CHARS = 24000;
-    private static final int MAX_GOAL_CHARS = 4000;
-    private static final int MAX_CHAT_LINES = 8;
-    private static final int MAX_CHAT_LINE_CHARS = 600;
-    private static final int MAX_CHAT_BLOCK_CHARS = 4000;
-    private static final int MAX_FACTS = 120;
-    private static final int MAX_FACTS_BLOCK_CHARS = 6000;
-    private static final int MAX_PINNED_CHARS = 4000;
-    private static final int MAX_IDE_CONTEXT_CHARS = 6000;
-    private static final int MAX_HISTORY_LINES = 6;
-    private static final int MAX_CLAUDE_MEMORY_CHARS = 6000;
-    private static final int MAX_LONG_TERM_MEMORY_CHARS = 8000;
-    private static final int MAX_SKILL_CONTENT_CHARS = 2500;
-    private static final int MAX_AUTO_SKILLS = 2;
-    private static final int READ_FILE_PREVIEW_CHARS = 1200;
-    private static final int THOUGHT_CHUNK_SIZE = 160;
-    private static final String SYSTEM_HEADER_RESOURCE = "prompt/codex_header.txt";
-    private static volatile String SYSTEM_HEADER_CACHE;
+    private final AgentConfig config;
+
+    private final int MAX_TURNS;
+    private final int MAX_TOOL_CALLS;
+    private final int MAX_CONSECUTIVE_TOOL_ERRORS;
+    private final int TOOL_BACKOFF_THRESHOLD;
+    private final int MAX_OBS_CHARS;
+    private final int MAX_PROMPT_CHARS;
+    private final int MAX_GOAL_CHARS;
+    private final int MAX_CHAT_LINES;
+    private final int MAX_CHAT_LINE_CHARS;
+    private final int MAX_CHAT_BLOCK_CHARS;
+    private final int MAX_FACTS;
+    private final int MAX_FACTS_BLOCK_CHARS;
+    private final int MAX_PINNED_CHARS;
+    private final int MAX_IDE_CONTEXT_CHARS;
+    private final int MAX_HISTORY_LINES;
+    private final int MAX_CLAUDE_MEMORY_CHARS;
+    private final int MAX_LONG_TERM_MEMORY_CHARS;
+    private final int MAX_SKILL_CONTENT_CHARS;
+    private final int MAX_AUTO_SKILLS;
+    private final int READ_FILE_PREVIEW_CHARS;
+    private final int THOUGHT_CHUNK_SIZE;
+    
+    private String systemHeaderCache;
+    private String skillSystemPromptCache;
+    private String checkNewTopicPromptCache;
+    private String ideOpenedFilePromptCache;
     
     private static final Pattern SENSITIVE_KV = Pattern.compile("(?i)(password|passwd|secret|token|apikey|accesskey|secretkey)\\s*[:=]\\s*([\"']?)([^\"'\\\\\\r\\n\\s]{1,160})\\2");
     private static final Pattern SENSITIVE_JSON_KV = Pattern.compile("(?i)(\"(?:password|passwd|secret|token|apiKey|accessKey|secretKey)\"\\s*:\\s*\")([^\"]{1,160})(\")");
-    private static final String IDE_OPENED_FILE_PROMPT = "The user opened the file $filename in the IDE. This may or may not be related to the current task.";
-    private static final String CHECK_NEW_TOPIC_PROMPT = "Analyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title that captures the new topic. Format your response as a JSON object with two fields: 'isNewTopic' (boolean) and 'title' (string, or null if isNewTopic is false). Only include these fields, no other text.";
-
-    private static final String SKILL_SYSTEM_PROMPT = 
-            "You have access to a set of Skills that provide specialized capabilities. \n" +
-            "Skills are loaded from built-in classpath resources and from the workspace (.agent/skills, .claude/skills). \n" +
-            "To use a skill, you must first load it using LOAD_SKILL. \n" +
-            "Once loaded, the skill will provide detailed instructions and context. \n" +
-            "Below are the currently available skills:\n";
 
     private final ObjectMapper mapper;
     private final OpenAiChatModel model;
@@ -96,6 +92,8 @@ public class JsonReActAgent {
     private final List<String> chatHistory;
     private final String ideContextPath;
     private final EventStream eventStream;
+    private final RepoStructureService repoStructureService;
+    private String repoMapCache;
     
     private InMemoryCodeSearchService memory;
     private boolean memoryIndexed;
@@ -131,14 +129,37 @@ public class JsonReActAgent {
     private int editsRejected = 0;
     private final List<String> autoSkillsLoaded = new ArrayList<>();
     private String lastFailedTool;
-    private int toolBudgetLimit = MAX_TOOL_CALLS;
+    private int toolBudgetLimit;
     private PlanExecutionState planState;
 
-    public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager) {
-        this(mapper, model, null, search, hybridSearch, traceId, workspaceRoot, workspaceRoot, traceId, workspaceRoot, indexingWorker, kafkaBootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+    public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager, AgentConfig config) {
+        this(mapper, model, null, search, hybridSearch, traceId, workspaceRoot, workspaceRoot, traceId, workspaceRoot, indexingWorker, kafkaBootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, config);
     }
 
-    public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, OpenAiChatModel fastModel, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, String fileSystemRoot, String sessionId, String publicWorkspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager) {
+    public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, OpenAiChatModel fastModel, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, String fileSystemRoot, String sessionId, String publicWorkspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager, AgentConfig config) {
+        this.config = config;
+        this.MAX_TURNS = config.getMaxTurns();
+        this.MAX_TOOL_CALLS = config.getMaxToolCalls();
+        this.MAX_CONSECUTIVE_TOOL_ERRORS = config.getMaxConsecutiveToolErrors();
+        this.TOOL_BACKOFF_THRESHOLD = config.getToolBackoffThreshold();
+        this.MAX_OBS_CHARS = config.getMaxObsChars();
+        this.MAX_PROMPT_CHARS = config.getMaxPromptChars();
+        this.MAX_GOAL_CHARS = config.getMaxGoalChars();
+        this.MAX_CHAT_LINES = config.getMaxChatLines();
+        this.MAX_CHAT_LINE_CHARS = config.getMaxChatLineChars();
+        this.MAX_CHAT_BLOCK_CHARS = config.getMaxChatBlockChars();
+        this.MAX_FACTS = config.getMaxFacts();
+        this.MAX_FACTS_BLOCK_CHARS = config.getMaxFactsBlockChars();
+        this.MAX_PINNED_CHARS = config.getMaxPinnedChars();
+        this.MAX_IDE_CONTEXT_CHARS = config.getMaxIdeContextChars();
+        this.MAX_HISTORY_LINES = config.getMaxHistoryLines();
+        this.MAX_CLAUDE_MEMORY_CHARS = config.getMaxClaudeMemoryChars();
+        this.MAX_LONG_TERM_MEMORY_CHARS = config.getMaxLongTermMemoryChars();
+        this.MAX_SKILL_CONTENT_CHARS = config.getMaxSkillContentChars();
+        this.MAX_AUTO_SKILLS = config.getMaxAutoSkills();
+        this.READ_FILE_PREVIEW_CHARS = config.getReadFilePreviewChars();
+        this.THOUGHT_CHUNK_SIZE = config.getThoughtChunkSize();
+        
         this.mapper = mapper;
         this.model = model;
         this.fastModel = fastModel;
@@ -156,6 +177,7 @@ public class JsonReActAgent {
         this.runtimeService = runtimeService;
         this.eventStream = eventStream;
         this.skillManager = skillManager;
+        this.repoStructureService = new RepoStructureService();
         
         Path rootPath;
         try {
@@ -597,6 +619,13 @@ public class JsonReActAgent {
 
         // 2. Static Context (IDEContext & ProjectMemory) - Always included for Prefix Caching stability
         StringBuilder staticContext = new StringBuilder();
+
+        // SOTA Phase 2: Repo Map (Repository Skeleton)
+        String repoMap = getRepoMap();
+        if (repoMap != null && !repoMap.isEmpty()) {
+            staticContext.append("\nRepoMap (Repository Structure):\n").append(StringUtils.truncate(repoMap, 10000)).append("\n");
+        }
+
         if (ideContextContent != null && !ideContextContent.isEmpty()) {
             // Apply filtering to IDEContext to focus on relevant parts
             staticContext.append("\nIDEContext:\n").append(filterIdeContext(ideContextContent, g)).append("\n");
@@ -614,10 +643,21 @@ public class JsonReActAgent {
         // 3. Dynamic User Goal & Facts
         StringBuilder dynamicContext = new StringBuilder();
         dynamicContext.append("\nUserGoal: ").append(g);
+        
+        // SOTA Phase 3: Budget Awareness
+        dynamicContext.append("\n[TurnBudget: Step ").append(turnsUsed + 1).append(" of ").append(MAX_TURNS).append("]");
+        dynamicContext.append(" [ToolBudget: ").append(toolCallCount).append(" of ").append(MAX_TOOL_CALLS).append("]");
+        
+        if (MAX_TURNS - (turnsUsed + 1) < 5) {
+             dynamicContext.append(" WARNING: Low turn budget. Finish immediately.");
+        }
+        if (MAX_TOOL_CALLS - toolCallCount < 10) {
+             dynamicContext.append(" WARNING: Low tool budget. Be efficient.");
+        }
 
         if (ideContextPath != null && !ideContextPath.isEmpty()) {
             dynamicContext.append("\nProjectStructurePath: ").append(ideContextPath);
-            dynamicContext.append("\n").append(IDE_OPENED_FILE_PROMPT.replace("$filename", ideContextPath));
+            dynamicContext.append("\n").append(getIdeOpenedFilePrompt().replace("$filename", ideContextPath));
             if (ideContextContent.isEmpty()) {
                 dynamicContext.append("\nFailed to read IDE structure context. If you need to understand the architecture or class relationships, you can READ_FILE the path above.");
             } else {
@@ -718,24 +758,37 @@ public class JsonReActAgent {
         return out.toString();
     }
 
+    private String getRepoMap() {
+        if (repoMapCache == null) {
+            String root = (workspaceRoot != null && !workspaceRoot.isEmpty()) ? workspaceRoot : sessionRoot;
+            try {
+                repoMapCache = repoStructureService.generateRepoMap(root);
+            } catch (Exception e) {
+                logger.warn("repo_map.gen.fail traceId={} err={}", traceId, e.toString());
+                repoMapCache = "";
+            }
+        }
+        return repoMapCache;
+    }
+
     private String loadSystemHeader() {
-        String cached = SYSTEM_HEADER_CACHE;
-        if (cached != null) {
-            return cached;
+        if (systemHeaderCache != null) {
+            return systemHeaderCache;
         }
         String header = "";
-        try (InputStream input = JsonReActAgent.class.getClassLoader().getResourceAsStream(SYSTEM_HEADER_RESOURCE)) {
+        String resourcePath = config.getSystemHeaderResource();
+        try (InputStream input = JsonReActAgent.class.getClassLoader().getResourceAsStream(resourcePath)) {
             if (input != null) {
                 header = new String(input.readAllBytes(), StandardCharsets.UTF_8);
             }
         } catch (Exception e) {
-            logger.warn("system.header.load.fail traceId={} resource={} err={}", traceId, SYSTEM_HEADER_RESOURCE, e.toString());
+            logger.warn("system.header.load.fail traceId={} resource={} err={}", traceId, resourcePath, e.toString());
         }
         header = header == null ? "" : header.trim();
         if (header.isEmpty()) {
             header = defaultSystemHeader();
         }
-        SYSTEM_HEADER_CACHE = header;
+        systemHeaderCache = header;
         return header;
     }
 
@@ -746,6 +799,48 @@ public class JsonReActAgent {
         return sb.toString();
     }
 
+    private static String loadResource(String resourcePath, String defaultContent, String traceId) {
+        if (resourcePath == null || resourcePath.isEmpty()) {
+            return defaultContent;
+        }
+        try (InputStream input = JsonReActAgent.class.getClassLoader().getResourceAsStream(resourcePath)) {
+            if (input != null) {
+                return new String(input.readAllBytes(), StandardCharsets.UTF_8).trim();
+            }
+        } catch (Exception e) {
+            logger.warn("resource.load.fail traceId={} resource={} err={}", traceId, resourcePath, e.toString());
+        }
+        return defaultContent;
+    }
+
+    private String getSkillSystemPrompt() {
+        if (skillSystemPromptCache == null) {
+            String defaultPrompt = "You have access to a set of Skills that provide specialized capabilities. \n" +
+            "Skills are loaded from built-in classpath resources and from the workspace (.agent/skills, .claude/skills). \n" +
+            "To use a skill, you must first load it using LOAD_SKILL. \n" +
+            "Once loaded, the skill will provide detailed instructions and context. \n" +
+            "Below are the currently available skills:\n";
+            skillSystemPromptCache = loadResource(config.getSkillSystemPromptResource(), defaultPrompt, traceId);
+        }
+        return skillSystemPromptCache;
+    }
+
+    private String getCheckNewTopicPrompt() {
+        if (checkNewTopicPromptCache == null) {
+            String defaultPrompt = "Analyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title that captures the new topic. Format your response as a JSON object with two fields: 'isNewTopic' (boolean) and 'title' (string, or null if isNewTopic is false). Only include these fields, no other text.";
+            checkNewTopicPromptCache = loadResource(config.getCheckNewTopicPromptResource(), defaultPrompt, traceId);
+        }
+        return checkNewTopicPromptCache;
+    }
+
+    private String getIdeOpenedFilePrompt() {
+        if (ideOpenedFilePromptCache == null) {
+            String defaultPrompt = "The user opened the file $filename in the IDE. This may or may not be related to the current task.";
+            ideOpenedFilePromptCache = loadResource(config.getIdeOpenedFilePromptResource(), defaultPrompt, traceId);
+        }
+        return ideOpenedFilePromptCache;
+    }
+
     // Package-private for testing
     String filterIdeContext(String context, String goal) {
         if (context == null || context.isEmpty()) return "";
@@ -753,12 +848,20 @@ public class JsonReActAgent {
         if (context.startsWith("Project Structure (Focused View):")) {
             return StringUtils.truncate(context, MAX_IDE_CONTEXT_CHARS);
         }
+        
+        // SOTA Phase 1: Disable aggressive filtering to prevent hallucinations (e.g. Main.java inaccessibility)
+        // If context is within limits (relaxed to 2x limit for safety), return it all.
+        if (context.length() <= MAX_IDE_CONTEXT_CHARS * 2) {
+            return context;
+        }
+
+        // Only filter if context is huge
         if (goal == null || goal.trim().isEmpty()) return StringUtils.truncate(context, MAX_IDE_CONTEXT_CHARS);
 
         // 1. Extract simple keywords from goal
         Set<String> keywords = new HashSet<>();
         for (String w : goal.split("[\\s,;?!.\"]+")) {
-            if (w.length() > 3) {
+            if (w.length() > 2) {
                 keywords.add(w.toLowerCase());
             }
         }
@@ -925,7 +1028,11 @@ public class JsonReActAgent {
             }
             String error = node.path("error").asText("");
             if (!error.isEmpty()) {
-                out.put("error", StringUtils.truncate(error, 300));
+                // SOTA Phase 1: Smart Truncation (Head + Tail) for Errors
+                if (error.length() > 2000) {
+                    error = error.substring(0, 1000) + "\n... (truncated " + (error.length() - 2000) + " chars) ...\n" + error.substring(error.length() - 1000);
+                }
+                out.put("error", error);
             }
             String hint = node.path("hint").asText("");
             if (!hint.isEmpty()) {
@@ -968,7 +1075,11 @@ public class JsonReActAgent {
                         resOut.put("contentChars", content.length());
                         String preview = content;
                         if (preview.length() > READ_FILE_PREVIEW_CHARS) {
-                            preview = preview.substring(0, READ_FILE_PREVIEW_CHARS) + "\n... (truncated)";
+                            // Head + Tail truncation (SOTA strategy for long files)
+                            int half = READ_FILE_PREVIEW_CHARS / 2;
+                            preview = preview.substring(0, half) 
+                                    + "\n... (middle " + (preview.length() - READ_FILE_PREVIEW_CHARS) + " chars truncated) ...\n" 
+                                    + preview.substring(preview.length() - half);
                         }
                         resOut.put("content", preview);
                     }
@@ -1699,7 +1810,7 @@ public class JsonReActAgent {
             if (skills.isEmpty()) return "";
 
             StringBuilder sb = new StringBuilder();
-            sb.append("\n\n").append(SKILL_SYSTEM_PROMPT);
+            sb.append("\n\n").append(getSkillSystemPrompt());
             for (Skill skill : skills) {
                 sb.append("- ").append(skill.getName()).append(": ").append(skill.getDescription()).append("\n");
             }
@@ -2257,22 +2368,25 @@ public class JsonReActAgent {
     }
 
     private JsonNode parseJsonFromRaw(String raw) throws Exception {
-        String candidate = JsonUtils.extractFirstJsonObject(raw);
-        logger.info("llm.json.candidate traceId={} chars={}", traceId, candidate == null ? 0 : candidate.length());
-        return mapper.readTree(candidate);
+        // Use SOTA cleanJson strategy (MemGPT style) - implemented locally
+        JsonNode node = cleanJson(raw);
+        logger.info("llm.json.parsed traceId={}", traceId);
+        return node;
     }
 
-    public static TopicResult detectNewTopic(OpenAiChatModel model, String goal, ObjectMapper mapper) {
+    public static TopicResult detectNewTopic(OpenAiChatModel model, String goal, ObjectMapper mapper, AgentConfig config, String traceId) {
         if (goal == null || goal.trim().isEmpty()) {
             return TopicResult.empty();
         }
         try {
-            String prompt = CHECK_NEW_TOPIC_PROMPT + "\n\nMessage:\n" + StringUtils.truncate(goal, 1000);
+            String defaultPrompt = "Analyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title that captures the new topic. Format your response as a JSON object with two fields: 'isNewTopic' (boolean) and 'title' (string, or null if isNewTopic is false). Only include these fields, no other text.";
+            String promptTemplate = loadResource(config.getCheckNewTopicPromptResource(), defaultPrompt, traceId);
+            String prompt = promptTemplate + "\n\nMessage:\n" + StringUtils.truncate(goal, 1000);
             logger.info("topic.detect.request goalChars={} promptChars={}", goal.length(), prompt.length());
             String raw = model.chat(prompt);
             logger.info("topic.detect.raw chars={} raw={}", raw == null ? 0 : raw.length(), StringUtils.truncate(raw, 800));
-            String json = JsonUtils.extractFirstJsonObject(raw);
-            JsonNode node = mapper.readTree(json);
+            // Use local static cleanJson
+            JsonNode node = cleanJson(raw, mapper);
             boolean isNew = node.path("isNewTopic").asBoolean(false);
             String title = node.path("title").asText(null);
             logger.info("topic.detect.parsed isNewTopic={} title={}", isNew, StringUtils.truncate(title, 60));
@@ -2281,6 +2395,56 @@ public class JsonReActAgent {
             logger.warn("detectNewTopic failed err={}", e.toString());
             return TopicResult.empty();
         }
+    }
+
+    private JsonNode cleanJson(String raw) throws Exception {
+        return cleanJson(raw, this.mapper);
+    }
+
+    private static JsonNode cleanJson(String raw, ObjectMapper mapper) throws Exception {
+        if (raw == null || raw.trim().isEmpty()) {
+            return mapper.createObjectNode();
+        }
+        String content = raw.trim();
+        // SOTA Phase 1: Robust JSON Parsing (Strip Markdown)
+        // Handle ```json ... ``` or just ``` ... ```
+        if (content.startsWith("```")) {
+            int firstNewline = content.indexOf('\n');
+            if (firstNewline > 0) {
+                content = content.substring(firstNewline + 1);
+            }
+            if (content.endsWith("```")) {
+                content = content.substring(0, content.length() - 3);
+            }
+        }
+        content = content.trim();
+        // Find first '{' and last '}'
+        int firstBrace = content.indexOf('{');
+        int lastBrace = content.lastIndexOf('}');
+        if (firstBrace >= 0 && lastBrace > firstBrace) {
+            content = content.substring(firstBrace, lastBrace + 1);
+        }
+        // Handle fuzzy JSON (e.g. missing quotes on keys) is done by Jackson if configured, 
+        // but here we rely on clean extraction.
+        return mapper.readTree(content);
+    }
+
+    private static Integer intOrNull(JsonNode node, String... keys) {
+        for (String key : keys) {
+            if (node.has(key) && !node.get(key).isNull()) {
+                return node.get(key).asInt();
+            }
+        }
+        return null;
+    }
+
+    private static String textOrFallback(JsonNode node, String... keys) {
+        for (String key : keys) {
+            if (node.has(key) && !node.get(key).isNull()) {
+                return node.get(key).asText();
+            }
+        }
+        return "";
     }
 
     private static String toolSignature(String tool, String version, JsonNode args) {
@@ -2296,8 +2460,8 @@ public class JsonReActAgent {
         if ("LIST_FILES".equals(t)) {
             String path = a.path("path").asText("");
             String glob = a.path("glob").asText("");
-            Integer maxResults = JsonUtils.intOrNull(a, "maxResults", "max_results");
-            Integer maxDepth = JsonUtils.intOrNull(a, "maxDepth", "max_depth");
+            Integer maxResults = intOrNull(a, "maxResults", "max_results");
+            Integer maxDepth = intOrNull(a, "maxDepth", "max_depth");
             return head + "|path=" + StringUtils.truncate(path == null ? "" : path.trim(), 200)
                     + "|glob=" + StringUtils.truncate(glob == null ? "" : glob.trim(), 200)
                     + "|maxResults=" + String.valueOf(maxResults)
@@ -2306,10 +2470,10 @@ public class JsonReActAgent {
         if ("GREP".equals(t)) {
             String pattern = a.path("pattern").asText("");
             String root = a.path("root").asText("");
-            String fileGlob = JsonUtils.textOrFallback(a, "file_glob", "fileGlob");
-            Integer maxMatches = JsonUtils.intOrNull(a, "maxMatches", "max_matches");
-            Integer maxFiles = JsonUtils.intOrNull(a, "maxFiles", "max_files");
-            Integer contextLines = JsonUtils.intOrNull(a, "contextLines", "context_lines");
+            String fileGlob = textOrFallback(a, "file_glob", "fileGlob");
+            Integer maxMatches = intOrNull(a, "maxMatches", "max_matches");
+            Integer maxFiles = intOrNull(a, "maxFiles", "max_files");
+            Integer contextLines = intOrNull(a, "contextLines", "context_lines");
             return head + "|root=" + StringUtils.truncate(root == null ? "" : root.trim(), 200)
                     + "|file_glob=" + StringUtils.truncate(fileGlob == null ? "" : fileGlob.trim(), 200)
                     + "|maxMatches=" + String.valueOf(maxMatches)
@@ -2319,8 +2483,8 @@ public class JsonReActAgent {
         }
         if ("READ_FILE".equals(t)) {
             String path = a.path("path").asText("");
-            Integer startLine = JsonUtils.intOrNull(a, "startLine", "start_line");
-            Integer endLine = JsonUtils.intOrNull(a, "endLine", "end_line");
+            Integer startLine = intOrNull(a, "startLine", "start_line");
+            Integer endLine = intOrNull(a, "endLine", "end_line");
             String range = "";
             if (startLine == null && endLine == null) {
                 range = a.path("range").asText("");

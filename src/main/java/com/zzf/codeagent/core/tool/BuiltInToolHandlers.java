@@ -1,4 +1,4 @@
-package com.zzf.codeagent.core.tool;
+﻿package com.zzf.codeagent.core.tool;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -20,7 +20,6 @@ import com.zzf.codeagent.core.tool.ToolProtocol.ToolEnvelope;
 import com.zzf.codeagent.core.tool.ToolProtocol.ToolResult;
 import com.zzf.codeagent.core.tool.ToolProtocol.ToolSpec;
 import com.zzf.codeagent.core.tools.FileSystemToolService;
-import com.zzf.codeagent.core.util.JsonUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -210,8 +209,8 @@ public final class BuiltInToolHandlers {
             long t0 = System.nanoTime();
             String path = pathArg(env.getArgs());
             String glob = env.getArgs().path("glob").asText("");
-            Integer maxResults = JsonUtils.intOrNull(env.getArgs(), "maxResults", "max_results");
-            Integer maxDepth = JsonUtils.intOrNull(env.getArgs(), "maxDepth", "max_depth");
+            Integer maxResults = intOrNull(env.getArgs(), "maxResults", "max_results");
+            Integer maxDepth = intOrNull(env.getArgs(), "maxDepth", "max_depth");
             logger.info("tool.call traceId={} tool={} path={} glob={} maxResults={} maxDepth={}", ctx.traceId, env.getTool(), truncate(path, 200), truncate(glob, 200), maxResults, maxDepth);
             FileSystemToolService.ListFilesResult r = ctx.fs.listFiles(path, glob, maxResults, maxDepth);
             logger.info("tool.result traceId={} tool={} files={} truncated={} error={}", ctx.traceId, env.getTool(), r.files == null ? 0 : r.files.size(), r.truncated, r.error);
@@ -265,10 +264,10 @@ public final class BuiltInToolHandlers {
             long t0 = System.nanoTime();
             String pattern = env.getArgs().path("pattern").asText("");
             String root = env.getArgs().path("root").asText("");
-            String fileGlob = JsonUtils.textOrFallback(env.getArgs(), "file_glob", "fileGlob");
-            Integer maxMatches = JsonUtils.intOrNull(env.getArgs(), "maxMatches", "max_matches");
-            Integer maxFiles = JsonUtils.intOrNull(env.getArgs(), "maxFiles", "max_files");
-            Integer contextLines = JsonUtils.intOrNull(env.getArgs(), "contextLines", "context_lines");
+            String fileGlob = textOrFallback(env.getArgs(), "file_glob", "fileGlob");
+            Integer maxMatches = intOrNull(env.getArgs(), "maxMatches", "max_matches");
+            Integer maxFiles = intOrNull(env.getArgs(), "maxFiles", "max_files");
+            Integer contextLines = intOrNull(env.getArgs(), "contextLines", "context_lines");
             logger.info("tool.call traceId={} tool={} root={} fileGlob={} maxMatches={} maxFiles={} pattern={}", ctx.traceId, env.getTool(), truncate(root, 200), truncate(fileGlob, 200), maxMatches, maxFiles, truncate(pattern, 200));
             FileSystemToolService.GrepResult r = ctx.fs.grep(pattern, root, fileGlob, maxMatches, maxFiles, contextLines);
             logger.info("tool.result traceId={} tool={} matches={} truncated={} error={}", ctx.traceId, env.getTool(), r.matches == null ? 0 : r.matches.size(), r.truncated, r.error);
@@ -317,9 +316,9 @@ public final class BuiltInToolHandlers {
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
             String path = pathArg(env.getArgs());
-            Integer start = JsonUtils.intOrNull(env.getArgs(), "startLine", "start_line");
-            Integer end = JsonUtils.intOrNull(env.getArgs(), "endLine", "end_line");
-            Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
+            Integer start = intOrNull(env.getArgs(), "startLine", "start_line");
+            Integer end = intOrNull(env.getArgs(), "endLine", "end_line");
+            Integer maxChars = intOrNull(env.getArgs(), "maxChars", "max_chars");
             if (start == null && end == null) {
                 String range = env.getArgs().path("range").asText("");
                 if (range != null && !range.trim().isEmpty()) {
@@ -399,9 +398,9 @@ public final class BuiltInToolHandlers {
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
             String path = pathArg(env.getArgs());
-            Integer line = JsonUtils.intOrNull(env.getArgs(), "lineNumber", "line_number");
-            Integer window = JsonUtils.intOrNull(env.getArgs(), "window", "window");
-            Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
+            Integer line = intOrNull(env.getArgs(), "lineNumber", "line_number");
+            Integer window = intOrNull(env.getArgs(), "window", "window");
+            Integer maxChars = intOrNull(env.getArgs(), "maxChars", "max_chars");
             if (path.isEmpty()) {
                 return ToolResult.error(env.getTool(), env.getVersion(), "path_required")
                         .withHint("OPEN_FILE_VIEW requires a non-empty path argument.")
@@ -460,9 +459,9 @@ public final class BuiltInToolHandlers {
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
             String direction = env.getArgs().path("direction").asText("down");
-            Integer lines = JsonUtils.intOrNull(env.getArgs(), "lines", "lines");
-            Integer overlapArg = JsonUtils.intOrNull(env.getArgs(), "overlap", "overlap");
-            Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
+            Integer lines = intOrNull(env.getArgs(), "lines", "lines");
+            Integer overlapArg = intOrNull(env.getArgs(), "overlap", "overlap");
+            Integer maxChars = intOrNull(env.getArgs(), "maxChars", "max_chars");
             String path = pathArg(env.getArgs());
             EventStream stream = ctx.eventStream;
             ObjectNode ws = stream == null ? null : stream.getStore().getWorkspaceState();
@@ -539,9 +538,9 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            Integer line = JsonUtils.intOrNull(env.getArgs(), "lineNumber", "line_number");
-            Integer window = JsonUtils.intOrNull(env.getArgs(), "window", "window");
-            Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
+            Integer line = intOrNull(env.getArgs(), "lineNumber", "line_number");
+            Integer window = intOrNull(env.getArgs(), "window", "window");
+            Integer maxChars = intOrNull(env.getArgs(), "maxChars", "max_chars");
             String path = pathArg(env.getArgs());
             EventStream stream = ctx.eventStream;
             ObjectNode ws = stream == null ? null : stream.getStore().getWorkspaceState();
@@ -602,8 +601,8 @@ public final class BuiltInToolHandlers {
             long t0 = System.nanoTime();
             String pattern = env.getArgs().path("pattern").asText("");
             String path = pathArg(env.getArgs());
-            Integer maxMatches = JsonUtils.intOrNull(env.getArgs(), "maxMatches", "max_matches");
-            Integer maxLines = JsonUtils.intOrNull(env.getArgs(), "maxLines", "max_lines");
+            Integer maxMatches = intOrNull(env.getArgs(), "maxMatches", "max_matches");
+            Integer maxLines = intOrNull(env.getArgs(), "maxLines", "max_lines");
             EventStream stream = ctx.eventStream;
             ObjectNode ws = stream == null ? null : stream.getStore().getWorkspaceState();
             String activeFile = path == null || path.trim().isEmpty() ? (ws == null ? "" : ws.path("activeFile").asText("")) : path;
@@ -658,9 +657,9 @@ public final class BuiltInToolHandlers {
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
             String path = pathArg(env.getArgs());
-            Integer maxDepth = JsonUtils.intOrNull(env.getArgs(), "maxDepth", "max_depth");
-            Integer maxFiles = JsonUtils.intOrNull(env.getArgs(), "maxFiles", "max_files");
-            Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
+            Integer maxDepth = intOrNull(env.getArgs(), "maxDepth", "max_depth");
+            Integer maxFiles = intOrNull(env.getArgs(), "maxFiles", "max_files");
+            Integer maxChars = intOrNull(env.getArgs(), "maxChars", "max_chars");
             EventStream stream = ctx.eventStream;
             ObjectNode ws = stream == null ? null : stream.getStore().getWorkspaceState();
             String activeFile = ws == null ? "" : ws.path("activeFile").asText("");
@@ -714,9 +713,9 @@ public final class BuiltInToolHandlers {
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
             String path = pathArg(env.getArgs());
-            Integer maxDepth = JsonUtils.intOrNull(env.getArgs(), "maxDepth", "max_depth");
-            Integer maxFiles = JsonUtils.intOrNull(env.getArgs(), "maxFiles", "max_files");
-            Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
+            Integer maxDepth = intOrNull(env.getArgs(), "maxDepth", "max_depth");
+            Integer maxFiles = intOrNull(env.getArgs(), "maxFiles", "max_files");
+            Integer maxChars = intOrNull(env.getArgs(), "maxChars", "max_chars");
             logger.info("tool.call traceId={} tool={} path={} maxDepth={} maxFiles={}", ctx.traceId, env.getTool(), truncate(path, 200), maxDepth, maxFiles);
             FileSystemToolService.RepoMapResult r = ctx.fs.structureMap(path, maxDepth, maxFiles, maxChars);
             logger.info("tool.result traceId={} tool={} truncated={} error={}", ctx.traceId, env.getTool(), r.truncated, r.error);
@@ -1003,9 +1002,9 @@ public final class BuiltInToolHandlers {
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
             String path = pathArg(env.getArgs());
-            Integer lineNumber = JsonUtils.intOrNull(env.getArgs(), "lineNumber", "line_number");
+            Integer lineNumber = intOrNull(env.getArgs(), "lineNumber", "line_number");
             if (lineNumber == null) {
-                lineNumber = JsonUtils.intOrNull(env.getArgs(), "insert_line", "insertLine");
+                lineNumber = intOrNull(env.getArgs(), "insert_line", "insertLine");
             }
             JsonNode contentNode = env.getArgs().get("content");
             JsonNode contentAlt = env.getArgs().get("new_str");
@@ -1169,10 +1168,10 @@ public final class BuiltInToolHandlers {
             String newStr = newStrNode == null || newStrNode.isNull()
                     ? (newStrAlt == null || newStrAlt.isNull() ? null : newStrAlt.asText(""))
                     : newStrNode.asText("");
-            Integer insertLine = JsonUtils.intOrNull(env.getArgs(), "insert_line", "insertLine");
-            Integer startLine = JsonUtils.intOrNull(env.getArgs(), "startLine", "start_line");
-            Integer window = JsonUtils.intOrNull(env.getArgs(), "window", "view_window");
-            Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
+            Integer insertLine = intOrNull(env.getArgs(), "insert_line", "insertLine");
+            Integer startLine = intOrNull(env.getArgs(), "startLine", "start_line");
+            Integer window = intOrNull(env.getArgs(), "window", "view_window");
+            Integer maxChars = intOrNull(env.getArgs(), "maxChars", "max_chars");
             JsonNode dryRunNode = env.getArgs().path("dry_run");
             boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? false : dryRunNode.asBoolean();
             logger.info("tool.call traceId={} tool={} cmd={} path={} dryRun={}", ctx.traceId, env.getTool(), command, truncate(path, 200), dryRun);
@@ -1392,7 +1391,7 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String diff = JsonUtils.textOrFallback(env.getArgs(), "diff", "patch");
+            String diff = textOrFallback(env.getArgs(), "diff", "patch");
             String path = pathArg(env.getArgs());
             Boolean preview = env.getArgs().path("preview").isMissingNode() ? null : env.getArgs().path("preview").asBoolean();
             // Default dry_run to false (apply immediately) unless explicitly set to true
@@ -1488,8 +1487,8 @@ public final class BuiltInToolHandlers {
             String glob = env.getArgs().path("glob").asText("");
             String oldStr = env.getArgs().path("old_str").asText("");
             String newStr = env.getArgs().path("new_str").asText("");
-            Integer maxFiles = JsonUtils.intOrNull(env.getArgs(), "maxFiles", "max_files");
-            Integer maxReplacements = JsonUtils.intOrNull(env.getArgs(), "maxReplacements", "max_replacements");
+            Integer maxFiles = intOrNull(env.getArgs(), "maxFiles", "max_files");
+            Integer maxReplacements = intOrNull(env.getArgs(), "maxReplacements", "max_replacements");
             Boolean preview = env.getArgs().path("preview").isMissingNode() ? null : env.getArgs().path("preview").asBoolean();
             // Default dry_run to false (apply immediately) unless explicitly set to true
             JsonNode dryRunNode = env.getArgs().path("dry_run");
@@ -1553,11 +1552,11 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String command = JsonUtils.textOrFallback(env.getArgs(), "command", "cmd").trim();
-            String cwd = JsonUtils.textOrFallback(env.getArgs(), "cwd", "workdir");
-            Integer timeoutMs = JsonUtils.intOrNull(env.getArgs(), "timeoutMs", "timeout_ms");
-            String modeRaw = JsonUtils.textOrFallback(env.getArgs(), "mode", "executionMode");
-            String runtimeRaw = JsonUtils.textOrFallback(env.getArgs(), "runtimeType", "runtime_type");
+            String command = textOrFallback(env.getArgs(), "command", "cmd").trim();
+            String cwd = textOrFallback(env.getArgs(), "cwd", "workdir");
+            Integer timeoutMs = intOrNull(env.getArgs(), "timeoutMs", "timeout_ms");
+            String modeRaw = textOrFallback(env.getArgs(), "mode", "executionMode");
+            String runtimeRaw = textOrFallback(env.getArgs(), "runtimeType", "runtime_type");
             logger.info("tool.call traceId={} tool={} cmdLen={} cwd={}", ctx.traceId, env.getTool(), command.length(), truncate(cwd, 200));
             if (command.isEmpty()) {
                 return ToolResult.error(env.getTool(), env.getVersion(), "command_is_blank")
@@ -2156,7 +2155,7 @@ public final class BuiltInToolHandlers {
         if (args == null) {
             return "";
         }
-        return JsonUtils.textOrFallback(args, java.util.Arrays.asList("path", "filePath", "file_path", "filepath", "target"));
+        return textOrFallback(args, java.util.Arrays.asList("path", "filePath", "file_path", "filepath", "target"));
     }
 
     private static String truncate(String s, int maxChars) {
@@ -2311,13 +2310,13 @@ public final class BuiltInToolHandlers {
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
             String path = pathArg(env.getArgs());
-            Integer startLine = JsonUtils.intOrNull(env.getArgs(), "startLine", "start_line");
-            Integer endLine = JsonUtils.intOrNull(env.getArgs(), "endLine", "end_line");
+            Integer startLine = intOrNull(env.getArgs(), "startLine", "start_line");
+            Integer endLine = intOrNull(env.getArgs(), "endLine", "end_line");
             if (startLine == null) {
-                startLine = JsonUtils.intOrNull(env.getArgs(), "start", "from");
+                startLine = intOrNull(env.getArgs(), "start", "from");
             }
             if (endLine == null) {
-                endLine = JsonUtils.intOrNull(env.getArgs(), "end", "to");
+                endLine = intOrNull(env.getArgs(), "end", "to");
             }
             String range = env.getArgs().path("range").asText("");
             Integer[] parsedRange = parseLineRange(range);

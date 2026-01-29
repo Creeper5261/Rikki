@@ -30,6 +30,32 @@ codeagent:
     docker-image: ${CODEAGENT_RUNTIME_DOCKER_IMAGE:ubuntu:22.04}
     docker-workdir: ${CODEAGENT_RUNTIME_DOCKER_WORKDIR:/workspace}
     timeout-ms: ${CODEAGENT_RUNTIME_TIMEOUT_MS:120000}
+  agent:
+    max-turns: ${AGENT_MAX_TURNS:30}
+    max-tool-calls: ${AGENT_MAX_TOOL_CALLS:18}
+    max-consecutive-tool-errors: ${AGENT_MAX_CONSECUTIVE_TOOL_ERRORS:3}
+    tool-backoff-threshold: ${AGENT_TOOL_BACKOFF_THRESHOLD:2}
+    max-obs-chars: ${AGENT_MAX_OBS_CHARS:4000}
+    max-prompt-chars: ${AGENT_MAX_PROMPT_CHARS:24000}
+    max-goal-chars: ${AGENT_MAX_GOAL_CHARS:4000}
+    max-chat-lines: ${AGENT_MAX_CHAT_LINES:8}
+    max-chat-line-chars: ${AGENT_MAX_CHAT_LINE_CHARS:600}
+    max-chat-block-chars: ${AGENT_MAX_CHAT_BLOCK_CHARS:4000}
+    max-facts: ${AGENT_MAX_FACTS:120}
+    max-facts-block-chars: ${AGENT_MAX_FACTS_BLOCK_CHARS:6000}
+    max-pinned-chars: ${AGENT_MAX_PINNED_CHARS:4000}
+    max-ide-context-chars: ${AGENT_MAX_IDE_CONTEXT_CHARS:6000}
+    max-history-lines: ${AGENT_MAX_HISTORY_LINES:6}
+    max-claude-memory-chars: ${AGENT_MAX_CLAUDE_MEMORY_CHARS:6000}
+    max-long-term-memory-chars: ${AGENT_MAX_LONG_TERM_MEMORY_CHARS:8000}
+    max-skill-content-chars: ${AGENT_MAX_SKILL_CONTENT_CHARS:2500}
+    max-auto-skills: ${AGENT_MAX_AUTO_SKILLS:2}
+    read-file-preview-chars: ${AGENT_READ_FILE_PREVIEW_CHARS:1200}
+    thought-chunk-size: ${AGENT_THOUGHT_CHUNK_SIZE:160}
+    system-header-resource: ${AGENT_SYSTEM_HEADER_RESOURCE:prompt/codex_header.txt}
+    skill-system-prompt-resource: ${AGENT_SKILL_SYSTEM_PROMPT_RESOURCE:prompt/skill_system_prompt.txt}
+    check-new-topic-prompt-resource: ${AGENT_CHECK_NEW_TOPIC_PROMPT_RESOURCE:prompt/check_new_topic_prompt.txt}
+    ide-opened-file-prompt-resource: ${AGENT_IDE_OPENED_FILE_PROMPT_RESOURCE:prompt/ide_opened_file_prompt.txt}
   redis:
     host: ${REDIS_HOST:localhost}
     port: ${REDIS_PORT:6379}
