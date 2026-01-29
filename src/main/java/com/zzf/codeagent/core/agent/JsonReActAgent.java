@@ -820,7 +820,7 @@ public class JsonReActAgent {
             "To use a skill, you must first load it using LOAD_SKILL. \n" +
             "Once loaded, the skill will provide detailed instructions and context. \n" +
             "Below are the currently available skills:\n";
-            skillSystemPromptCache = loadResource(config.getSkillSystemPromptResource(), defaultPrompt, traceId);
+            skillSystemPromptCache = loadResource(config.getSkillsResource(), defaultPrompt, traceId);
         }
         return skillSystemPromptCache;
     }
@@ -828,7 +828,7 @@ public class JsonReActAgent {
     private String getCheckNewTopicPrompt() {
         if (checkNewTopicPromptCache == null) {
             String defaultPrompt = "Analyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title that captures the new topic. Format your response as a JSON object with two fields: 'isNewTopic' (boolean) and 'title' (string, or null if isNewTopic is false). Only include these fields, no other text.";
-            checkNewTopicPromptCache = loadResource(config.getCheckNewTopicPromptResource(), defaultPrompt, traceId);
+            checkNewTopicPromptCache = loadResource(config.getCheckNewTopicResource(), defaultPrompt, traceId);
         }
         return checkNewTopicPromptCache;
     }
@@ -836,7 +836,7 @@ public class JsonReActAgent {
     private String getIdeOpenedFilePrompt() {
         if (ideOpenedFilePromptCache == null) {
             String defaultPrompt = "The user opened the file $filename in the IDE. This may or may not be related to the current task.";
-            ideOpenedFilePromptCache = loadResource(config.getIdeOpenedFilePromptResource(), defaultPrompt, traceId);
+            ideOpenedFilePromptCache = loadResource(config.getIdeOpenedFileResource(), defaultPrompt, traceId);
         }
         return ideOpenedFilePromptCache;
     }
@@ -1765,6 +1765,25 @@ public class JsonReActAgent {
     }
 
     private String buildToolProtocolPrompt() {
+        String resourcePath = config.getToolProtocolResource();
+        String protocol = loadResource(resourcePath, "", traceId);
+        
+        if (protocol.isEmpty()) {
+            // Fallback to hardcoded if resource fails
+            return buildDefaultToolProtocolPrompt();
+        }
+
+        String toolList = buildToolListLine();
+        String toolSpecs = buildToolSpecLine();
+        String runCommandNote = isRunCommandEnabled() ? "" : "Note: RUN_COMMAND is currently disabled for safety.";
+
+        return protocol
+            .replace("$TOOL_LIST", toolList)
+            .replace("$TOOL_SPECS", toolSpecs)
+            .replace("$RUN_COMMAND_NOTE", runCommandNote);
+    }
+
+    private String buildDefaultToolProtocolPrompt() {
         StringBuilder sb = new StringBuilder();
         // SOTA Optimization: Condensed instructions, strict JSON enforcement, hidden thought.
         sb.append("Role: Expert Software Engineer. Goal: Solve user task using available tools. ");
@@ -1848,7 +1867,9 @@ public class JsonReActAgent {
         }
 
         StringBuilder sb = new StringBuilder();
-        sb.append("\n\nAuto-loaded skills (use these instructions with priority if relevant):\n");
+        String header = loadResource(config.getAutoSkillResource(), "\n\nAuto-loaded skills (use these instructions with priority if relevant):\n", traceId);
+        sb.append(header);
+        
         autoSkillsLoaded.clear();
         for (String name : selected) {
             Skill s = skillMap.get(name.toLowerCase());
@@ -2418,15 +2439,36 @@ public class JsonReActAgent {
             }
         }
         content = content.trim();
-        // Find first '{' and last '}'
+        // Find first '{'
         int firstBrace = content.indexOf('{');
-        int lastBrace = content.lastIndexOf('}');
-        if (firstBrace >= 0 && lastBrace > firstBrace) {
-            content = content.substring(firstBrace, lastBrace + 1);
+        if (firstBrace < 0) {
+             throw new IllegalArgumentException("No JSON object found (missing '{')");
         }
-        // Handle fuzzy JSON (e.g. missing quotes on keys) is done by Jackson if configured, 
-        // but here we rely on clean extraction.
-        return mapper.readTree(content);
+        
+        // Find last '}'
+        int lastBrace = content.lastIndexOf('}');
+        if (lastBrace > firstBrace) {
+            content = content.substring(firstBrace, lastBrace + 1);
+        } else {
+            // Missing closing brace? Try to parse from first brace to end
+            content = content.substring(firstBrace);
+        }
+
+        try {
+            return mapper.readTree(content);
+        } catch (Exception e) {
+            // Phase 2: Fuzzy Repair for missing closing braces
+            // Try appending '}' up to 2 times
+            String repaired = content;
+            for (int i = 0; i < 2; i++) {
+                repaired += "}";
+                try {
+                    return mapper.readTree(repaired);
+                } catch (Exception ignored) {
+                }
+            }
+            throw e;
+        }
     }
 
     private static Integer intOrNull(JsonNode node, String... keys) {

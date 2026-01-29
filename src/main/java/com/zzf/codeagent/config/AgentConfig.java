@@ -27,7 +27,12 @@ public class AgentConfig {
     private int maxAutoSkills = 2;
     private int readFilePreviewChars = 1200;
     private int thoughtChunkSize = 160;
-    private String systemHeaderResource = "prompt/codex_header.txt";
+    private String systemHeaderResource = "prompts/codex_header.txt";
+    private String toolProtocolResource = "prompts/tool_protocol.txt";
+    private String skillsResource = "prompts/skill_system.txt";
+    private String autoSkillResource = "prompts/auto_skill_header.txt";
+    private String checkNewTopicResource = "prompts/check_new_topic.txt";
+    private String ideOpenedFileResource = "prompts/ide_opened_file.txt";
 
     public int getMaxTurns() {
         return maxTurns;
@@ -205,27 +210,43 @@ public class AgentConfig {
         this.systemHeaderResource = systemHeaderResource;
     }
 
-    public String getSkillSystemPromptResource() {
-        return skillSystemPromptResource;
+    public String getToolProtocolResource() {
+        return toolProtocolResource;
     }
 
-    public void setSkillSystemPromptResource(String skillSystemPromptResource) {
-        this.skillSystemPromptResource = skillSystemPromptResource;
+    public void setToolProtocolResource(String toolProtocolResource) {
+        this.toolProtocolResource = toolProtocolResource;
     }
 
-    public String getCheckNewTopicPromptResource() {
-        return checkNewTopicPromptResource;
+    public String getSkillsResource() {
+        return skillsResource;
     }
 
-    public void setCheckNewTopicPromptResource(String checkNewTopicPromptResource) {
-        this.checkNewTopicPromptResource = checkNewTopicPromptResource;
+    public void setSkillsResource(String skillsResource) {
+        this.skillsResource = skillsResource;
     }
 
-    public String getIdeOpenedFilePromptResource() {
-        return ideOpenedFilePromptResource;
+    public String getAutoSkillResource() {
+        return autoSkillResource;
     }
 
-    public void setIdeOpenedFilePromptResource(String ideOpenedFilePromptResource) {
-        this.ideOpenedFilePromptResource = ideOpenedFilePromptResource;
+    public void setAutoSkillResource(String autoSkillResource) {
+        this.autoSkillResource = autoSkillResource;
+    }
+
+    public String getCheckNewTopicResource() {
+        return checkNewTopicResource;
+    }
+
+    public void setCheckNewTopicResource(String checkNewTopicResource) {
+        this.checkNewTopicResource = checkNewTopicResource;
+    }
+
+    public String getIdeOpenedFileResource() {
+        return ideOpenedFileResource;
+    }
+
+    public void setIdeOpenedFileResource(String ideOpenedFileResource) {
+        this.ideOpenedFileResource = ideOpenedFileResource;
     }
 }
