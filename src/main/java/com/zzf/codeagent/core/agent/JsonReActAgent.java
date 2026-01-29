@@ -94,6 +94,8 @@ public class JsonReActAgent {
     private final EventStream eventStream;
     private final RepoStructureService repoStructureService;
     private String repoMapCache;
+    private final List<String> runLoopToolHistory = new ArrayList<>();
+    private String systemHint;
     
     private InMemoryCodeSearchService memory;
     private boolean memoryIndexed;
@@ -236,6 +238,8 @@ public class JsonReActAgent {
         ensureLongTermMemoryLoaded();
         ensureAgentsMdLoaded();
         this.planState = PlanExecutionState.fromGoal(goal);
+        this.runLoopToolHistory.clear();
+        this.systemHint = null;
         logger.info("agent.run.start traceId={} goalChars={} workspaceRoot={} ideContextPath={} chatHistorySize={}", traceId, goal == null ? 0 : goal.length(), workspaceRoot, ideContextPath, chatHistory.size());
         emitAgentStepEvent("run_start", goal, null, null);
         ObjectNode initState = mapper.createObjectNode();
@@ -363,7 +367,21 @@ public class JsonReActAgent {
             signatureCounts.put(sig, seen == null ? 1 : (seen.intValue() + 1));
             int sigCount = signatureCounts.get(sig).intValue();
             String preCalculatedObs = null;
-            boolean isLoop = (sameToolSignatureCount >= 1 || sigCount >= 2);
+            
+            // SOTA Phase 2: Sliding Window Loop Detection
+            runLoopToolHistory.add(sig);
+            boolean isSlidingLoop = false;
+            if (runLoopToolHistory.size() >= 4) {
+                 int n = runLoopToolHistory.size();
+                 // Check A-B-A-B pattern
+                 if (runLoopToolHistory.get(n-1).equals(runLoopToolHistory.get(n-3)) &&
+                     runLoopToolHistory.get(n-2).equals(runLoopToolHistory.get(n-4))) {
+                     isSlidingLoop = true;
+                     logger.warn("agent.loop_detection.sliding_window traceId={} pattern={}->{}", traceId, runLoopToolHistory.get(n-2), runLoopToolHistory.get(n-1));
+                 }
+            }
+
+            boolean isLoop = (sameToolSignatureCount >= 1 || sigCount >= 2 || isSlidingLoop);
 
             // SOTA: Semantic Loop Detection for READ_FILE
             // If the content is different (e.g. paging), it's NOT a loop even if signature (path) is same.
@@ -433,6 +451,11 @@ public class JsonReActAgent {
                     return forced;
                 }
                 continue;
+            }
+
+            // SOTA Phase 3: Dynamic Strategy - Clear hint if loop is resolved
+            if (this.systemHint != null) {
+                this.systemHint = null;
             }
 
             if (shouldBackoffTool(tool)) {
@@ -594,10 +617,10 @@ public class JsonReActAgent {
             
             // Append the forcing instruction
             StringBuilder sb = new StringBuilder(basePrompt);
-            sb.append("\n\nSYSTEM_INSTRUCTION: Provide a final answer now. ");
+            sb.append("\n\nSYSTEM_INSTRUCTION: You have exhausted your step budget. ");
+            sb.append("Please summarize what you have verified so far and explicitly state what is still unknown. ");
+            sb.append("Do NOT guess. If you cannot complete the task, admit it. ");
             sb.append("Do not mention tools, tool limits, system errors, or internal protocol. ");
-            sb.append("Based on the 'Facts' and 'History' provided above, synthesize a Final Answer to the User Goal. ");
-            sb.append("If facts are missing, admit what you don't know rather than hallucinating. ");
             sb.append("Output strictly in JSON format: {\"type\":\"final\", \"finalAnswer\":\"...\"}");
 
             return model.chat(sb.toString());
@@ -663,6 +686,14 @@ public class JsonReActAgent {
             } else {
                 dynamicContext.append("\nIDE structure context provided (see Static Context above), ready to use.");
             }
+        }
+        
+        if (systemHint != null && !systemHint.isEmpty()) {
+            dynamicContext.append("\n\n[SYSTEM HINT]: ").append(systemHint).append("\n");
+            // Do not clear it here; let the agent act on it. It will be cleared/updated if loop persists or resolved.
+            // Actually, if we don't clear it, it stays forever.
+            // But loop detection runs every turn. If loop is gone, systemHint should be cleared.
+            // We'll handle clearing in the loop logic.
         }
 
         String factsBlock = formatKnownFacts();
