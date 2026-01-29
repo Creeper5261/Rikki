@@ -18,24 +18,39 @@ import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.editor.Document;
 import com.intellij.ui.EditorNotificationPanel;
 import com.zzf.codeagent.core.tool.PendingChangesManager;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
 import java.awt.*;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.concurrent.CompletableFuture;
 
 public class DiffService {
     private final Project project;
     private final Map<FileEditor, EditorNotificationPanel> notificationPanels = Collections.synchronizedMap(new WeakHashMap<>());
+    private final HttpClient http;
+    private final ObjectMapper mapper;
+    private final String pendingEndpoint;
 
-    public DiffService(Project project) {
+    public DiffService(Project project, HttpClient http, ObjectMapper mapper) {
         this.project = project;
+        this.http = http != null ? http : HttpClient.newHttpClient();
+        this.mapper = mapper != null ? mapper : new ObjectMapper();
+        this.pendingEndpoint = resolvePendingEndpoint();
     }
 
     public void applyChange(PendingChangesManager.PendingChange change) {
@@ -50,25 +65,44 @@ public class DiffService {
     }
 
     public void confirmChange(PendingChangesManager.PendingChange change) {
+        confirmChange(change, null, null);
+    }
+
+    public void confirmChange(PendingChangesManager.PendingChange change, Runnable onSuccess, Runnable onFailure) {
         ApplicationManager.getApplication().invokeLater(() -> {
             if (project.isDisposed()) return;
             try {
-                applyPendingChange(change, true);
+                if (isPendingWorkflowEnabled()) {
+                    resolvePendingChange(change, false, onSuccess, onFailure);
+                } else {
+                    applyPendingChange(change, true);
+                    if (onSuccess != null) onSuccess.run();
+                }
             } catch (Exception e) {
                 e.printStackTrace();
+                if (onFailure != null) onFailure.run();
             }
         });
     }
 
     public void revertChange(PendingChangesManager.PendingChange change) {
+        revertChange(change, null, null);
+    }
+
+    public void revertChange(PendingChangesManager.PendingChange change, Runnable onSuccess, Runnable onFailure) {
         ApplicationManager.getApplication().invokeLater(() -> {
             if (project.isDisposed()) return;
             try {
-                // Reject path: do not apply changes to real files.
-                VirtualFile file = findVirtualFile(change.path);
-                if (file != null) removeNotification(file);
+                if (isPendingWorkflowEnabled()) {
+                    resolvePendingChange(change, true, onSuccess, onFailure);
+                } else {
+                    VirtualFile file = findVirtualFile(change.path, change.workspaceRoot);
+                    if (file != null) removeNotification(file);
+                    if (onSuccess != null) onSuccess.run();
+                }
             } catch (Exception e) {
                 e.printStackTrace();
+                if (onFailure != null) onFailure.run();
             }
         });
     }
@@ -77,7 +111,7 @@ public class DiffService {
         ApplicationManager.getApplication().invokeLater(() -> {
             if (project.isDisposed()) return;
             try {
-                VirtualFile file = findVirtualFile(change.path);
+                VirtualFile file = findVirtualFile(change.path, change.workspaceRoot);
                 if (file != null) {
                     FileEditorManager.getInstance(project).openFile(file, true);
                 }
@@ -87,13 +121,27 @@ public class DiffService {
         });
     }
 
-    private VirtualFile findVirtualFile(String pathStr) {
-        VirtualFile virtualFile = LocalFileSystem.getInstance().findFileByPath(pathStr);
-        if (virtualFile == null && project.getBasePath() != null) {
-            Path absPath = java.nio.file.Paths.get(project.getBasePath(), pathStr);
-            virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByPath(absPath.toString());
+    private VirtualFile findVirtualFile(String pathStr, String workspaceRoot) {
+        Path absPath = resolveAbsolutePath(pathStr, workspaceRoot);
+        if (absPath == null) {
+            return null;
         }
-        return virtualFile;
+        return LocalFileSystem.getInstance().refreshAndFindFileByPath(absPath.toString());
+    }
+
+    private Path resolveAbsolutePath(String pathStr, String workspaceRoot) {
+        if (pathStr == null || pathStr.isBlank()) {
+            return null;
+        }
+        Path p = Paths.get(pathStr);
+        if (p.isAbsolute()) {
+            return p;
+        }
+        String base = (workspaceRoot == null || workspaceRoot.isBlank()) ? project.getBasePath() : workspaceRoot;
+        if (base == null || base.isBlank()) {
+            return p.toAbsolutePath();
+        }
+        return Paths.get(base, pathStr);
     }
 
     private void removeNotification(VirtualFile file) {
@@ -113,11 +161,7 @@ public class DiffService {
             try {
                 // 1. Resolve File
                 String pathStr = change.path;
-                VirtualFile virtualFile = LocalFileSystem.getInstance().findFileByPath(pathStr);
-                if (virtualFile == null && project.getBasePath() != null) {
-                     Path absPath = java.nio.file.Paths.get(project.getBasePath(), pathStr);
-                     virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByPath(absPath.toString());
-                }
+                VirtualFile virtualFile = findVirtualFile(pathStr, change.workspaceRoot);
 
                 // 2. Show Notification in Editor (do not apply until user confirms)
                 if (virtualFile != null) {
@@ -141,16 +185,13 @@ public class DiffService {
                         // Accept: Apply changes now
                         panel.createActionLabel("Accept", () -> {
                             if (project.isDisposed()) return;
-                            applyPendingChange(change, false);
-                            if (onAccept != null) onAccept.run();
+                            confirmChange(change, onAccept, null);
                         });
                         
                         // Reject: Clear notification only
                         panel.createActionLabel("Reject", () -> {
                             if (project.isDisposed()) return;
-                            manager.removeTopComponent(editor, panel);
-                            notificationPanels.remove(editor);
-                            if (onReject != null) onReject.run();
+                            revertChange(change, onReject, null);
                         });
                         
                         // Show Diff: Open the Diff Window for detailed comparison
@@ -172,14 +213,71 @@ public class DiffService {
         });
     }
 
+    private void resolvePendingChange(PendingChangesManager.PendingChange change, boolean reject, Runnable onSuccess, Runnable onFailure) {
+        if (change == null) {
+            if (onFailure != null) onFailure.run();
+            return;
+        }
+        CompletableFuture.runAsync(() -> {
+            try {
+                String wsRoot = change.workspaceRoot == null || change.workspaceRoot.isBlank()
+                        ? (project.getBasePath() == null ? "" : project.getBasePath())
+                        : change.workspaceRoot;
+                Map<String, Object> payload = Map.of(
+                        "traceId", change.sessionId == null ? "" : change.sessionId,
+                        "workspaceRoot", wsRoot,
+                        "path", change.path == null ? "" : change.path,
+                        "reject", reject
+                );
+                String body = mapper.writeValueAsString(payload);
+                HttpRequest req = HttpRequest.newBuilder(URI.create(pendingEndpoint))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                        .build();
+                HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                boolean ok = resp.statusCode() >= 200 && resp.statusCode() < 300;
+                if (ok) {
+                    try {
+                        JsonNode root = mapper.readTree(resp.body());
+                        String error = root.path("error").asText("");
+                        String status = root.path("status").asText("");
+                        if (!error.isEmpty() || ("error".equalsIgnoreCase(status))) {
+                            ok = false;
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+                boolean finalOk = ok;
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (!finalOk) {
+                        if (!project.isDisposed()) {
+                            Messages.showErrorDialog(project, "Failed to apply pending change via backend.", "Pending Change");
+                        }
+                        if (onFailure != null) onFailure.run();
+                        return;
+                    }
+                    VirtualFile file = findVirtualFile(change.path, change.workspaceRoot);
+                    if (file != null) {
+                        file.refresh(false, false);
+                        removeNotification(file);
+                    }
+                    if (onSuccess != null) onSuccess.run();
+                });
+            } catch (Exception e) {
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (!project.isDisposed()) {
+                        Messages.showErrorDialog(project, "Failed to contact backend: " + e.getMessage(), "Pending Change");
+                    }
+                    if (onFailure != null) onFailure.run();
+                });
+            }
+        });
+    }
+
     private void applyPendingChange(PendingChangesManager.PendingChange change, boolean openAfter) {
         if (project.isDisposed() || change == null) return;
         String pathStr = change.path;
-        VirtualFile virtualFile = LocalFileSystem.getInstance().findFileByPath(pathStr);
-        if (virtualFile == null && project.getBasePath() != null) {
-            Path absPath = java.nio.file.Paths.get(project.getBasePath(), pathStr);
-            virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByPath(absPath.toString());
-        }
+        VirtualFile virtualFile = findVirtualFile(pathStr, change.workspaceRoot);
 
         if ("DELETE".equalsIgnoreCase(change.type)) {
             if (virtualFile != null) {
@@ -193,9 +291,10 @@ public class DiffService {
                 });
             }
         } else if ("CREATE".equalsIgnoreCase(change.type) && virtualFile == null) {
-            if (project.getBasePath() != null) {
-                createFile(java.nio.file.Paths.get(project.getBasePath(), pathStr).toString(), change.newContent);
-                virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByPath(java.nio.file.Paths.get(project.getBasePath(), pathStr).toString());
+            Path absPath = resolveAbsolutePath(pathStr, change.workspaceRoot);
+            if (absPath != null) {
+                createFile(absPath.toString(), change.newContent);
+                virtualFile = LocalFileSystem.getInstance().refreshAndFindFileByPath(absPath.toString());
             }
         }
 
@@ -257,6 +356,35 @@ public class DiffService {
                 e.printStackTrace();
             }
         });
+    }
+
+    private boolean isPendingWorkflowEnabled() {
+        String sys = System.getProperty("codeagent.pending.enabled");
+        String env = System.getenv("CODEAGENT_PENDING_ENABLED");
+        String val = (sys != null && !sys.isBlank()) ? sys : env;
+        if (val == null || val.isBlank()) {
+            return true;
+        }
+        return "true".equalsIgnoreCase(val);
+    }
+
+    private String resolvePendingEndpoint() {
+        String override = System.getProperty("codeagent.pending.endpoint");
+        if (override != null && !override.isBlank()) {
+            return override;
+        }
+        String base = System.getProperty("codeagent.endpoint", "http://localhost:8080/api/agent/chat");
+        if (base.endsWith("/chat/stream")) {
+            base = base.substring(0, base.length() - "/stream".length());
+        }
+        if (base.endsWith("/chat")) {
+            return base.substring(0, base.length() - "/chat".length()) + "/pending";
+        }
+        int idx = base.indexOf("/api/agent");
+        if (idx >= 0) {
+            return base.substring(0, idx) + "/api/agent/pending";
+        }
+        return base + "/pending";
     }
 
     private static class DiffDialog extends DialogWrapper {

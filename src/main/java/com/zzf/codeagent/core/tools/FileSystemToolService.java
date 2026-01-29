@@ -23,6 +23,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -36,7 +37,8 @@ import com.zzf.codeagent.core.tool.PendingChangesManager.PendingChange;
 public final class FileSystemToolService {
     private static final long MAX_FILE_BYTES_DEFAULT = 10L * 1024L * 1024L; // 10MB to match openSourceRF
     private static final int MAX_READ_CHARS_DEFAULT = 20_000;
-    private static final int MAX_LIST_RESULTS_DEFAULT = 4000;
+    private static final int MAX_LIST_RESULTS_DEFAULT = 100;
+    private static final int MAX_LIST_TREE_CHARS_DEFAULT = 8000;
     private static final int MAX_GREP_MATCHES_DEFAULT = 200;
     private static final int MAX_GREP_FILES_DEFAULT = 200;
     private static final int MAX_VIEW_WINDOW_DEFAULT = 200;
@@ -149,10 +151,10 @@ public final class FileSystemToolService {
 
         Path root = resolveUnderWorkspace(path == null ? "" : path);
         if (root == null) {
-            return new ListFilesResult(Collections.emptyList(), true, "path_outside_workspace");
+            return new ListFilesResult(Collections.emptyList(), "", true, "path_outside_workspace");
         }
         if (!Files.exists(root) || !Files.isDirectory(root)) {
-            return new ListFilesResult(Collections.emptyList(), false, "path_not_a_directory");
+            return new ListFilesResult(Collections.emptyList(), "", false, "path_not_a_directory");
         }
 
         String useGlob = glob == null || glob.trim().isEmpty() ? "**/*" : glob.trim();
@@ -188,9 +190,6 @@ public final class FileSystemToolService {
                         return FileVisitResult.CONTINUE;
                     }
                     String relUnix = rel.toString().replace('\\', '/');
-                    if (!isIndexablePath(relUnix)) {
-                        return FileVisitResult.CONTINUE;
-                    }
                     
                     // Check overlay existence (handle deleted files)
                     if (!isOverlayExists(file)) {
@@ -208,6 +207,7 @@ public final class FileSystemToolService {
                 List<PendingChange> pendingChanges = PendingChangesManager.getInstance().getChanges(publicWorkspaceRoot, sessionId);
                 for (PendingChange pc : pendingChanges) {
                     if ("DELETE".equals(pc.type)) continue;
+                    if ("CREATE_DIRECTORY".equals(pc.type)) continue;
                     
                     // Check if inside root
                     Path absPath = workspaceRoot.resolve(pc.path);
@@ -222,7 +222,6 @@ public final class FileSystemToolService {
                     if (parentDepth > depth) continue;
                     
                     if (matcher.matches(rel)) {
-                         if (!isIndexablePath(pc.path)) continue;
                          out.add(s);
                          addedPaths.add(s);
                          if (out.size() >= limit) break;
@@ -231,11 +230,34 @@ public final class FileSystemToolService {
             }
             
         } catch (IOException e) {
-            return new ListFilesResult(out, out.size() >= limit, "io_error:" + e.getClass().getSimpleName());
+            return new ListFilesResult(out, "", out.size() >= limit, "io_error:" + e.getClass().getSimpleName());
         }
         
         Collections.sort(out);
-        return new ListFilesResult(out, out.size() >= limit, null);
+        boolean truncated = out.size() >= limit;
+        StringBuilder tree = new StringBuilder();
+        String rootLabel = root.toAbsolutePath().normalize().toString().replace('\\', '/');
+        tree.append(rootLabel);
+        if (!rootLabel.endsWith("/")) {
+            tree.append("/");
+        }
+        tree.append("\n");
+        boolean treeTruncated = false;
+        if (tree.length() >= MAX_LIST_TREE_CHARS_DEFAULT) {
+            treeTruncated = true;
+        } else if (!out.isEmpty()) {
+            TreeNode rootNode = new TreeNode("");
+            for (String p : out) {
+                addPath(rootNode, p);
+            }
+            boolean[] cut = new boolean[]{false};
+            renderTree(rootNode, tree, 0, depth, MAX_LIST_TREE_CHARS_DEFAULT, cut);
+            treeTruncated = cut[0];
+        }
+        if (treeTruncated) {
+            truncated = true;
+        }
+        return new ListFilesResult(out, tree.toString(), truncated, null);
     }
 
     public GrepResult grep(String pattern, String root, String fileGlob, Integer maxMatches, Integer maxFiles, Integer contextLines) {
@@ -374,8 +396,12 @@ public final class FileSystemToolService {
         int start = startLine == null || startLine.intValue() <= 0 ? 1 : startLine.intValue();
         int end = endLine == null || endLine.intValue() <= 0 ? start + 200 : Math.max(start, endLine.intValue());
         end = Math.min(end, start + 2000);
+        String rawPath = path == null ? "" : path.trim();
+        if (rawPath.isEmpty()) {
+            return new ReadFileResult("", start, end, false, "", "path_required");
+        }
 
-        Path file = resolveFileUnderWorkspace(path == null ? "" : path);
+        Path file = resolveFileUnderWorkspace(rawPath);
         if (file == null) {
             return new ReadFileResult("", start, end, true, "", "path_outside_workspace");
         }
@@ -2292,16 +2318,34 @@ public final class FileSystemToolService {
             return false;
         }
         String name = dir.getFileName().toString();
-        return ".git".equalsIgnoreCase(name)
-                || ".idea".equalsIgnoreCase(name)
-                || ".gradle".equalsIgnoreCase(name)
-                || ".codeagent".equalsIgnoreCase(name)
-                || "node_modules".equalsIgnoreCase(name)
-                || "build".equalsIgnoreCase(name)
-                || "out".equalsIgnoreCase(name)
-                || "target".equalsIgnoreCase(name)
-                || "dist".equalsIgnoreCase(name)
-                || ".vs".equalsIgnoreCase(name);
+        String lower = name.toLowerCase(Locale.ROOT);
+        return ".git".equals(lower)
+                || ".idea".equals(lower)
+                || ".gradle".equals(lower)
+                || ".codeagent".equals(lower)
+                || ".vscode".equals(lower)
+                || ".vs".equals(lower)
+                || "__pycache__".equals(lower)
+                || "node_modules".equals(lower)
+                || "dist".equals(lower)
+                || "build".equals(lower)
+                || "out".equals(lower)
+                || "target".equals(lower)
+                || "vendor".equals(lower)
+                || "bin".equals(lower)
+                || "obj".equals(lower)
+                || "coverage".equals(lower)
+                || ".coverage".equals(lower)
+                || "tmp".equals(lower)
+                || "temp".equals(lower)
+                || ".cache".equals(lower)
+                || "cache".equals(lower)
+                || "logs".equals(lower)
+                || ".venv".equals(lower)
+                || "venv".equals(lower)
+                || "env".equals(lower)
+                || ".zig-cache".equals(lower)
+                || "zig-out".equals(lower);
     }
 
     private Path resolveUnderWorkspace(String pathOrEmpty) {
@@ -2310,6 +2354,14 @@ public final class FileSystemToolService {
             return null;
         }
         String s = pathOrEmpty == null ? "" : pathOrEmpty.trim();
+        if (!s.isEmpty()) {
+            String normalized = s.replace('\\', '/');
+            if (normalized.equals("/workspace") || normalized.equals("/workspace/")) {
+                s = "";
+            } else if (normalized.startsWith("/workspace/")) {
+                s = normalized.substring("/workspace/".length());
+            }
+        }
         Path p;
         if (s.isEmpty()) {
             p = base;
@@ -2825,11 +2877,13 @@ public final class FileSystemToolService {
 
     public static final class ListFilesResult {
         public final List<String> files;
+        public final String tree;
         public final boolean truncated;
         public final String error;
 
-        public ListFilesResult(List<String> files, boolean truncated, String error) {
+        public ListFilesResult(List<String> files, String tree, boolean truncated, String error) {
             this.files = files == null ? Collections.emptyList() : files;
+            this.tree = tree == null ? "" : tree;
             this.truncated = truncated;
             this.error = error;
         }

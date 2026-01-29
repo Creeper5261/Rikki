@@ -1,0 +1,2 @@
+Lists files in a given path and returns a tree view plus the file list. The path may be workspace-relative or absolute within the workspace. Use it once at the repo root to get the tree, then narrow with glob or GREP to avoid repeated listings.
+Optional args: glob (include pattern), maxResults, maxDepth.

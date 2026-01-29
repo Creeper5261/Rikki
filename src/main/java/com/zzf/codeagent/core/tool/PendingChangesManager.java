@@ -34,13 +34,46 @@ public class PendingChangesManager {
         // Remove existing pending change for the same file to avoid conflicts
         // Normalize path to ensure uniqueness (assuming relative paths)
         String normPath = normalizePath(change.path);
-        changes.removeIf(c -> normalizePath(c.path).equals(normPath) && sameScope(c, change));
-        changes.add(change);
+        
+        PendingChange existing = null;
+        for (PendingChange c : changes) {
+            if (normalizePath(c.path).equals(normPath) && sameScope(c, change)) {
+                existing = c;
+                break;
+            }
+        }
+
+        PendingChange toAdd = change;
+        if (existing != null) {
+            String newType = existing.type;
+            if ("DELETE".equalsIgnoreCase(existing.type) && "CREATE".equalsIgnoreCase(change.type)) {
+                newType = "EDIT";
+            } else if ("CREATE".equalsIgnoreCase(existing.type) && "EDIT".equalsIgnoreCase(change.type)) {
+                newType = "CREATE";
+            } else {
+                newType = change.type;
+            }
+
+            toAdd = new PendingChange(
+                existing.id,
+                change.path,
+                newType,
+                existing.oldContent,
+                change.newContent,
+                change.preview,
+                change.timestamp,
+                change.workspaceRoot,
+                change.sessionId
+            );
+            changes.remove(existing);
+        }
+        
+        changes.add(toAdd);
         
         // Notify listeners
         for (java.util.function.Consumer<PendingChange> listener : listeners) {
             try {
-                listener.accept(change);
+                listener.accept(toAdd);
             } catch (Exception e) {
                 e.printStackTrace();
             }

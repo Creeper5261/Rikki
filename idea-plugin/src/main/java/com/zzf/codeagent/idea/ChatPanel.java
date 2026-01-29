@@ -69,10 +69,15 @@ final class ChatPanel {
     private FileSystemToolService fsService;
     private EventStream eventStream;
     private final DiffService diffService;
+    private final boolean pendingWorkflowEnabled;
+    private JPanel pendingChangesPanel;
+    private JPanel pendingChangesList;
+    private JButton commitAllButton;
+    private final List<PendingChangesManager.PendingChange> pendingChanges = new ArrayList<>();
 
     ChatPanel(Project project) {
         this.project = project;
-        this.diffService = new DiffService(project);
+        this.pendingWorkflowEnabled = isPendingWorkflowEnabled();
         
         // --- Left Panel (Sessions) ---
         this.leftPanel = new JPanel(new BorderLayout());
@@ -94,9 +99,10 @@ final class ChatPanel {
         this.scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         
         this.input = new JBTextArea(4, 10);
-        this.send = new JButton("发送");
-        this.status = new JLabel("就绪");
+        this.send = new JButton("Send");
+        this.status = new JLabel("Ready");
         this.http = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
+        this.diffService = new DiffService(project, http, mapper);
         
         this.workspaceRoot = resolveWorkspaceRoot(project);
         if (this.workspaceRoot != null) {
@@ -118,7 +124,7 @@ final class ChatPanel {
         headerPanel.setLayout(new BoxLayout(headerPanel, BoxLayout.Y_AXIS));
         
         JPanel titleBar = new JPanel(new BorderLayout());
-        JButton toggleSessions = new JButton("☰ History");
+        JButton toggleSessions = new JButton("History");
         toggleSessions.setBorderPainted(false);
         toggleSessions.setContentAreaFilled(false);
         toggleSessions.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
@@ -129,7 +135,10 @@ final class ChatPanel {
         
         headerPanel.add(titleBar);
         headerPanel.add(Box.createVerticalStrut(5));
-        // No pending changes panel in direct-apply mode.
+        if (pendingWorkflowEnabled) {
+            headerPanel.add(buildPendingChangesPanel());
+            headerPanel.add(Box.createVerticalStrut(5));
+        }
         
         JPanel bottom = new JPanel(new BorderLayout(6, 6));
         bottom.add(new JBScrollPane(input), BorderLayout.CENTER);
@@ -245,7 +254,7 @@ final class ChatPanel {
         
         // 1. Add User Message
         addMessage(true, text, null, false);
-        history.appendLine("你: " + text.trim());
+        history.appendLine("You: " + text.trim());
         refreshSessionList(); // Update title if new
         
         // 2. Add Agent Placeholder
@@ -332,6 +341,14 @@ final class ChatPanel {
                     if ("thought".equals(stepType)) {
                          String thought = node.path("text").asText();
                          boolean append = node.path("append").asBoolean(false);
+                         if (ui.thoughtPanel == null && ui.messagePanel != null) {
+                             CollapsiblePanel thoughtPanel = new CollapsiblePanel("Thinking Process", "", true);
+                             ui.thoughtPanel = thoughtPanel;
+                             ui.messagePanel.add(thoughtPanel, 0);
+                             ui.messagePanel.add(Box.createVerticalStrut(5), 1);
+                             ui.messagePanel.revalidate();
+                             ui.messagePanel.repaint();
+                         }
                          if (ui.thoughtPanel != null) {
                              if (append) {
                                  ui.thoughtPanel.appendContent(thought, true);
@@ -353,8 +370,15 @@ final class ChatPanel {
                     }
                     
                     if (resp.changes != null && !resp.changes.isEmpty()) {
-                         for (PendingChangesManager.PendingChange change : resp.changes) {
-                             diffService.applyChange(change);
+                         if (pendingWorkflowEnabled) {
+                             addPendingChanges(resp.changes);
+                             for (PendingChangesManager.PendingChange change : resp.changes) {
+                                 diffService.applyWithNotification(change, () -> removePendingChange(change), () -> removePendingChange(change));
+                             }
+                         } else {
+                             for (PendingChangesManager.PendingChange change : resp.changes) {
+                                 diffService.applyChange(change);
+                             }
                          }
                          JPanel changesPanel = new JPanel();
                          changesPanel.setLayout(new BoxLayout(changesPanel, BoxLayout.Y_AXIS));
@@ -406,6 +430,7 @@ final class ChatPanel {
         JPanel messagePanel = new JPanel();
         messagePanel.setLayout(new BoxLayout(messagePanel, BoxLayout.Y_AXIS));
         messagePanel.setBorder(JBUI.Borders.empty(5, 0));
+        ui.messagePanel = messagePanel;
         
         if (isUser) {
             JPanel bubble = new JPanel(new BorderLayout());
@@ -423,8 +448,9 @@ final class ChatPanel {
         } else {
             // Agent Message
             // 1. Thinking Process
-            if (animate || (response != null && response.thought != null && !response.thought.isEmpty())) {
-                String initialThought = (response != null && response.thought != null) ? response.thought : "";
+            boolean hasThought = response != null && response.thought != null && !response.thought.isEmpty();
+            if (hasThought) {
+                String initialThought = response.thought;
                 CollapsiblePanel thoughtPanel = new CollapsiblePanel("Thinking Process", initialThought, animate);
                 messagePanel.add(thoughtPanel);
                 messagePanel.add(Box.createVerticalStrut(5));
@@ -450,8 +476,15 @@ final class ChatPanel {
             
             // 3. Embedded File Changes
             if (response != null && response.changes != null && !response.changes.isEmpty()) {
-                for (PendingChangesManager.PendingChange change : response.changes) {
-                    diffService.applyChange(change);
+                if (pendingWorkflowEnabled) {
+                    addPendingChanges(response.changes);
+                    for (PendingChangesManager.PendingChange change : response.changes) {
+                        diffService.applyWithNotification(change, () -> removePendingChange(change), () -> removePendingChange(change));
+                    }
+                } else {
+                    for (PendingChangesManager.PendingChange change : response.changes) {
+                        diffService.applyChange(change);
+                    }
                 }
                 messagePanel.add(Box.createVerticalStrut(10));
                 JPanel changesPanel = new JPanel();
@@ -519,6 +552,136 @@ final class ChatPanel {
         });
         timer.start();
     }
+
+    private JPanel buildPendingChangesPanel() {
+        pendingChangesPanel = new JPanel(new BorderLayout());
+        pendingChangesPanel.setBorder(BorderFactory.createTitledBorder("Changed Files"));
+
+        pendingChangesList = new JPanel();
+        pendingChangesList.setLayout(new BoxLayout(pendingChangesList, BoxLayout.Y_AXIS));
+
+        commitAllButton = new JButton("Commit All");
+        commitAllButton.addActionListener(e -> {
+            List<PendingChangesManager.PendingChange> snapshot = new ArrayList<>(pendingChanges);
+            for (PendingChangesManager.PendingChange change : snapshot) {
+                diffService.confirmChange(change, () -> {
+                    pendingChanges.removeIf(pc -> samePendingChange(pc, change));
+                    refreshPendingChangesPanel();
+                }, null);
+            }
+        });
+
+        pendingChangesPanel.add(new JBScrollPane(pendingChangesList), BorderLayout.CENTER);
+        pendingChangesPanel.add(commitAllButton, BorderLayout.SOUTH);
+        pendingChangesPanel.setVisible(false);
+        return pendingChangesPanel;
+    }
+
+    private void addPendingChanges(List<PendingChangesManager.PendingChange> changes) {
+        if (changes == null || changes.isEmpty()) {
+            return;
+        }
+        boolean changed = false;
+        for (PendingChangesManager.PendingChange change : changes) {
+            if (pendingChanges.stream().noneMatch(existing -> samePendingChange(existing, change))) {
+                pendingChanges.add(change);
+                changed = true;
+            }
+        }
+        if (changed) {
+            refreshPendingChangesPanel();
+        }
+    }
+
+    private void removePendingChange(PendingChangesManager.PendingChange change) {
+        if (change == null) {
+            return;
+        }
+        pendingChanges.removeIf(existing -> samePendingChange(existing, change));
+        refreshPendingChangesPanel();
+    }
+
+    private void refreshPendingChangesPanel() {
+        if (pendingChangesPanel == null || pendingChangesList == null) {
+            return;
+        }
+        pendingChangesList.removeAll();
+
+        for (PendingChangesManager.PendingChange change : pendingChanges) {
+            JPanel item = new JPanel(new BorderLayout(5, 0));
+            JLabel name = new JLabel(change.path);
+
+            JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+            JButton undoBtn = new JButton("Undo");
+            JButton confirmBtn = new JButton("Confirm");
+
+            undoBtn.addActionListener(e -> {
+                diffService.revertChange(change, () -> removePendingChange(change), null);
+            });
+            confirmBtn.addActionListener(e -> {
+                diffService.confirmChange(change, () -> removePendingChange(change), null);
+            });
+
+            actions.add(undoBtn);
+            actions.add(confirmBtn);
+
+            item.add(name, BorderLayout.CENTER);
+            item.add(actions, BorderLayout.EAST);
+            item.setBorder(JBUI.Borders.empty(2));
+            pendingChangesList.add(item);
+        }
+
+        boolean hasPending = !pendingChanges.isEmpty();
+        pendingChangesPanel.setVisible(hasPending);
+        if (commitAllButton != null) {
+            commitAllButton.setEnabled(hasPending);
+        }
+        pendingChangesPanel.revalidate();
+        pendingChangesPanel.repaint();
+    }
+
+    private boolean samePendingChange(PendingChangesManager.PendingChange a, PendingChangesManager.PendingChange b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        if (a.path == null || b.path == null) {
+            return false;
+        }
+        String aPath = normalizePendingPath(a.path, a.workspaceRoot);
+        String bPath = normalizePendingPath(b.path, b.workspaceRoot);
+        return aPath.equals(bPath) && a.type.equalsIgnoreCase(b.type);
+    }
+
+    private String normalizePendingPath(String path, String wsRoot) {
+        if (path == null) {
+            return "";
+        }
+        String normalized = path.trim().replace('\\', '/');
+        if (normalized.isEmpty()) {
+            return "";
+        }
+        String base = (wsRoot == null || wsRoot.isBlank()) ? workspaceRoot : wsRoot;
+        if (base != null && !base.isBlank()) {
+            String root = base.replace('\\', '/').trim();
+            if (normalized.startsWith(root)) {
+                normalized = normalized.substring(root.length());
+                if (normalized.startsWith("/")) {
+                    normalized = normalized.substring(1);
+                }
+            }
+        }
+        return normalized;
+    }
+
+    private boolean isPendingWorkflowEnabled() {
+        String sys = System.getProperty("codeagent.pending.enabled");
+        String env = System.getenv("CODEAGENT_PENDING_ENABLED");
+        String val = (sys != null && !sys.isBlank()) ? sys : env;
+        if (val == null || val.isBlank()) {
+            return true;
+        }
+        return "true".equalsIgnoreCase(val);
+    }
     
     private void scrollToBottom() {
         SwingUtilities.invokeLater(() -> {
@@ -573,6 +736,7 @@ final class ChatPanel {
     
     private static class AgentMessageUI {
         CollapsiblePanel thoughtPanel;
+        JPanel messagePanel;
         JEditorPane answerPane;
         JPanel changesPanel;
     }
@@ -719,12 +883,12 @@ final class ChatPanel {
         try {
             return future.get(Math.max(200L, timeoutMs), TimeUnit.MILLISECONDS);
         } catch (Exception e) {
-            return "IDEA 结构捕获超时/失败";
+            return "IDEA Structure Capture Timeout/Failed";
         }
     }
 
     private String buildIdeContext() {
-        if (project == null || DumbService.isDumb(project)) return "IDEA 索引未就绪";
+        if (project == null || DumbService.isDumb(project)) return "IDEA Index Not Ready";
         return ReadAction.compute(() -> {
             StringBuilder sb = new StringBuilder("ClassStructure:\n");
             ProjectFileIndex fileIndex = ProjectRootManager.getInstance(project).getFileIndex();
@@ -776,12 +940,18 @@ final class ChatPanel {
     
     private void rebuildConversationFromHistory() {
         conversationList.removeAll();
+        if (pendingWorkflowEnabled) {
+            pendingChanges.clear();
+            refreshPendingChangesPanel();
+        }
         
         if (history == null) return;
         List<String> lines = history.getLines();
         if (lines != null) {
             for (String line : lines) {
-                if (line.startsWith("你: ")) {
+                if (line.startsWith("You: ")) {
+                    addMessage(true, line.substring(5), null, false);
+                } else if (line.startsWith("?: ")) {
                     addMessage(true, line.substring(3), null, false);
                 } else if (line.startsWith("Agent: ")) {
                     AgentResponse resp = new AgentResponse();
@@ -817,7 +987,7 @@ final class ChatPanel {
             setLayout(new BorderLayout());
             setBorder(BorderFactory.createLineBorder(Color.LIGHT_GRAY));
             
-            toggleBtn = new JButton("▶ " + title);
+            toggleBtn = new JButton("> " + title);
             toggleBtn.setHorizontalAlignment(SwingConstants.LEFT);
             toggleBtn.setBorderPainted(false);
             toggleBtn.setContentAreaFilled(false);
@@ -858,7 +1028,7 @@ final class ChatPanel {
             toggleBtn.addActionListener(e -> {
                 expanded = !expanded;
                 contentPanel.setVisible(expanded);
-                toggleBtn.setText((expanded ? "▼ " : "▶ ") + title);
+                toggleBtn.setText((expanded ? "v " : "> ") + title);
                 revalidate();
                 repaint();
             });
@@ -891,3 +1061,6 @@ final class ChatPanel {
     }
     
 }
+
+
+

@@ -34,6 +34,11 @@ public final class AgentChatController {
         return agentChatService.chatStream(req);
     }
 
+    @PostMapping("/api/agent/pending")
+    public ResponseEntity<Map<String, Object>> resolvePending(@RequestBody PendingChangeRequest req) {
+        return agentChatService.resolvePending(req);
+    }
+
     @PostMapping("/api/agent/history/compress")
     public ResponseEntity<Map<String, Object>> compressHistory(@RequestBody CompressHistoryRequest req) {
         return agentChatService.compressHistory(req);
@@ -57,6 +62,14 @@ public final class AgentChatController {
     public static final class CompressHistoryRequest {
         public List<String> history;
         public String goalHint;
+    }
+
+    public static final class PendingChangeRequest {
+        public String traceId;
+        public String workspaceRoot;
+        public String path;
+        public List<String> paths;
+        public Boolean reject;
     }
 
     public static final class ChatResponse {

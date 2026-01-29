@@ -3,6 +3,7 @@ package com.zzf.codeagent.service;
 import com.zzf.codeagent.api.AgentChatController.ChatRequest;
 import com.zzf.codeagent.api.AgentChatController.ChatResponse;
 import com.zzf.codeagent.api.AgentChatController.CompressHistoryRequest;
+import com.zzf.codeagent.api.AgentChatController.PendingChangeRequest;
 import com.zzf.codeagent.core.runtime.RuntimeService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
@@ -51,6 +52,10 @@ public final class AgentChatService {
 
     public ResponseEntity<Map<String, Object>> search(Map<String, Object> req) {
         return retrievalService.search(req);
+    }
+
+    public ResponseEntity<Map<String, Object>> resolvePending(PendingChangeRequest req) {
+        return agentService.resolvePending(req);
     }
 
     private ResponseEntity<Map<String, Object>> jsonOk(Map<String, Object> body) {

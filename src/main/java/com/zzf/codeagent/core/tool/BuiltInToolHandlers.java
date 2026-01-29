@@ -51,6 +51,7 @@ public final class BuiltInToolHandlers {
         registry.register(new StrReplaceEditorTool());
         registry.register(new EditFileTool());
         registry.register(new CreateFileTool());
+        registry.register(new WriteFileTool());
         registry.register(new InsertLineTool());
         registry.register(new UndoEditTool());
         registry.register(new DeleteFileTool());
@@ -192,9 +193,10 @@ public final class BuiltInToolHandlers {
             ), new String[] {});
             ObjectNode output = objectSchema(mapper, Map.of(
                     "files", arraySchema(mapper, stringSchema(mapper)),
+                    "tree", stringSchema(mapper),
                     "truncated", booleanSchema(mapper),
                     "error", stringSchema(mapper)
-            ), new String[] { "files", "truncated", "error" });
+            ), new String[] { "files", "tree", "truncated", "error" });
             this.spec = new ToolSpec("LIST_FILES", ToolProtocol.DEFAULT_VERSION, "List files recursively under a path", input, output);
         }
 
@@ -206,7 +208,7 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText("");
+            String path = pathArg(env.getArgs());
             String glob = env.getArgs().path("glob").asText("");
             Integer maxResults = JsonUtils.intOrNull(env.getArgs(), "maxResults", "max_results");
             Integer maxDepth = JsonUtils.intOrNull(env.getArgs(), "maxDepth", "max_depth");
@@ -219,7 +221,7 @@ public final class BuiltInToolHandlers {
             if (r.error != null && !r.error.trim().isEmpty()) {
                 out = out.withHint("LIST_FILES failed. Check if path exists and is within workspace.");
             } else {
-                out = out.withHint("File structure listed. If output is truncated or you need a high-level overview, use REPO_MAP (Project Structure) or STRUCTURE_MAP (Simple Tree) instead. Suggestions: 1. Use GREP to find specific code; 2. Use READ_FILE if file located.");
+                out = out.withHint("File tree listed. If output is truncated, narrow by subdirectory or use glob; then GREP or READ_FILE for details.");
             }
             return out.withTookMs((System.nanoTime() - t0) / 1_000_000L);
         }
@@ -314,7 +316,7 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText("");
+            String path = pathArg(env.getArgs());
             Integer start = JsonUtils.intOrNull(env.getArgs(), "startLine", "start_line");
             Integer end = JsonUtils.intOrNull(env.getArgs(), "endLine", "end_line");
             Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
@@ -340,6 +342,11 @@ public final class BuiltInToolHandlers {
                         // Ignore invalid range, fall back to default behavior.
                     }
                 }
+            }
+            if (path.isEmpty()) {
+                return ToolResult.error(env.getTool(), env.getVersion(), "path_required")
+                        .withHint("READ_FILE requires a non-empty path argument.")
+                        .withTookMs((System.nanoTime() - t0) / 1_000_000L);
             }
             logger.info("tool.call traceId={} tool={} path={} startLine={} endLine={} maxChars={}", ctx.traceId, env.getTool(), truncate(path, 200), start, end, maxChars);
             FileSystemToolService.ReadFileResult r = ctx.fs.readFile(path, start, end, maxChars);
@@ -391,10 +398,15 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText("");
+            String path = pathArg(env.getArgs());
             Integer line = JsonUtils.intOrNull(env.getArgs(), "lineNumber", "line_number");
             Integer window = JsonUtils.intOrNull(env.getArgs(), "window", "window");
             Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
+            if (path.isEmpty()) {
+                return ToolResult.error(env.getTool(), env.getVersion(), "path_required")
+                        .withHint("OPEN_FILE_VIEW requires a non-empty path argument.")
+                        .withTookMs((System.nanoTime() - t0) / 1_000_000L);
+            }
             logger.info("tool.call traceId={} tool={} path={} line={} window={}", ctx.traceId, env.getTool(), truncate(path, 200), line, window);
             FileSystemToolService.FileViewResult r = ctx.fs.viewFile(path, line, window, maxChars);
             logger.info("tool.result traceId={} tool={} filePath={} truncated={} error={}", ctx.traceId, env.getTool(), r.filePath, r.truncated, r.error);
@@ -451,7 +463,7 @@ public final class BuiltInToolHandlers {
             Integer lines = JsonUtils.intOrNull(env.getArgs(), "lines", "lines");
             Integer overlapArg = JsonUtils.intOrNull(env.getArgs(), "overlap", "overlap");
             Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
-            String path = env.getArgs().path("path").asText("");
+            String path = pathArg(env.getArgs());
             EventStream stream = ctx.eventStream;
             ObjectNode ws = stream == null ? null : stream.getStore().getWorkspaceState();
             String activeFile = path == null || path.trim().isEmpty() ? (ws == null ? "" : ws.path("activeFile").asText("")) : path;
@@ -530,7 +542,7 @@ public final class BuiltInToolHandlers {
             Integer line = JsonUtils.intOrNull(env.getArgs(), "lineNumber", "line_number");
             Integer window = JsonUtils.intOrNull(env.getArgs(), "window", "window");
             Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
-            String path = env.getArgs().path("path").asText("");
+            String path = pathArg(env.getArgs());
             EventStream stream = ctx.eventStream;
             ObjectNode ws = stream == null ? null : stream.getStore().getWorkspaceState();
             String activeFile = path == null || path.trim().isEmpty() ? (ws == null ? "" : ws.path("activeFile").asText("")) : path;
@@ -589,7 +601,7 @@ public final class BuiltInToolHandlers {
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
             String pattern = env.getArgs().path("pattern").asText("");
-            String path = env.getArgs().path("path").asText("");
+            String path = pathArg(env.getArgs());
             Integer maxMatches = JsonUtils.intOrNull(env.getArgs(), "maxMatches", "max_matches");
             Integer maxLines = JsonUtils.intOrNull(env.getArgs(), "maxLines", "max_lines");
             EventStream stream = ctx.eventStream;
@@ -645,7 +657,7 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText("");
+            String path = pathArg(env.getArgs());
             Integer maxDepth = JsonUtils.intOrNull(env.getArgs(), "maxDepth", "max_depth");
             Integer maxFiles = JsonUtils.intOrNull(env.getArgs(), "maxFiles", "max_files");
             Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
@@ -701,7 +713,7 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText("");
+            String path = pathArg(env.getArgs());
             Integer maxDepth = JsonUtils.intOrNull(env.getArgs(), "maxDepth", "max_depth");
             Integer maxFiles = JsonUtils.intOrNull(env.getArgs(), "maxFiles", "max_files");
             Integer maxChars = JsonUtils.intOrNull(env.getArgs(), "maxChars", "max_chars");
@@ -752,15 +764,28 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText();
-            String oldStr = env.getArgs().path("old_str").asText();
-            String newStr = env.getArgs().path("new_str").asText();
-            // Default dry_run to false (apply immediately) unless explicitly set to true
+            String path = pathArg(env.getArgs());
+            String oldStr = textFromArgs(env.getArgs(), "old_str", "oldContent", "old_content", "oldText", "old_text");
+            String newStr = textFromArgs(env.getArgs(), "new_str", "newContent", "new_content", "newText", "new_text");
+            // Default dry_run to false (apply to sandbox) unless explicitly set to true
             JsonNode dryRunNode = env.getArgs().path("dry_run");
             boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? false : dryRunNode.asBoolean();
             
             logger.info("tool.call traceId={} tool={} path={} oldLen={} newLen={} dryRun={}", ctx.traceId, env.getTool(), truncate(path, 200), oldStr.length(), newStr.length(), dryRun);
             FileSystemToolService.EditFileResult r = ctx.fs.editFile(path, oldStr, newStr, dryRun);
+            boolean usedFallback = false;
+            if (!r.success && newStr != null && !newStr.isEmpty()) {
+                if ("old_text_required".equals(r.error) || "old_text_not_found".equals(r.error)) {
+                    if (shouldFallbackOverwrite(r.oldContent, newStr)) {
+                        FileSystemToolService.EditFileResult overwrite = ctx.fs.overwriteFile(path, newStr, dryRun);
+                        if (overwrite.success) {
+                            r = overwrite;
+                            usedFallback = true;
+                            logger.info("tool.fallback traceId={} tool={} mode=overwrite", ctx.traceId, env.getTool());
+                        }
+                    }
+                }
+            }
             logger.info("tool.result traceId={} tool={} success={} error={} preview={}", ctx.traceId, env.getTool(), r.success, r.error, r.preview);
             ToolResult out = r.success
                     ? ToolResult.ok(env.getTool(), env.getVersion(), ctx.mapper.valueToTree(r))
@@ -769,14 +794,34 @@ public final class BuiltInToolHandlers {
             if (!r.success) {
                 out = out.withHint("EDIT_FILE failed. Check if file exists and old_str matches (must be exact). Suggest READ_FILE to confirm content.");
             } else if (r.preview) {
-                out = out.withHint("Preview only. No changes applied.");
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "edit_file", r.oldContent, r.newContent, true, r.prevExist, ctx.workspaceRoot, ctx.traceId);
+                String cmd = usedFallback ? "write_file_fallback" : "edit_file";
+                out = out.withHint(usedFallback ? "Fallback to overwrite preview. No changes applied." : "Preview only. No changes applied.");
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, cmd, r.oldContent, r.newContent, true, r.prevExist, ctx.workspaceRoot, ctx.traceId);
             } else {
-                out = out.withHint("File edited successfully. Suggestions: 1. Run relevant tests to verify; 2. If task done, output type=final.");
-                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "edit_file", r.oldContent, r.newContent, false, r.prevExist, ctx.workspaceRoot, ctx.traceId);
+                String cmd = usedFallback ? "write_file_fallback" : "edit_file";
+                out = out.withHint(usedFallback
+                        ? "Fallback overwrite applied. Suggestions: 1. Verify changes; 2. If task done, output type=final."
+                        : "File edited successfully. Suggestions: 1. Run relevant tests to verify; 2. If task done, output type=final.");
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, cmd, r.oldContent, r.newContent, false, r.prevExist, ctx.workspaceRoot, ctx.traceId);
             }
             out = out.withExtra("path", ctx.mapper.valueToTree(path));
             return out.withTookMs((System.nanoTime() - t0) / 1_000_000L);
+        }
+
+        private static boolean shouldFallbackOverwrite(String oldContent, String newContent) {
+            if (newContent == null || newContent.isEmpty()) {
+                return false;
+            }
+            if (oldContent == null || oldContent.isEmpty()) {
+                return true;
+            }
+            int oldLen = oldContent.length();
+            int newLen = newContent.length();
+            if (newLen >= Math.max(120, (oldLen * 6) / 10)) {
+                return true;
+            }
+            int newLines = newContent.split("\\R", -1).length;
+            return newLines >= 4 && newLen >= 200;
         }
     }
 
@@ -810,7 +855,7 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText("").trim();
+            String path = pathArg(env.getArgs());
             JsonNode contentNode = env.getArgs().get("content");
             JsonNode contentAlt = env.getArgs().get("file_text");
             JsonNode contentAlt2 = env.getArgs().get("fileText");
@@ -852,6 +897,80 @@ public final class BuiltInToolHandlers {
         }
     }
 
+    private static final class WriteFileTool implements ToolHandler {
+        private static final Logger logger = LoggerFactory.getLogger(WriteFileTool.class);
+        private final ToolSpec spec;
+
+        private WriteFileTool() {
+            ObjectMapper mapper = new ObjectMapper();
+            ObjectNode input = objectSchema(mapper, Map.of(
+                    "path", stringSchema(mapper),
+                    "content", stringSchema(mapper),
+                    "preview", booleanSchema(mapper),
+                    "dry_run", booleanSchema(mapper)
+            ), new String[] { "path", "content" });
+            ObjectNode output = objectSchema(mapper, Map.of(
+                    "filePath", stringSchema(mapper),
+                    "success", booleanSchema(mapper),
+                    "error", stringSchema(mapper),
+                    "preview", booleanSchema(mapper),
+                    "oldContent", stringSchema(mapper),
+                    "newContent", stringSchema(mapper)
+            ), new String[] { "filePath", "success", "error", "preview" });
+            this.spec = new ToolSpec("WRITE_FILE", ToolProtocol.DEFAULT_VERSION, "Overwrite file content", input, output);
+        }
+
+        @Override
+        public ToolSpec spec() {
+            return spec;
+        }
+
+        @Override
+        public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
+            long t0 = System.nanoTime();
+            String path = pathArg(env.getArgs());
+            JsonNode contentNode = env.getArgs().get("content");
+            JsonNode contentAlt = env.getArgs().get("file_text");
+            JsonNode contentAlt2 = env.getArgs().get("fileText");
+            String content = contentNode == null || contentNode.isNull()
+                    ? (contentAlt == null || contentAlt.isNull()
+                        ? (contentAlt2 == null || contentAlt2.isNull() ? null : contentAlt2.asText(""))
+                        : contentAlt.asText(""))
+                    : contentNode.asText("");
+            Boolean preview = env.getArgs().path("preview").isMissingNode() ? null : env.getArgs().path("preview").asBoolean();
+            JsonNode dryRunNode = env.getArgs().path("dry_run");
+            Boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? null : dryRunNode.asBoolean();
+            Boolean effectivePreview = preview != null ? preview : (dryRun != null ? dryRun : false);
+
+            logger.info("tool.call traceId={} tool={} path={} preview={}", ctx.traceId, env.getTool(), truncate(path, 200), effectivePreview);
+            if (path.isEmpty()) {
+                return ToolResult.error(env.getTool(), env.getVersion(), "path_required")
+                        .withTookMs((System.nanoTime() - t0) / 1_000_000L);
+            }
+            if (content == null) {
+                return ToolResult.error(env.getTool(), env.getVersion(), "content_required")
+                        .withTookMs((System.nanoTime() - t0) / 1_000_000L);
+            }
+            FileSystemToolService.EditFileResult r = ctx.fs.overwriteFile(path, content, effectivePreview);
+            logger.info("tool.result traceId={} tool={} success={} error={} preview={}", ctx.traceId, env.getTool(), r.success, r.error, r.preview);
+            ToolResult out = r.success
+                    ? ToolResult.ok(env.getTool(), env.getVersion(), ctx.mapper.valueToTree(r))
+                    : ToolResult.error(env.getTool(), env.getVersion(), r.error == null || r.error.isEmpty() ? "write_failed" : r.error)
+                        .withExtra("result", ctx.mapper.valueToTree(r));
+            if (r.success) {
+                updateWorkspaceEdit(ctx.eventStream, ctx.mapper, path, "write_file", r.oldContent, r.newContent, r.preview, r.prevExist, ctx.workspaceRoot, ctx.traceId);
+                if (!r.preview) {
+                    out = out.withHint("File written successfully. Proceed with next steps or output type=final.");
+                } else {
+                    out = out.withHint("Preview only. No changes applied.");
+                }
+            } else {
+                out = out.withHint("WRITE_FILE failed. Check path and content.");
+            }
+            return out.withTookMs((System.nanoTime() - t0) / 1_000_000L);
+        }
+    }
+
     private static final class InsertLineTool implements ToolHandler {
         private static final Logger logger = LoggerFactory.getLogger(InsertLineTool.class);
         private final ToolSpec spec;
@@ -883,7 +1002,7 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText("").trim();
+            String path = pathArg(env.getArgs());
             Integer lineNumber = JsonUtils.intOrNull(env.getArgs(), "lineNumber", "line_number");
             if (lineNumber == null) {
                 lineNumber = JsonUtils.intOrNull(env.getArgs(), "insert_line", "insertLine");
@@ -958,7 +1077,7 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText("").trim();
+            String path = pathArg(env.getArgs());
             logger.info("tool.call traceId={} tool={} path={}", ctx.traceId, env.getTool(), truncate(path, 200));
             if (path.isEmpty()) {
                 return ToolResult.error(env.getTool(), env.getVersion(), "path_required")
@@ -1034,7 +1153,7 @@ public final class BuiltInToolHandlers {
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
             String command = env.getArgs().path("command").asText("").trim();
-            String path = env.getArgs().path("path").asText("").trim();
+            String path = pathArg(env.getArgs());
             JsonNode fileTextNode = env.getArgs().get("file_text");
             JsonNode fileTextAlt = env.getArgs().get("fileText");
             String fileText = fileTextNode == null || fileTextNode.isNull()
@@ -1197,7 +1316,7 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText("").trim();
+            String path = pathArg(env.getArgs());
             JsonNode dryRunNode = env.getArgs().path("dry_run");
             boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? false : dryRunNode.asBoolean();
             Boolean effectivePreview = dryRun;
@@ -1235,6 +1354,7 @@ public final class BuiltInToolHandlers {
         private ApplyPatchTool() {
             ObjectMapper mapper = new ObjectMapper();
             ObjectNode input = objectSchema(mapper, Map.of(
+                    "path", stringSchema(mapper),
                     "diff", stringSchema(mapper),
                     "patch", stringSchema(mapper),
                     "preview", booleanSchema(mapper),
@@ -1273,6 +1393,7 @@ public final class BuiltInToolHandlers {
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
             String diff = JsonUtils.textOrFallback(env.getArgs(), "diff", "patch");
+            String path = pathArg(env.getArgs());
             Boolean preview = env.getArgs().path("preview").isMissingNode() ? null : env.getArgs().path("preview").asBoolean();
             // Default dry_run to false (apply immediately) unless explicitly set to true
             JsonNode dryRunNode = env.getArgs().path("dry_run");
@@ -1281,6 +1402,9 @@ public final class BuiltInToolHandlers {
             if (diff == null || diff.trim().isEmpty()) {
                 return ToolResult.error(env.getTool(), env.getVersion(), "diff_required")
                         .withTookMs((System.nanoTime() - t0) / 1_000_000L);
+            }
+            if (!path.isEmpty() && !patchHasPath(diff)) {
+                diff = wrapUpdatePatch(path, diff);
             }
             logger.info("tool.call traceId={} tool={} diffChars={} preview={}", ctx.traceId, env.getTool(), diff.length(), effectivePreview);
             FileSystemToolService.PatchApplyResult r = ctx.fs.applyPatch(diff, effectivePreview);
@@ -1360,7 +1484,7 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText("");
+            String path = pathArg(env.getArgs());
             String glob = env.getArgs().path("glob").asText("");
             String oldStr = env.getArgs().path("old_str").asText("");
             String newStr = env.getArgs().path("new_str").asText("");
@@ -1687,41 +1811,44 @@ public final class BuiltInToolHandlers {
         if (eventStream == null || mapper == null) {
             return;
         }
+        String normalizedPath = normalizeChangePath(path, workspaceRoot);
         ObjectNode update = mapper.createObjectNode();
-        update.put("lastEditFile", path == null ? "" : path);
+        update.put("lastEditFile", normalizedPath);
         update.put("lastEditCommand", command == null ? "" : command);
         update.put("lastEditAt", java.time.Instant.now().toString());
         update.put("lastEditPreview", preview);
         if (oldContent != null || newContent != null) {
             ObjectNode diff = mapper.createObjectNode();
-            diff.put("path", path);
+            diff.put("path", normalizedPath);
             diff.put("oldContent", oldContent);
             diff.put("newContent", newContent);
             update.set("latestFileDiff", diff);
 
             if (!preview && !"move_path".equalsIgnoreCase(command)) {
-                String changeType = "EDIT";
-                if (newContent == null) {
-                    changeType = "DELETE";
-                } else if (!prevExist) {
-                    changeType = "CREATE";
+                if (!isPendingWorkflowEnabled()) {
+                    String changeType = "EDIT";
+                    if (newContent == null) {
+                        changeType = "DELETE";
+                    } else if (!prevExist) {
+                        changeType = "CREATE";
+                    }
+                    AppliedChangesManager.getInstance().addChange(
+                            new AppliedChangesManager.AppliedChange(
+                                    normalizedPath,
+                                    changeType,
+                                    oldContent,
+                                    newContent,
+                                    workspaceRoot,
+                                    sessionId
+                            )
+                    );
                 }
-                AppliedChangesManager.getInstance().addChange(
-                        new AppliedChangesManager.AppliedChange(
-                                path,
-                                changeType,
-                                oldContent,
-                                newContent,
-                                workspaceRoot,
-                                sessionId
-                        )
-                );
             }
 
-            if (preview) {
+            if (preview || (isPendingWorkflowEnabled() && !"apply_pending_diff".equalsIgnoreCase(command))) {
                 // Add to PendingChangesManager only if not already added by FileSystemToolService
                 // This prevents overwriting the correct 'oldContent' (original disk content) with intermediate content
-                if (PendingChangesManager.getInstance().getPendingChange(path, workspaceRoot, sessionId).isEmpty()) {
+                if (PendingChangesManager.getInstance().getPendingChange(normalizedPath, workspaceRoot, sessionId).isEmpty()) {
                     String changeType = "EDIT";
                     if (newContent == null) {
                         changeType = "DELETE";
@@ -1732,7 +1859,7 @@ public final class BuiltInToolHandlers {
                     PendingChangesManager.getInstance().addChange(
                         new PendingChangesManager.PendingChange(
                             java.util.UUID.randomUUID().toString(),
-                            path,
+                            normalizedPath,
                             changeType,
                             oldContent,
                             newContent,
@@ -1745,7 +1872,7 @@ public final class BuiltInToolHandlers {
                 }
 
                 ObjectNode pending = mapper.createObjectNode();
-                pending.put("path", path);
+                pending.put("path", normalizedPath);
                 pending.put("old_content", oldContent);
                 pending.put("new_content", newContent);
                 pending.put("prev_exist", prevExist);
@@ -1758,6 +1885,31 @@ public final class BuiltInToolHandlers {
             update.set("pending_changes", PendingChangesManager.getInstance().toJson(mapper, workspaceRoot, sessionId));
         }
         eventStream.updateWorkspaceState(update, EventSource.AGENT, null);
+    }
+
+    private static String normalizeChangePath(String path, String workspaceRoot) {
+        if (path == null) {
+            return "";
+        }
+        String trimmed = path.trim();
+        if (trimmed.isEmpty()) {
+            return "";
+        }
+        String normalized = trimmed.replace('\\', '/');
+        if (workspaceRoot == null || workspaceRoot.trim().isEmpty()) {
+            return normalized;
+        }
+        String root = workspaceRoot.trim().replace('\\', '/');
+        if (normalized.startsWith(root)) {
+            String rel = normalized.substring(root.length());
+            if (rel.startsWith("/")) {
+                rel = rel.substring(1);
+            }
+            if (!rel.isEmpty()) {
+                return rel;
+            }
+        }
+        return normalized;
     }
 
     private static void updateWorkspaceDelete(EventStream eventStream, ObjectMapper mapper, String path) {
@@ -2000,11 +2152,130 @@ public final class BuiltInToolHandlers {
         return name.substring(0, dot);
     }
 
+    private static String pathArg(JsonNode args) {
+        if (args == null) {
+            return "";
+        }
+        return JsonUtils.textOrFallback(args, java.util.Arrays.asList("path", "filePath", "file_path", "filepath", "target"));
+    }
+
     private static String truncate(String s, int maxChars) {
         if (s == null) {
             return "";
         }
         return s.length() <= maxChars ? s : s.substring(0, maxChars);
+    }
+
+    private static String textFromArgs(JsonNode args, String... keys) {
+        if (args == null || keys == null) {
+            return "";
+        }
+        for (String key : keys) {
+            if (key == null || key.isEmpty()) {
+                continue;
+            }
+            JsonNode node = args.get(key);
+            if (node != null && !node.isMissingNode() && !node.isNull()) {
+                String value = node.asText("");
+                if (value != null && !value.isEmpty()) {
+                    return value;
+                }
+            }
+        }
+        for (String key : keys) {
+            if (key == null || key.isEmpty()) {
+                continue;
+            }
+            JsonNode node = args.get(key);
+            if (node != null && !node.isMissingNode() && !node.isNull()) {
+                return node.asText("");
+            }
+        }
+        return "";
+    }
+
+    private static Integer parsePositiveInt(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        try {
+            int parsed = Integer.parseInt(trimmed);
+            return parsed > 0 ? parsed : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static Integer[] parseLineRange(String range) {
+        if (range == null) {
+            return null;
+        }
+        String trimmed = range.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        String[] parts = trimmed.split("[-:]");
+        if (parts.length == 0) {
+            return null;
+        }
+        Integer start = parsePositiveInt(parts[0]);
+        Integer end = parts.length > 1 ? parsePositiveInt(parts[1]) : null;
+        if (start == null && end == null) {
+            return null;
+        }
+        return new Integer[] { start, end };
+    }
+
+    private static boolean patchHasPath(String diff) {
+        if (diff == null) {
+            return false;
+        }
+        String text = diff.trim();
+        if (text.isEmpty()) {
+            return false;
+        }
+        if (text.startsWith("*** Begin Patch") || text.contains("\n*** Begin Patch")) {
+            return true;
+        }
+        if (text.startsWith("*** Update File:") || text.contains("\n*** Update File:")) {
+            return true;
+        }
+        if (text.startsWith("diff --git") || text.contains("\ndiff --git")) {
+            return true;
+        }
+        if (text.startsWith("--- ") || text.contains("\n--- ")) {
+            return true;
+        }
+        if (text.startsWith("+++ ") || text.contains("\n+++ ")) {
+            return true;
+        }
+        return false;
+    }
+
+    private static String wrapUpdatePatch(String path, String diff) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("*** Begin Patch\n");
+        sb.append("*** Update File: ").append(path).append("\n");
+        if (diff != null && !diff.trim().isEmpty()) {
+            sb.append(diff.trim());
+            sb.append("\n");
+        }
+        sb.append("*** End Patch");
+        return sb.toString();
+    }
+
+    private static boolean isPendingWorkflowEnabled() {
+        String sys = System.getProperty("codeagent.pending.enabled");
+        String env = System.getenv("CODEAGENT_PENDING_ENABLED");
+        String val = (sys != null && !sys.isBlank()) ? sys : env;
+        if (val == null || val.isBlank()) {
+            return true;
+        }
+        return "true".equalsIgnoreCase(val);
     }
 
     private static final class ReplaceLinesTool implements ToolHandler {
@@ -2039,13 +2310,32 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText("").trim();
-            int startLine = env.getArgs().path("startLine").asInt(0);
-            int endLine = env.getArgs().path("endLine").asInt(0);
-            String newContent = env.getArgs().path("newContent").asText("");
-            JsonNode dryRunNode = env.getArgs().path("dry_run");
-            boolean dryRun = dryRunNode.isMissingNode() || dryRunNode.isNull() ? true : dryRunNode.asBoolean();
-            Boolean effectivePreview = dryRun;
+            String path = pathArg(env.getArgs());
+            Integer startLine = JsonUtils.intOrNull(env.getArgs(), "startLine", "start_line");
+            Integer endLine = JsonUtils.intOrNull(env.getArgs(), "endLine", "end_line");
+            if (startLine == null) {
+                startLine = JsonUtils.intOrNull(env.getArgs(), "start", "from");
+            }
+            if (endLine == null) {
+                endLine = JsonUtils.intOrNull(env.getArgs(), "end", "to");
+            }
+            String range = env.getArgs().path("range").asText("");
+            Integer[] parsedRange = parseLineRange(range);
+            if (parsedRange != null) {
+                if (startLine == null) {
+                    startLine = parsedRange[0];
+                }
+                if (endLine == null) {
+                    endLine = parsedRange[1];
+                }
+            }
+            if (startLine != null && endLine == null) {
+                endLine = startLine;
+            }
+            String newContent = textFromArgs(env.getArgs(), "newContent", "new_content", "newText", "new_text", "content", "text");
+            Boolean preview = env.getArgs().path("preview").isMissingNode() ? null : env.getArgs().path("preview").asBoolean();
+            Boolean dryRun = env.getArgs().path("dry_run").isMissingNode() ? null : env.getArgs().path("dry_run").asBoolean();
+            Boolean effectivePreview = preview != null ? preview : (dryRun != null ? dryRun : false);
             
             logger.info("tool.call traceId={} tool={} path={} start={} end={} preview={}", ctx.traceId, env.getTool(), path, startLine, endLine, effectivePreview);
             
@@ -2099,7 +2389,7 @@ public final class BuiltInToolHandlers {
         @Override
         public ToolResult execute(ToolEnvelope env, ToolExecutionContext ctx) {
             long t0 = System.nanoTime();
-            String path = env.getArgs().path("path").asText("").trim();
+            String path = pathArg(env.getArgs());
             Boolean preview = env.getArgs().path("preview").isMissingNode() ? null : env.getArgs().path("preview").asBoolean();
             // Default dry_run to false (apply immediately) unless explicitly set to true
             JsonNode dryRunNode = env.getArgs().path("dry_run");

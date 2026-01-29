@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzf.codeagent.api.AgentChatController.ChatRequest;
 import com.zzf.codeagent.api.AgentChatController.ChatResponse;
 import com.zzf.codeagent.api.AgentChatController.CompressHistoryRequest;
+import com.zzf.codeagent.api.AgentChatController.PendingChangeRequest;
 import com.zzf.codeagent.core.agent.JsonReActAgent;
 import com.zzf.codeagent.core.agent.TopicResult;
 import com.zzf.codeagent.core.event.AgentEvent;
@@ -21,7 +22,9 @@ import com.zzf.codeagent.core.runtime.RuntimeService;
 import com.zzf.codeagent.core.session.SessionWorkspace;
 import com.zzf.codeagent.core.skill.SkillManager;
 import com.zzf.codeagent.core.tool.AppliedChangesManager;
+import com.zzf.codeagent.core.tool.PendingChangesManager;
 import com.zzf.codeagent.core.tool.ToolExecutionService;
+import com.zzf.codeagent.core.tools.FileSystemToolService;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -32,13 +35,17 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
 import java.net.http.HttpClient;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import java.util.concurrent.ExecutorService;
@@ -203,13 +210,33 @@ public final class AgentService {
                 appliedChanges.add(map);
             }
 
+            // Collect pending changes for UI
+            List<Map<String, Object>> pendingChangesList = new ArrayList<>();
+            for (PendingChangesManager.PendingChange pc : PendingChangesManager.getInstance().getChanges(workspaceRoot, traceId)) {
+                Map<String, Object> map = new HashMap<>();
+                map.put("id", pc.id);
+                map.put("path", pc.path);
+                map.put("type", pc.type);
+                map.put("oldContent", pc.oldContent);
+                map.put("newContent", pc.newContent);
+                map.put("timestamp", pc.timestamp);
+                map.put("workspaceRoot", pc.workspaceRoot);
+                map.put("sessionId", pc.sessionId);
+                pendingChangesList.add(map);
+            }
+
             answer = contextService.fixMojibakeIfNeeded(answer);
             logger.info("chat.out traceId={} answer={}", traceId, contextService.truncate(answer, 500));
             long totalMs = (System.nanoTime() - t0) / 1_000_000L;
             Map<String, Object> meta = new HashMap<String, Object>();
             meta.put("intent", intent.name());
             meta.put("route", route);
-            meta.put("appliedChanges", appliedChanges);
+            if (!appliedChanges.isEmpty()) {
+                meta.put("appliedChanges", appliedChanges);
+            }
+            if (!pendingChangesList.isEmpty()) {
+                meta.put("pendingChanges", pendingChangesList);
+            }
             meta.put("latency_ms_total", totalMs);
             meta.put("latency_ms_pipeline", pipelineMs);
             meta.put("latency_ms_agent", agentMs);
@@ -262,6 +289,8 @@ public final class AgentService {
         }
     }
 
+
+
     public ResponseEntity<Map<String, Object>> compressHistory(CompressHistoryRequest req) {
         String traceId = resolveTraceId("trace-compress-");
         MDC.put("traceId", traceId);
@@ -310,6 +339,110 @@ public final class AgentService {
         } finally {
             MDC.remove("traceId");
         }
+    }
+
+    public ResponseEntity<Map<String, Object>> resolvePending(PendingChangeRequest req) {
+        String traceId = req == null || req.traceId == null ? "" : req.traceId.trim();
+        String workspaceRoot = req == null || req.workspaceRoot == null ? "" : req.workspaceRoot.trim();
+        Map<String, Object> out = new HashMap<>();
+        out.put("traceId", traceId);
+        if (workspaceRoot.isEmpty()) {
+            out.put("status", "error");
+            out.put("error", "workspace_root_required");
+            return jsonStatus(HttpStatus.BAD_REQUEST, out);
+        }
+        Set<String> requestedPaths = extractRequestedPaths(req);
+        List<PendingChangesManager.PendingChange> pending = PendingChangesManager.getInstance().getChanges(workspaceRoot, traceId);
+        if (pending.isEmpty()) {
+            out.put("status", "error");
+            out.put("error", "no_pending_changes");
+            return jsonOk(out);
+        }
+        List<PendingChangesManager.PendingChange> selected = new ArrayList<>();
+        if (requestedPaths.isEmpty()) {
+            selected.addAll(pending);
+        } else {
+            for (PendingChangesManager.PendingChange change : pending) {
+                if (requestedPaths.contains(normalizePendingPath(change.path))) {
+                    selected.add(change);
+                }
+            }
+        }
+        if (selected.isEmpty()) {
+            out.put("status", "error");
+            out.put("error", "no_matching_pending_changes");
+            out.put("available_paths", pending.stream().map(c -> c.path).collect(Collectors.toList()));
+            return jsonOk(out);
+        }
+        Path rootPath;
+        try {
+            rootPath = Path.of(workspaceRoot).toAbsolutePath().normalize();
+        } catch (Exception e) {
+            out.put("status", "error");
+            out.put("error", "invalid_workspace_root");
+            return jsonOk(out);
+        }
+        FileSystemToolService fs = new FileSystemToolService(rootPath);
+        boolean reject = req != null && Boolean.TRUE.equals(req.reject);
+        List<String> applied = new ArrayList<>();
+        List<String> rejected = new ArrayList<>();
+        List<String> errors = new ArrayList<>();
+        for (PendingChangesManager.PendingChange change : selected) {
+            if (reject) {
+                PendingChangesManager.getInstance().removeChange(change.id);
+                rejected.add(change.path);
+                continue;
+            }
+            boolean delete = "DELETE".equalsIgnoreCase(change.type);
+            FileSystemToolService.EditFileResult result = fs.applyToFile(change.path, change.newContent == null ? "" : change.newContent, delete);
+            if (result.success) {
+                PendingChangesManager.getInstance().removeChange(change.id);
+                applied.add(change.path);
+                AppliedChangesManager.getInstance().addChange(new AppliedChangesManager.AppliedChange(
+                        change.id, change.path, change.type, change.oldContent, change.newContent, System.currentTimeMillis(), workspaceRoot, traceId));
+            } else {
+                errors.add(change.path + ":" + (result.error == null ? "apply_failed" : result.error));
+            }
+        }
+        boolean success = errors.isEmpty();
+        out.put("status", success ? "ok" : "error");
+        out.put("success", success);
+        if (!applied.isEmpty()) {
+            out.put("applied", applied);
+        }
+        if (!rejected.isEmpty()) {
+            out.put("rejected", rejected);
+        }
+        if (!errors.isEmpty()) {
+            out.put("error", errors.get(0));
+            out.put("errors", errors);
+        }
+        return jsonOk(out);
+    }
+
+    private static Set<String> extractRequestedPaths(PendingChangeRequest req) {
+        Set<String> out = new HashSet<>();
+        if (req == null) {
+            return out;
+        }
+        if (req.path != null && !req.path.trim().isEmpty()) {
+            out.add(normalizePendingPath(req.path));
+        }
+        if (req.paths != null) {
+            for (String path : req.paths) {
+                if (path != null && !path.trim().isEmpty()) {
+                    out.add(normalizePendingPath(path));
+                }
+            }
+        }
+        return out;
+    }
+
+    private static String normalizePendingPath(String path) {
+        if (path == null) {
+            return "";
+        }
+        return path.replace('\\', '/').trim();
     }
 
     private ResponseEntity<Map<String, Object>> jsonOk(Map<String, Object> body) {
@@ -676,13 +809,33 @@ public final class AgentService {
                     appliedChanges.add(map);
                 }
 
+                // Collect pending changes for UI
+                List<Map<String, Object>> pendingChangesList = new ArrayList<>();
+                for (PendingChangesManager.PendingChange pc : PendingChangesManager.getInstance().getChanges(workspaceRoot, traceId)) {
+                    Map<String, Object> map = new HashMap<>();
+                    map.put("id", pc.id);
+                    map.put("path", pc.path);
+                    map.put("type", pc.type);
+                    map.put("oldContent", pc.oldContent);
+                    map.put("newContent", pc.newContent);
+                    map.put("timestamp", pc.timestamp);
+                    map.put("workspaceRoot", pc.workspaceRoot);
+                    map.put("sessionId", pc.sessionId);
+                    pendingChangesList.add(map);
+                }
+
                 answer = contextService.fixMojibakeIfNeeded(answer);
                 
                 long totalMs = (System.nanoTime() - t0) / 1_000_000L;
                 Map<String, Object> meta = new HashMap<>();
                 meta.put("intent", intent.name());
                 meta.put("route", route);
-                meta.put("appliedChanges", appliedChanges);
+                if (!appliedChanges.isEmpty()) {
+                    meta.put("appliedChanges", appliedChanges);
+                }
+                if (!pendingChangesList.isEmpty()) {
+                    meta.put("pendingChanges", pendingChangesList);
+                }
                 meta.put("latency_ms_total", totalMs);
                 meta.put("latency_ms_pipeline", pipelineMs);
                 meta.put("latency_ms_agent", agentMs);

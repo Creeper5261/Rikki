@@ -75,11 +75,46 @@ public final class JsonUtils {
     }
 
     public static String textOrFallback(JsonNode args, String k1, String k2) {
-        String a = args.path(k1).asText("");
-        if (a != null && !a.trim().isEmpty()) {
-            return a.trim();
+        return textOrFallback(args, new String[] { k1, k2 });
+    }
+
+    public static String textOrFallback(JsonNode args, java.util.List<String> keys) {
+        if (args == null || keys == null || keys.isEmpty()) {
+            return "";
         }
-        String b = args.path(k2).asText("");
-        return b == null ? "" : b.trim();
+        return textOrFallback(args, keys.toArray(new String[0]));
+    }
+
+    public static String textOrFallback(JsonNode args, String... keys) {
+        if (args == null || keys == null || keys.length == 0) {
+            return "";
+        }
+        for (String key : keys) {
+            if (key == null || key.isEmpty()) {
+                continue;
+            }
+            JsonNode node = args.path(key);
+            if (node == null || node.isMissingNode() || node.isNull()) {
+                continue;
+            }
+            String value = node.asText("");
+            if (value != null && !value.trim().isEmpty()) {
+                return value.trim();
+            }
+        }
+        for (String key : keys) {
+            if (key == null || key.isEmpty()) {
+                continue;
+            }
+            JsonNode node = args.path(key);
+            if (node == null || node.isMissingNode() || node.isNull()) {
+                continue;
+            }
+            String value = node.asText("");
+            if (value != null) {
+                return value.trim();
+            }
+        }
+        return "";
     }
 }
