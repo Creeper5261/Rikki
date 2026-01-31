@@ -10,6 +10,8 @@ import com.zzf.codeagent.core.event.EventSource;
 import com.zzf.codeagent.core.event.EventStream;
 import com.zzf.codeagent.core.event.EventType;
 import com.zzf.codeagent.core.pipeline.DynamicContextBuilder;
+import com.zzf.codeagent.core.rag.index.RepoStructureService;
+import com.zzf.codeagent.core.rag.index.SymbolGraphService;
 import com.zzf.codeagent.core.rag.pipeline.IndexingWorker;
 import com.zzf.codeagent.core.rag.search.ElasticsearchCodeSearchService;
 import com.zzf.codeagent.core.rag.search.HybridCodeSearchService;
@@ -37,6 +39,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.*;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class JsonReActAgent {
@@ -66,6 +69,7 @@ public class JsonReActAgent {
     private final int READ_FILE_PREVIEW_CHARS;
     private final int THOUGHT_CHUNK_SIZE;
     
+    private String agentRole;
     private String systemHeaderCache;
     private String skillSystemPromptCache;
     private String checkNewTopicPromptCache;
@@ -93,6 +97,8 @@ public class JsonReActAgent {
     private final String ideContextPath;
     private final EventStream eventStream;
     private final RepoStructureService repoStructureService;
+    private final MemoryManager memoryManager;
+    private final StringBuilder sessionSummary = new StringBuilder();
     private String repoMapCache;
     private final List<String> runLoopToolHistory = new ArrayList<>();
     private String systemHint;
@@ -140,6 +146,7 @@ public class JsonReActAgent {
 
     public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, OpenAiChatModel fastModel, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, String fileSystemRoot, String sessionId, String publicWorkspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager, AgentConfig config) {
         this.config = config;
+        this.agentRole = config.getAgentRole() != null ? config.getAgentRole() : "Software Engineer";
         this.MAX_TURNS = config.getMaxTurns();
         this.MAX_TOOL_CALLS = config.getMaxToolCalls();
         this.MAX_CONSECUTIVE_TOOL_ERRORS = config.getMaxConsecutiveToolErrors();
@@ -180,6 +187,8 @@ public class JsonReActAgent {
         this.eventStream = eventStream;
         this.skillManager = skillManager;
         this.repoStructureService = new RepoStructureService();
+        this.symbolGraphService = symbolGraphService;
+        this.memoryManager = new MemoryManager(fastModel != null ? fastModel : model, this.repoStructureService);
         
         Path rootPath;
         try {
@@ -262,6 +271,7 @@ public class JsonReActAgent {
         Map<String, String> signatureToObs = new HashMap<>();
         
         for (int i = 0; i < MAX_TURNS; i++) {
+            checkAndCompressHistory();
             turnsUsed = i + 1;
             logger.info("agent.turn.start traceId={} turn={} goalChars={} requestHistorySize={} agentHistorySize={}", traceId, i, goal == null ? 0 : goal.length(), chatHistory.size(), history.size());
             emitAgentStepEvent("turn_start", goal, i, null);
@@ -485,6 +495,52 @@ public class JsonReActAgent {
             } else {
                 obs = toolExecutionService.execute(tool, toolVersion, args, ctx);
             }
+
+            // Phase 4: Predictive Context (Symbol Graph)
+            if ("READ_FILE".equals(tool) && symbolGraphService != null && !isToolError(obs)) {
+                try {
+                    String filePath = args.path("path").asText();
+                    if (!filePath.isEmpty()) {
+                        Set<String> related = symbolGraphService.getRelatedFiles(workspaceRoot, filePath);
+                        if (!related.isEmpty()) {
+                            JsonNode obsNode = mapper.readTree(obs);
+                            if (obsNode instanceof ObjectNode) {
+                                StringBuilder relatedContext = new StringBuilder();
+                                int injectedCount = 0;
+                                
+                                for (String relFile : related) {
+                                    if (injectedCount >= 5) break; // Limit to top 5 related files
+                                    
+                                    try {
+                                        Path absPath = Paths.get(workspaceRoot, relFile);
+                                        if (Files.exists(absPath)) {
+                                            String content = Files.readString(absPath);
+                                            String skeleton = repoStructureService.generateSkeleton(content);
+                                            if (!skeleton.isEmpty()) {
+                                                relatedContext.append("\n--- Related: ").append(relFile).append(" (AST Skeleton) ---\n");
+                                                relatedContext.append(skeleton).append("\n");
+                                                injectedCount++;
+                                            }
+                                        }
+                                    } catch (Exception ignore) {
+                                        // Ignore file read errors for predictive context
+                                    }
+                                }
+
+                                if (relatedContext.length() > 0) {
+                                    ((ObjectNode) obsNode).put("relatedContext", relatedContext.toString());
+                                    ((ObjectNode) obsNode).put("relatedFiles", related.toString());
+                                    obs = obsNode.toString();
+                                    logger.info("agent.predictive_context.injected traceId={} file={} injectedCount={}", traceId, filePath, injectedCount);
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    logger.warn("agent.predictive_context.fail traceId={} err={}", traceId, e.toString());
+                }
+            }
+
             logToolResult(tool, obs);
             
             emitToolResultEvent(tool, toolVersion, sig, obs, i, toolCallEventId);
@@ -659,6 +715,9 @@ public class JsonReActAgent {
         if (!longTermMemoryContent.isEmpty()) {
             staticContext.append("\nLongTermMemory:\n").append(StringUtils.truncate(longTermMemoryContent, MAX_LONG_TERM_MEMORY_CHARS)).append("\n");
         }
+        if (sessionSummary.length() > 0) {
+            staticContext.append("\nSessionSummary (Past Turns):\n").append(StringUtils.truncate(sessionSummary.toString(), 3000)).append("\n");
+        }
         if (!agentsMdContent.isEmpty()) {
             staticContext.append("\nAGENTS.md (Context):\n").append(StringUtils.truncate(agentsMdContent, MAX_LONG_TERM_MEMORY_CHARS)).append("\n");
         }
@@ -802,24 +861,43 @@ public class JsonReActAgent {
         return repoMapCache;
     }
 
+    public void setAgentRole(String agentRole) {
+        this.agentRole = agentRole;
+        this.systemHeaderCache = null; // Invalidate cache to force reload with new role
+    }
+
     private String loadSystemHeader() {
-        if (systemHeaderCache != null) {
-            return systemHeaderCache;
-        }
-        String header = "";
-        String resourcePath = config.getSystemHeaderResource();
-        try (InputStream input = JsonReActAgent.class.getClassLoader().getResourceAsStream(resourcePath)) {
-            if (input != null) {
-                header = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        String template = systemHeaderCache;
+        if (template == null) {
+            String resourcePath = config.getSystemHeaderResource();
+            try (InputStream input = JsonReActAgent.class.getClassLoader().getResourceAsStream(resourcePath)) {
+                if (input != null) {
+                    template = new String(input.readAllBytes(), StandardCharsets.UTF_8);
+                }
+            } catch (Exception e) {
+                logger.warn("system.header.load.fail traceId={} resource={} err={}", traceId, resourcePath, e.toString());
             }
-        } catch (Exception e) {
-            logger.warn("system.header.load.fail traceId={} resource={} err={}", traceId, resourcePath, e.toString());
+            if (template == null || template.isEmpty()) {
+                template = defaultSystemHeader();
+            }
+            systemHeaderCache = template;
         }
-        header = header == null ? "" : header.trim();
-        if (header.isEmpty()) {
-            header = defaultSystemHeader();
+
+        String header = template;
+
+        // Phase 2: Dynamic Identity Injection
+        if (config.getAgentName() != null) {
+             header = header.replace("${AGENT_NAME}", config.getAgentName());
         }
-        systemHeaderCache = header;
+        if (this.agentRole != null) {
+             header = header.replace("${AGENT_ROLE}", this.agentRole);
+        }
+        
+        // Inject Environment Info
+        header = header.replace("${DATE}", java.time.LocalDate.now().toString());
+        header = header.replace("${CWD}", sessionRoot != null ? sessionRoot : ".");
+        header = header.replace("${OS_NAME}", System.getProperty("os.name"));
+
         return header;
     }
 
@@ -889,13 +967,23 @@ public class JsonReActAgent {
         // Only filter if context is huge
         if (goal == null || goal.trim().isEmpty()) return StringUtils.truncate(context, MAX_IDE_CONTEXT_CHARS);
 
-        // 1. Extract simple keywords from goal
+        // 1. Smart Keyword Extraction (Split CamelCase)
         Set<String> keywords = new HashSet<>();
         for (String w : goal.split("[\\s,;?!.\"]+")) {
             if (w.length() > 2) {
                 keywords.add(w.toLowerCase());
+                // Split CamelCase: "UserLogin" -> "user", "login"
+                String[] parts = w.split("(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|[-_]");
+                if (parts.length > 1) {
+                    for (String p : parts) {
+                        if (p.length() > 2) keywords.add(p.toLowerCase());
+                    }
+                }
             }
         }
+        // Critical keywords always kept
+        keywords.addAll(Set.of("error", "exception", "fail", "fix", "bug", "todo", "test"));
+
         if (keywords.isEmpty()) {
             return StringUtils.truncate(context, MAX_IDE_CONTEXT_CHARS);
         }
@@ -929,23 +1017,16 @@ public class JsonReActAgent {
                     // Check if this class is relevant to the goal
                     currentClassMatched = false;
                     String className = trim.substring(2).toLowerCase();
-                    // Simple check: does class name contain any keyword?
-                    for (String k : keywords) {
-                        if (className.contains(k)) {
-                            currentClassMatched = true;
-                            break;
-                        }
+                    if (isRelevant(className, keywords)) {
+                        currentClassMatched = true;
                     }
                 } else if (trim.startsWith("* ")) {
                     // Method line: Keep only if Class matched OR Method name matches keyword
                     boolean keep = currentClassMatched;
                     if (!keep) {
                         String methodName = trim.substring(2).toLowerCase();
-                        for (String k : keywords) {
-                            if (methodName.contains(k)) {
-                                keep = true;
-                                break;
-                            }
+                        if (isRelevant(methodName, keywords)) {
+                            keep = true;
                         }
                     }
                     if (keep) {
@@ -956,15 +1037,8 @@ public class JsonReActAgent {
                 }
             } else if (inCallGraph) {
                 // Only keep CallGraph lines that contain keywords
-                boolean keep = false;
                 String lower = trim.toLowerCase();
-                for (String k : keywords) {
-                    if (lower.contains(k)) {
-                        keep = true;
-                        break;
-                    }
-                }
-                if (keep) {
+                if (isRelevant(lower, keywords)) {
                     sb.append(line).append("\n");
                 }
             } else {
@@ -973,6 +1047,42 @@ public class JsonReActAgent {
         }
         
         return StringUtils.truncate(sb.toString(), MAX_IDE_CONTEXT_CHARS);
+    }
+
+    private boolean isRelevant(String text, Set<String> keywords) {
+        for (String k : keywords) {
+            if (text.contains(k)) return true;
+        }
+        return false;
+    }
+
+    private void checkAndCompressHistory() {
+        // Phase 3: Long-term Memory Manager
+        
+        // 1. Tool Output Pruning (OpenCode inspired)
+        // Keep approx 8000 tokens (32000 chars) of full detail, prune older tool outputs to save context
+        memoryManager.pruneToolOutputs(history, 8000);
+
+        // 2. History Compression
+        // If history grows too large (e.g. > 25 items), summarize the oldest 10.
+        // We keep the most recent 15 for immediate context.
+        if (history.size() > 25) {
+            int toRemove = 10;
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < toRemove; i++) {
+                sb.append(history.get(i)).append("\n");
+            }
+            
+            String summary = memoryManager.summarize(sb.toString());
+            if (summary != null && !summary.isEmpty()) {
+                if (sessionSummary.length() > 0) sessionSummary.append("\n");
+                sessionSummary.append(summary);
+                logger.info("history.compressed traceId={} removed={} summaryChars={}", traceId, toRemove, summary.length());
+            }
+            
+            // Remove from history
+            history.subList(0, toRemove).clear();
+        }
     }
 
     // Package-private for testing
@@ -2432,7 +2542,7 @@ public class JsonReActAgent {
         }
         try {
             String defaultPrompt = "Analyze if this message indicates a new conversation topic. If it does, extract a 2-3 word title that captures the new topic. Format your response as a JSON object with two fields: 'isNewTopic' (boolean) and 'title' (string, or null if isNewTopic is false). Only include these fields, no other text.";
-            String promptTemplate = loadResource(config.getCheckNewTopicPromptResource(), defaultPrompt, traceId);
+            String promptTemplate = loadResource(config.getCheckNewTopicResource(), defaultPrompt, traceId);
             String prompt = promptTemplate + "\n\nMessage:\n" + StringUtils.truncate(goal, 1000);
             logger.info("topic.detect.request goalChars={} promptChars={}", goal.length(), prompt.length());
             String raw = model.chat(prompt);
@@ -2458,35 +2568,50 @@ public class JsonReActAgent {
             return mapper.createObjectNode();
         }
         String content = raw.trim();
-        // SOTA Phase 1: Robust JSON Parsing (Strip Markdown)
-        // Handle ```json ... ``` or just ``` ... ```
-        if (content.startsWith("```")) {
-            int firstNewline = content.indexOf('\n');
-            if (firstNewline > 0) {
-                content = content.substring(firstNewline + 1);
-            }
-            if (content.endsWith("```")) {
-                content = content.substring(0, content.length() - 3);
-            }
-        }
-        content = content.trim();
-        // Find first '{'
-        int firstBrace = content.indexOf('{');
-        if (firstBrace < 0) {
-             throw new IllegalArgumentException("No JSON object found (missing '{')");
-        }
         
-        // Find last '}'
-        int lastBrace = content.lastIndexOf('}');
-        if (lastBrace > firstBrace) {
-            content = content.substring(firstBrace, lastBrace + 1);
+        // SOTA Phase 1: Robust JSON Parsing (Strip Markdown)
+        // Strategy 1: Look for ```json ... ``` block
+        Pattern jsonBlock = Pattern.compile("```json(.*?)```", Pattern.DOTALL);
+        Matcher m = jsonBlock.matcher(content);
+        if (m.find()) {
+            content = m.group(1).trim();
         } else {
-            // Missing closing brace? Try to parse from first brace to end
-            content = content.substring(firstBrace);
+            // Strategy 2: Look for any ``` ... ``` block that looks like an object
+            Pattern anyBlock = Pattern.compile("```(.*?)```", Pattern.DOTALL);
+            Matcher m2 = anyBlock.matcher(content);
+            boolean found = false;
+            while (m2.find()) {
+                String block = m2.group(1).trim();
+                if (block.startsWith("{")) {
+                    content = block;
+                    found = true;
+                    break;
+                }
+            }
+            
+            if (!found) {
+                // Strategy 3: Raw string - find outermost braces
+                int firstBrace = content.indexOf('{');
+                if (firstBrace >= 0) {
+                    int lastBrace = content.lastIndexOf('}');
+                    if (lastBrace > firstBrace) {
+                        content = content.substring(firstBrace, lastBrace + 1);
+                    } else {
+                         content = content.substring(firstBrace);
+                    }
+                }
+            }
         }
 
         try {
-            return mapper.readTree(content);
+            // Use robust reader with relaxed JSON rules (comments, trailing commas, unquoted fields)
+            return mapper.reader()
+                    .with(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_JAVA_COMMENTS)
+                    .with(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_YAML_COMMENTS)
+                    .with(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_TRAILING_COMMA)
+                    .with(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_UNQUOTED_FIELD_NAMES)
+                    .with(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_SINGLE_QUOTES)
+                    .readTree(content);
         } catch (Exception e) {
             // Phase 2: Fuzzy Repair for missing closing braces
             // Try appending '}' up to 2 times
@@ -2494,7 +2619,13 @@ public class JsonReActAgent {
             for (int i = 0; i < 2; i++) {
                 repaired += "}";
                 try {
-                    return mapper.readTree(repaired);
+                    return mapper.reader()
+                            .with(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_JAVA_COMMENTS)
+                            .with(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_YAML_COMMENTS)
+                            .with(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_TRAILING_COMMA)
+                            .with(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_UNQUOTED_FIELD_NAMES)
+                            .with(com.fasterxml.jackson.core.json.JsonReadFeature.ALLOW_SINGLE_QUOTES)
+                            .readTree(repaired);
                 } catch (Exception ignored) {
                 }
             }

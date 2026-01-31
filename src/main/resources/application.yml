@@ -31,6 +31,8 @@ codeagent:
     docker-workdir: ${CODEAGENT_RUNTIME_DOCKER_WORKDIR:/workspace}
     timeout-ms: ${CODEAGENT_RUNTIME_TIMEOUT_MS:120000}
   agent:
+    agent-name: ${AGENT_NAME:Rikki}
+    agent-role: ${AGENT_ROLE:Software Engineer}
     max-turns: ${AGENT_MAX_TURNS:30}
     max-tool-calls: ${AGENT_MAX_TOOL_CALLS:18}
     max-consecutive-tool-errors: ${AGENT_MAX_CONSECUTIVE_TOOL_ERRORS:3}

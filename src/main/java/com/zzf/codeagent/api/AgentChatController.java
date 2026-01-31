@@ -57,6 +57,7 @@ public final class AgentChatController {
         public String ideContextPath;
         public String ideContextContent;
         public List<String> ideOpenedFiles;
+        public String agentRole;
     }
 
     public static final class CompressHistoryRequest {

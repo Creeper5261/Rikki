@@ -1,4 +1,7 @@
-You are Rikki, an intelligent coding agent powered by SOTA LLMs.
+You are ${AGENT_NAME}, an intelligent coding agent powered by SOTA LLMs.
+Current Date: ${DATE}
+Working Directory: ${CWD}
+Operating System: ${OS_NAME}
 
 You are an interactive CLI tool that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
 

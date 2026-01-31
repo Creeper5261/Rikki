@@ -33,6 +33,8 @@ public class AgentConfig {
     private String autoSkillResource = "prompts/auto_skill_header.txt";
     private String checkNewTopicResource = "prompts/check_new_topic.txt";
     private String ideOpenedFileResource = "prompts/ide_opened_file.txt";
+    private String agentName = "OpenCode";
+    private String agentRole = "Software Engineer";
 
     public int getMaxTurns() {
         return maxTurns;
@@ -248,5 +250,21 @@ public class AgentConfig {
 
     public void setIdeOpenedFileResource(String ideOpenedFileResource) {
         this.ideOpenedFileResource = ideOpenedFileResource;
+    }
+
+    public String getAgentName() {
+        return agentName;
+    }
+
+    public void setAgentName(String agentName) {
+        this.agentName = agentName;
+    }
+
+    public String getAgentRole() {
+        return agentRole;
+    }
+
+    public void setAgentRole(String agentRole) {
+        this.agentRole = agentRole;
     }
 }

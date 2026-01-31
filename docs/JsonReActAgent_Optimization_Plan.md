@@ -22,11 +22,11 @@ The proposed solutions draw from state-of-the-art (SOTA) open-source agents (SWE
 - Prompt construction relies on complex string concatenation in `buildPrompt` (Lines 587-719).
 
 **Proposed Solution**: **Configuration-Driven Dynamic Prompts**
-- **Template Engine**: Adopting a lightweight template engine (e.g., Jinja2 for Java or Mustache) to manage prompts. This allows separating logic from text.
-- **Configurable Identity**: Move agent identity (Name, Role, Constraints) to an external YAML/JSON configuration file (similar to SWE-agent's `config/default.yaml`).
-- **Dynamic Injection**:
-    - Inject `Current Working Directory`, `OS Info`, and `Date` dynamically.
-    - Support "Persona Switching" (e.g., switch between "Coder", "Reviewer", "Architect" modes).
+- [x] **Template Engine**: Adopting a lightweight template engine (e.g., Jinja2 for Java or Mustache) to manage prompts. This allows separating logic from text.
+- [x] **Configurable Identity**: Move agent identity (Name, Role, Constraints) to an external YAML/JSON configuration file (similar to SWE-agent's `config/default.yaml`).
+- [x] **Dynamic Injection**:
+    - [x] Inject `Current Working Directory`, `OS Info`, and `Date` dynamically.
+    - [x] Support "Persona Switching" (e.g., switch between "Coder", "Reviewer", "Architect" modes). (Implemented via `AgentConfig` and `JsonReActAgent.setAgentRole`)
 
 **Reference Implementation**:
 ```yaml
@@ -44,9 +44,9 @@ model_config:
 - **Result**: Agent claims files are empty or inaccessible because they were filtered out of the prompt.
 
 **Proposed Solution**: **Semantic & Structural Context**
-- **Tree-Sitter Skeleton**: Instead of raw text or keyword filtering, provide a "Code Skeleton" (Class names, Method signatures, Docstrings) of active files. This fits more files into context without losing structure.
-- **RAG Integration**: Use the existing `SmartRetrievalPipeline` (Vector Search) to select relevant code chunks instead of simple keyword matching.
-- **Explicit "Map"**: Implement a "Repo Map" (like Aider) that provides a compressed tree view of the entire project structure in the System Prompt, allowing the Agent to "know" what exists before searching.
+- [x] **Tree-Sitter Skeleton**: Instead of raw text or keyword filtering, provide a "Code Skeleton" (Class names, Method signatures, Docstrings) of active files. This fits more files into context without losing structure. (Implemented via JavaParser in RepoStructureService)
+- [x] **RAG Integration**: Use the existing `SmartRetrievalPipeline` (Vector Search) to select relevant code chunks instead of simple keyword matching.
+- [x] **Explicit "Map"**: Implement a "Repo Map" (like Aider) that provides a compressed tree view of the entire project structure in the System Prompt, allowing the Agent to "know" what exists before searching.
 
 ### 2.3 Output Robustness (JSON vs. XML)
 **Current State**:
@@ -54,11 +54,11 @@ model_config:
 - **Truncation**: `summarizeObservation` (Line 905) simply truncates the end of strings, potentially cutting off valid JSON closing braces or key error details.
 
 **Proposed Solution**: **Hybrid Parsing & Smart Truncation**
-- **Robust Parsing**: Implement a "Fuzzy JSON Parser" that can extract JSON objects even if embedded in text or missing closing braces.
-- **XML Tags (Alternative)**: Consider supporting XML-style tool calls (e.g., `<tool>READ_FILE</tool>`), which recent research (Anthropic) suggests are more robust for some models than JSON.
-- **Smart Truncation**:
-    - **Head + Tail**: For long logs/errors, keep the first 1000 chars (error type) and last 1000 chars (stack trace), truncating the middle.
-    - **Structured Truncation**: When truncating a file preview, insert a clear placeholder: `... [150 lines hidden] ...`.
+- [x] **Robust Parsing**: Implement a "Fuzzy JSON Parser" that can extract JSON objects even if embedded in text or missing closing braces.
+- [-] **XML Tags (Alternative)**: Consider supporting XML-style tool calls (e.g., `<tool>READ_FILE</tool>`), which recent research (Anthropic) suggests are more robust for some models than JSON. (Superseded by Robust JSON Parser)
+- [x] **Smart Truncation**:
+    - [x] **Head + Tail**: For long logs/errors, keep the first 1000 chars (error type) and last 1000 chars (stack trace), truncating the middle.
+    - [x] **Structured Truncation**: When truncating a file preview, insert a clear placeholder: `... [150 lines hidden] ...`.
 
 ### 2.4 Loop Detection & Stagnation
 **Current State**:
@@ -66,9 +66,9 @@ model_config:
 - **Forced Final Answer**: `forceFinalAnswer` (Line 568) forces a hallucinated response when `MAX_TURNS` is reached.
 
 **Proposed Solution**: **Adaptive Strategy & "Give Up" Protocol**
-- **History Analysis**: Instead of just checking the last output, analyze the sliding window of the last 5 turns. If the Agent performs `READ -> LIST -> READ` cycles repeatedly, interrupt it.
-- **Hint Injection**: When a loop is detected, do NOT just fail. Inject a **System Hint**: *"You seem stuck. You have read this file 3 times. Try using GREP to find usages instead."*
-- **Honest Failure**: Modify `forceFinalAnswer` to explicitly allow "I cannot complete the task" as a valid outcome, preventing misleading hallucinations.
+- [x] **History Analysis**: Instead of just checking the last output, analyze the sliding window of the last 5 turns. If the Agent performs `READ -> LIST -> READ` cycles repeatedly, interrupt it.
+- [x] **Hint Injection**: When a loop is detected, do NOT just fail. Inject a **System Hint**: *"You seem stuck. You have read this file 3 times. Try using GREP to find usages instead."*
+- [x] **Honest Failure**: Modify `forceFinalAnswer` to explicitly allow "I cannot complete the task" as a valid outcome, preventing misleading hallucinations.
 
 ---
 
@@ -85,9 +85,9 @@ model_config:
     - **Research**: Suggests "Budget Awareness" — informing the Agent of remaining steps (e.g., "Step 25/30") so it can wrap up investigation and focus on concluding.
 
 **Proposed Solution**: **Budget-Aware Graceful Exit**
-- **Configurable Limit**: Move `MAX_TURNS` to `agent_config.yaml`.
-- **Step Countdown**: Inject "Steps Remaining: X" into the System Prompt.
-- **Graceful Termination**: 
+- [x] **Configurable Limit**: Move `MAX_TURNS` to `agent_config.yaml`.
+- [x] **Step Countdown**: Inject "Steps Remaining: X" into the System Prompt.
+- [x] **Graceful Termination**: 
     - Instead of a silent `forceFinalAnswer`, inject a final prompt: *"You have exhausted your step budget. Please summarize what you have verified so far and explicitly state what is still unknown. Do NOT guess."*
 
 ---
@@ -128,9 +128,9 @@ How SOTA agents (SWE-agent, Aider, OpenDevin, MemGPT) handle infinite context:
     *   **Effect**: Isolates context per sub-task.
 
 **Proposed Solution**: **Repo Map + Semantic Search**
-- **Immediate**: Implement a `RepoStructureService` that generates a file-tree-like map with class/method signatures.
-- **Mid-term**: Enhance `SmartRetrievalPipeline` to support semantic code search (already partially present in project).
-- **Long-term**: Implement `MemoryManager` that summarizes past turns when context > 80% full.
+- [x] **Immediate**: Implement a `RepoStructureService` that generates a file-tree-like map with class/method signatures.
+- [x] **Mid-term**: Enhance `SmartRetrievalPipeline` to support semantic code search (already partially present in project).
+- [x] **Long-term**: Implement `MemoryManager` that summarizes past turns when context > 80% full.
 
 ---
 
@@ -144,9 +144,9 @@ How SOTA agents (SWE-agent, Aider, OpenDevin, MemGPT) handle infinite context:
 - **RAG as Tool**: In advanced agents, RAG is not just a pre-filter but a **first-class tool** (`SEARCH_KNOWLEDGE` or `consult_knowledge_base`) available throughout the session.
 
 **Proposed Solution**: **Interactive RAG & Memory Tiering**
-- **First-Class Tool**: Expose `SmartRetrieval` as a tool (`SEARCH_KNOWLEDGE`) that the Agent can call *at any time*, not just at the start.
-- **Interactive Refinement**: Allow the Agent to re-query if the first result is poor (e.g., "Search failed, I will try broader keywords").
-- **Long-Term Memory Role**: Explicitly frame RAG in the System Prompt as "access to the project's long-term knowledge base" rather than just "search".
+- [x] **First-Class Tool**: Expose `SmartRetrieval` as a tool (`SEARCH_KNOWLEDGE`) that the Agent can call *at any time*, not just at the start.
+- [x] **Interactive Refinement**: Allow the Agent to re-query if the first result is poor (e.g., "Search failed, I will try broader keywords").
+- [x] **Long-Term Memory Role**: Explicitly frame RAG in the System Prompt as "access to the project's long-term knowledge base" rather than just "search".
 
 ---
 
@@ -162,8 +162,67 @@ How SOTA agents (SWE-agent, Aider, OpenDevin, MemGPT) handle infinite context:
 - [x] **Repo Map**: Integrate a lightweight "Structure Map" into the initial context.
 
 ### Phase 3: SOTA Features (High Effort)
-- [ ] **Tree-Sitter Integration**: Replace text-based context with AST-based skeletons.
+- [x] **Tree-Sitter Integration**: Replace text-based context with AST-based skeletons (Implemented via JavaParser with Javadoc support).
+- [x] **Memory Manager**: Implemented `MemoryManager` to summarize old history turns into `SessionSummary` when context grows.
 - [x] **Dynamic Strategy**: Implement a "Manager Agent" or "Reflection Loop" that monitors the ReAct loop and intervenes if the Agent gets stuck.
+- [x] **Hybrid Context Strategy (LRU + AST)**:
+    - [x] **Research Aider RepoMap Implementation**:
+        - **Reference**: `d:\plugin_dev\openSourceRF\aider\aider\repomap.py`
+        - **Key Algorithm**:
+            1.  **Tag Extraction**: Use Tree-Sitter queries (scm files) to extract `def` (definition) and `ref` (reference) tags.
+            2.  **Graph Construction**: Build a MultiDiGraph where nodes are files/definitions and edges are references.
+            3.  **PageRank Ranking**: Apply PageRank to the graph to score the importance of each definition/file.
+                - **Personalization**: Boost scores for files in chat history or mentioning active identifiers.
+                - **Heuristics**: Bonus for camelCase/snake_case > 8 chars, penalty for private methods (`_start`), penalty for common definitions (>5 refs).
+            4.  **Tree Visualization**: Use `TreeContext` to render a skeletal view of the code, showing only highly-ranked lines (signatures) and preserving indentation/structure.
+    - [x] **Active Context**: Maintain LRU cache of full content for recently accessed files. (Implemented via implicit LRU in `checkAndCompressHistory`)
+    - [x] **Background Context**: Degrade evicted files to AST skeletons (Repo Map) instead of removing them completely. (Implemented via `pruneToolOutputs` degrading to skeleton)
+    - [x] **Implementation**: Refactor `RepoStructureService` to support single-file skeleton generation using Aider-style AST visualization.
+        - [x] **Tool Output Pruning (Inspired by OpenCode)**:
+            - [x] **Strategy**: Identify and prune stale tool outputs (e.g., early `ls` results or superseded `read_file` content) while preserving the conversation flow.
+            - [x] **Implementation**: Implement reverse traversal in `MemoryManager` to remove `tool_output` content exceeding a safety threshold (e.g., keep last 8k tokens), replacing them with AST skeletons or concise placeholders.
+
+### Phase 4: Semantic Graph Context (Predictive Intelligence)
+**Goal**: Move from "Reactive" context (what I read) to "Predictive" context (what I *might* need).
+**Basis**:
+1.  **Claude Code's "Predictive Prefetching"**:
+    *   **Concept**: When a developer opens a file, the IDE knows what other files are imported/called. The Agent should have this same "intuition".
+    *   **Mechanism**: If `A` imports `B`, and `A` is active, `B` should be available in the "Background Context" (AST Skeleton) automatically.
+2.  **Aider's Graph PageRank**:
+    *   **Reference**: `d:\plugin_dev\openSourceRF\aider\aider\repomap.py`
+    *   **Logic**: It builds a **Reference Graph** (who calls whom). The PageRank score determines which files are "semantically close" to the current focus, not just "textually similar".
+
+**Tasks**:
+- [x] **Symbol Graph Construction**:
+    - [x] **Extract References**: Upgrade `RepoStructureService` to extract dependencies using **Intersection Filtering** (Potential Imports ∩ Actual Usage) to eliminate unused imports and reduce noise.
+    - [x] **Build Graph**: Create a lightweight in-memory graph (Adjacency List) in `SymbolGraphService`.
+- [x] **Predictive Context Loading**:
+    - [x] **Strategy**: When Agent reads a file (`READ_FILE`), automatically query the Symbol Graph for 1st-degree dependencies.
+    - [x] **Implementation**: Inject "Related Files (Auto-detected)" hint into the `READ_FILE` tool observation, guiding the Agent to potential next steps without explicit searching.
+    - [x] **Trigger**: When `READ_FILE(X)` occurs.
+    - [x] **Action**: Query the Graph for neighbors of `X` (e.g., `Y` and `Z`) and append to observation.
+    - [x] **Result**: Automatically inject `SKELETON(Y)` and `SKELETON(Z)` into the context (if not already present), anticipating the Agent's next need. (Implemented via `JsonReActAgent` loop intervention)
+- [x] **PageRank Ranking (SOTA)**:
+        - [x] Apply PageRank algorithm to the in-memory `SymbolGraph`.
+        - [x] Boost scores for: CamelCase symbols, files with many incoming references (via PageRank).
+        - [x] Penalize: Private methods, common utils (via In-Degree/Name heuristics).
+        - [x] Boost Active files (Implemented `getPersonalizedPageRank` for dynamic context).
+    - [x] **Reference Analysis using JavaParser**:
+        - [x] Implemented in `RepoStructureService` (AST-based dependency extraction).
+    - [x] **Smart Suggestion**:
+        - [x] Auto-add dependent file AST skeletons (Top 5 ranked by PageRank).
+
+### Phase 5: Scalability & Long Context (OpenCode Strategy)
+- [x] **2M Token Context Window**:
+    - [x] **Goal**: Support massive context windows beyond simple LRU.
+    - [x] **Implementation**: 
+        - [x] `ToolOutputPruner` service: Implemented in `MemoryManager` (Prunes old `READ_FILE`/`LS` outputs).
+        - [x] `SummaryAgent`: Implemented via `MemoryManager.summarize` + `JsonReActAgent` history compression loop.
+    - [x] **Strategy**: 
+        - Keep recent 25 turns full.
+        - Prune tool outputs in older turns (retain logic/thought, remove data).
+        - Summarize oldest turns into "Session Summary".
+
 
 ---
 

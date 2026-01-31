@@ -16,6 +16,7 @@ import com.zzf.codeagent.core.event.EventType;
 import com.zzf.codeagent.core.pipeline.IntentClassifier;
 import com.zzf.codeagent.core.pipeline.SmartRetrievalPipeline;
 import com.zzf.codeagent.core.rag.index.ElasticsearchIndexNames;
+import com.zzf.codeagent.core.rag.index.SymbolGraphService;
 import com.zzf.codeagent.core.rag.pipeline.IndexingWorker;
 import com.zzf.codeagent.core.rag.search.ElasticsearchCodeSearchService;
 import com.zzf.codeagent.core.rag.search.HybridCodeSearchService;
@@ -177,8 +178,12 @@ public final class AgentService {
                     route = "SmartRetrieval->JsonReActAgent";
                     logger.info("chat.fallback traceId={} reason=InsufficientRetrieval", traceId);
                     JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, agentConfig);
-                    agentUsed = agent;
-                    String augmentedGoal = req.goal + "\n\n(Note: Automatic search failed to find enough context. Please use tools like LIST_FILES or READ_FILE to explore the project structure and key config files explicitly.)";
+                if (req.agentRole != null && !req.agentRole.trim().isEmpty()) {
+                    agent.setAgentRole(req.agentRole.trim());
+                    logger.info("agent.role_override traceId={} role={}", traceId, req.agentRole);
+                }
+                agentUsed = agent;
+                String augmentedGoal = req.goal + "\n\n(Note: Automatic search failed to find enough context. Please use tools like LIST_FILES or READ_FILE to explore the project structure and key config files explicitly.)";
                     logger.info("agent.run.start traceId={} route=SmartRetrievalFallback goalChars={}", traceId, augmentedGoal.length());
                     long tAgent = System.nanoTime();
                     answer = agent.run(augmentedGoal);
@@ -190,6 +195,10 @@ public final class AgentService {
                 route = "JsonReActAgent";
                 logger.info("chat.route traceId={} intent={} pipeline=JsonReActAgent", traceId, intent);
                 JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, agentConfig);
+                if (req.agentRole != null && !req.agentRole.trim().isEmpty()) {
+                    agent.setAgentRole(req.agentRole.trim());
+                    logger.info("agent.role_override traceId={} role={}", traceId, req.agentRole);
+                }
                 agentUsed = agent;
                 logger.info("agent.run.start traceId={} route=JsonReActAgent goalChars={}", traceId, req.goal.trim().length());
                 long tAgent = System.nanoTime();
