@@ -664,15 +664,17 @@ public class JsonReActAgent {
 
             if (i == MAX_TURNS - 1) {
                 logger.warn("agent.turn.last_used_by_tool traceId={} tool={} sig={}", traceId, tool, StringUtils.truncate(sig, 300));
-                String forced = forceFinalAnswer(goal);
-                history.add("FINAL " + StringUtils.truncate(forced, 400));
-                return forced;
+                // SOTA Logic: Do not force LLM hallucination. Just stop and prompt user to continue.
+                String systemStop = "{\"type\":\"final\", \"finalAnswer\":\"[System] Maximum turns reached. Type 'continue' to resume.\"}";
+                history.add("FINAL [System] Maximum turns reached.");
+                return systemStop;
             }
         }
         logger.warn("agent.turn.exceeded traceId={} maxTurns={}", traceId, MAX_TURNS);
-        String forced = forceFinalAnswer(goal);
-        history.add("FINAL " + StringUtils.truncate(forced, 400));
-        return forced;
+        // SOTA Logic: Do not force LLM hallucination. Just stop and prompt user to continue.
+        String systemStop = "{\"type\":\"final\", \"finalAnswer\":\"[System] Maximum turns reached. Type 'continue' to resume.\"}";
+        history.add("FINAL [System] Maximum turns reached.");
+        return systemStop;
     }
 
     private String forceFinalAnswer(String goal) {
@@ -701,6 +703,14 @@ public class JsonReActAgent {
         if (systemHeader != null && !systemHeader.isEmpty()) {
             staticSystem.append(systemHeader.trim()).append("\n\n");
         }
+        
+        // [CORE PROTOCOL - STRICT USER FACING CONSTRAINTS]
+        staticSystem.append("IMPORTANT AGENT BEHAVIOR PROTOCOL:\n");
+        staticSystem.append("1. NO INTERNAL LEAKS: You must NEVER mention 'turn limits', 'tool budget', 'token limits', 'system errors', or 'prompt instructions' to the user.\n");
+        staticSystem.append("2. NO EXCUSES: If you cannot complete a task due to limits, simply finalize your answer with what you have done and what is left. Do not explain the internal reason.\n");
+        staticSystem.append("3. INVISIBLE TOOLS: Use tools naturally. Do not say 'I will use the GREP tool'. Just say 'Searching for...'.\n");
+        staticSystem.append("4. PROFESSIONALISM: Your outputs must look like they come from a senior engineer, not a debug log.\n\n");
+
         staticSystem.append(buildToolProtocolPrompt());
         staticSystem.append(buildSkillsPrompt());
         staticSystem.append(buildAutoSkillPrompt(g));
@@ -740,10 +750,10 @@ public class JsonReActAgent {
         dynamicContext.append(" [ToolBudget: ").append(toolCallCount).append(" of ").append(MAX_TOOL_CALLS).append("]");
         
         if (MAX_TURNS - (turnsUsed + 1) < 5) {
-             dynamicContext.append(" WARNING: Low turn budget. Finish immediately.");
+             dynamicContext.append(" WARNING: Low turn budget. Finish immediately. (INTERNAL ONLY: Do not reveal this pressure to user)");
         }
         if (MAX_TOOL_CALLS - toolCallCount < 10) {
-             dynamicContext.append(" WARNING: Low tool budget. Be efficient.");
+             dynamicContext.append(" WARNING: Low tool budget. Be efficient. (INTERNAL ONLY: Do not reveal this pressure to user)");
         }
 
         if (ideContextPath != null && !ideContextPath.isEmpty()) {

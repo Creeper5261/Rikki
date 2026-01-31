@@ -19,8 +19,12 @@ import com.intellij.psi.PsiJavaFile;
 import com.intellij.psi.PsiManager;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
+import com.intellij.ui.JBColor;
 import com.intellij.util.ui.JBUI;
 import com.intellij.openapi.ui.DialogWrapper;
+import com.intellij.openapi.ui.popup.JBPopup;
+import com.intellij.openapi.ui.popup.JBPopupFactory;
+import com.intellij.util.ui.UIUtil;
 import org.jetbrains.annotations.Nullable;
 import com.zzf.codeagent.core.event.EventStream;
 import com.zzf.codeagent.core.tool.PendingChangesManager;
@@ -70,9 +74,11 @@ final class ChatPanel {
     private EventStream eventStream;
     private final DiffService diffService;
     private final boolean pendingWorkflowEnabled;
-    private JPanel pendingChangesPanel;
+    // private JPanel pendingChangesPanel; // Removed in favor of popup
     private JPanel pendingChangesList;
     private JButton commitAllButton;
+    private JButton pendingChangesToggle;
+    private JBPopup activePendingPopup;
     private final List<PendingChangesManager.PendingChange> pendingChanges = new ArrayList<>();
 
     ChatPanel(Project project) {
@@ -133,12 +139,22 @@ final class ChatPanel {
         titleBar.add(toggleSessions, BorderLayout.WEST);
         titleBar.add(new JLabel(" Chat with Agent", SwingConstants.CENTER), BorderLayout.CENTER);
         
+        if (pendingWorkflowEnabled) {
+            pendingChangesToggle = new JButton("Pending (0)");
+            pendingChangesToggle.setBorderPainted(false);
+            pendingChangesToggle.setContentAreaFilled(false);
+            pendingChangesToggle.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            pendingChangesToggle.setVisible(false); // Hidden if 0
+            pendingChangesToggle.addActionListener(e -> showPendingChangesPopup());
+            titleBar.add(pendingChangesToggle, BorderLayout.EAST);
+            
+            // Initialize the list panel for the popup
+            initPendingChangesList();
+        }
+        
         headerPanel.add(titleBar);
         headerPanel.add(Box.createVerticalStrut(5));
-        if (pendingWorkflowEnabled) {
-            headerPanel.add(buildPendingChangesPanel());
-            headerPanel.add(Box.createVerticalStrut(5));
-        }
+        // Removed inline pendingChangesPanel
         
         JPanel bottom = new JPanel(new BorderLayout(6, 6));
         bottom.add(new JBScrollPane(input), BorderLayout.CENTER);
@@ -553,10 +569,7 @@ final class ChatPanel {
         timer.start();
     }
 
-    private JPanel buildPendingChangesPanel() {
-        pendingChangesPanel = new JPanel(new BorderLayout());
-        pendingChangesPanel.setBorder(BorderFactory.createTitledBorder("Changed Files"));
-
+    private void initPendingChangesList() {
         pendingChangesList = new JPanel();
         pendingChangesList.setLayout(new BoxLayout(pendingChangesList, BoxLayout.Y_AXIS));
 
@@ -570,11 +583,35 @@ final class ChatPanel {
                 }, null);
             }
         });
+    }
 
-        pendingChangesPanel.add(new JBScrollPane(pendingChangesList), BorderLayout.CENTER);
-        pendingChangesPanel.add(commitAllButton, BorderLayout.SOUTH);
-        pendingChangesPanel.setVisible(false);
-        return pendingChangesPanel;
+    private void showPendingChangesPopup() {
+        if (pendingChanges.isEmpty()) return;
+        
+        JPanel content = new JPanel(new BorderLayout());
+        content.setBorder(JBUI.Borders.empty(10));
+        
+        JBScrollPane scroll = new JBScrollPane(pendingChangesList);
+        scroll.setBorder(BorderFactory.createEmptyBorder());
+        scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        
+        // Dynamic height estimation
+        int height = Math.min(400, Math.max(100, pendingChanges.size() * 50 + 50));
+        scroll.setPreferredSize(new Dimension(350, height));
+        
+        content.add(scroll, BorderLayout.CENTER);
+        content.add(commitAllButton, BorderLayout.SOUTH);
+        
+        activePendingPopup = JBPopupFactory.getInstance()
+                .createComponentPopupBuilder(content, null)
+                .setTitle("Pending Changes")
+                .setMovable(true)
+                .setResizable(true)
+                .setRequestFocus(true)
+                .setCancelOnClickOutside(true)
+                .createPopup();
+        
+        activePendingPopup.showUnderneathOf(pendingChangesToggle);
     }
 
     private void addPendingChanges(List<PendingChangesManager.PendingChange> changes) {
@@ -602,18 +639,58 @@ final class ChatPanel {
     }
 
     private void refreshPendingChangesPanel() {
-        if (pendingChangesPanel == null || pendingChangesList == null) {
+        int count = pendingChanges.size();
+        if (pendingChangesToggle != null) {
+            pendingChangesToggle.setText("Pending (" + count + ")");
+            pendingChangesToggle.setVisible(count > 0);
+        }
+
+        if (pendingChangesList == null) {
             return;
         }
         pendingChangesList.removeAll();
 
         for (PendingChangesManager.PendingChange change : pendingChanges) {
             JPanel item = new JPanel(new BorderLayout(5, 0));
-            JLabel name = new JLabel(change.path);
+            
+            // Extract filename and path
+            String fullPath = change.path;
+            String fileName = fullPath;
+            try {
+                fileName = Path.of(fullPath).getFileName().toString();
+            } catch (Exception e) {
+                // fallback
+            }
+
+            JPanel textPanel = new JPanel(new GridLayout(2, 1));
+            textPanel.setOpaque(false);
+            
+            JLabel nameLabel = new JLabel(fileName);
+            // nameLabel.setFont(nameLabel.getFont().deriveFont(Font.BOLD)); 
+            
+            JLabel pathLabel = new JLabel(fullPath);
+            pathLabel.setForeground(JBColor.GRAY);
+            pathLabel.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
+            
+            textPanel.add(nameLabel);
+            textPanel.add(pathLabel);
 
             JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
-            JButton undoBtn = new JButton("Undo");
-            JButton confirmBtn = new JButton("Confirm");
+            actions.setOpaque(false);
+            
+            JButton undoBtn = new JButton("×");
+            JButton confirmBtn = new JButton("√");
+            
+            undoBtn.setToolTipText("Undo Change");
+            confirmBtn.setToolTipText("Confirm Change");
+            
+            Dimension btnSize = new Dimension(28, 28);
+            undoBtn.setPreferredSize(btnSize);
+            confirmBtn.setPreferredSize(btnSize);
+            
+            // Minimalist button style
+            undoBtn.setMargin(JBUI.insets(0));
+            confirmBtn.setMargin(JBUI.insets(0));
 
             undoBtn.addActionListener(e -> {
                 diffService.revertChange(change, () -> removePendingChange(change), null);
@@ -625,19 +702,28 @@ final class ChatPanel {
             actions.add(undoBtn);
             actions.add(confirmBtn);
 
-            item.add(name, BorderLayout.CENTER);
+            item.add(textPanel, BorderLayout.CENTER);
             item.add(actions, BorderLayout.EAST);
-            item.setBorder(JBUI.Borders.empty(2));
+            item.setBorder(BorderFactory.createCompoundBorder(
+                JBUI.Borders.empty(4),
+                BorderFactory.createMatteBorder(0, 0, 1, 0, JBColor.border())
+            ));
+            
             pendingChangesList.add(item);
         }
 
-        boolean hasPending = !pendingChanges.isEmpty();
-        pendingChangesPanel.setVisible(hasPending);
         if (commitAllButton != null) {
-            commitAllButton.setEnabled(hasPending);
+            commitAllButton.setEnabled(count > 0);
         }
-        pendingChangesPanel.revalidate();
-        pendingChangesPanel.repaint();
+        
+        pendingChangesList.revalidate();
+        pendingChangesList.repaint();
+        
+        // Close popup if empty
+        if (count == 0 && activePendingPopup != null && !activePendingPopup.isDisposed()) {
+            activePendingPopup.cancel();
+            activePendingPopup = null;
+        }
     }
 
     private boolean samePendingChange(PendingChangesManager.PendingChange a, PendingChangesManager.PendingChange b) {
