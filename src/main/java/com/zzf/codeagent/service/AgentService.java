@@ -72,11 +72,12 @@ public final class AgentService {
     private final ContextService contextService;
     private final SkillManager skillManager;
     private final AgentConfig agentConfig;
+    private final SymbolGraphService symbolGraphService;
 
     @Value("${spring.kafka.bootstrap-servers:localhost:9092}")
     private String bootstrapServers;
 
-    public AgentService(ObjectMapper mapper, HybridCodeSearchService hybridCodeSearchService, IndexingWorker indexingWorker, ToolExecutionService toolExecutionService, RuntimeService runtimeService, RetrievalService retrievalService, ContextService contextService, SkillManager skillManager, AgentConfig agentConfig) {
+    public AgentService(ObjectMapper mapper, HybridCodeSearchService hybridCodeSearchService, IndexingWorker indexingWorker, ToolExecutionService toolExecutionService, RuntimeService runtimeService, RetrievalService retrievalService, ContextService contextService, SkillManager skillManager, AgentConfig agentConfig, SymbolGraphService symbolGraphService) {
         this.mapper = mapper;
         this.hybridCodeSearchService = hybridCodeSearchService;
         this.indexingWorker = indexingWorker;
@@ -86,6 +87,7 @@ public final class AgentService {
         this.contextService = contextService;
         this.skillManager = skillManager;
         this.agentConfig = agentConfig;
+        this.symbolGraphService = symbolGraphService;
     }
 
     public ResponseEntity<ChatResponse> chat(ChatRequest req) {
@@ -177,7 +179,7 @@ public final class AgentService {
                 if (isInsufficientAnswer(answer)) {
                     route = "SmartRetrieval->JsonReActAgent";
                     logger.info("chat.fallback traceId={} reason=InsufficientRetrieval", traceId);
-                    JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, agentConfig);
+                    JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, agentConfig, symbolGraphService);
                 if (req.agentRole != null && !req.agentRole.trim().isEmpty()) {
                     agent.setAgentRole(req.agentRole.trim());
                     logger.info("agent.role_override traceId={} role={}", traceId, req.agentRole);
@@ -194,7 +196,7 @@ public final class AgentService {
             } else {
                 route = "JsonReActAgent";
                 logger.info("chat.route traceId={} intent={} pipeline=JsonReActAgent", traceId, intent);
-                JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, agentConfig);
+                JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, agentConfig, symbolGraphService);
                 if (req.agentRole != null && !req.agentRole.trim().isEmpty()) {
                     agent.setAgentRole(req.agentRole.trim());
                     logger.info("agent.role_override traceId={} role={}", traceId, req.agentRole);
@@ -259,6 +261,15 @@ public final class AgentService {
                 meta.put("auto_skills", agentUsed.getAutoSkillsLoaded());
                 meta.put("edits_applied", agentUsed.getEditsApplied());
                 meta.put("edits_rejected", agentUsed.getEditsRejected());
+                meta.put("loop_count", agentUsed.getLoopCount());
+                
+                // Trajectory Metrics
+                double totalEdits = agentUsed.getEditsApplied() + agentUsed.getEditsRejected();
+                meta.put("edit_success_rate", totalEdits > 0 ? (double) agentUsed.getEditsApplied() / totalEdits : 0.0);
+                
+                double totalTools = agentUsed.getToolCallCount();
+                meta.put("tool_error_rate", totalTools > 0 ? (double) agentUsed.getToolErrorCount() / totalTools : 0.0);
+                meta.put("loop_rate", totalTools > 0 ? (double) agentUsed.getLoopCount() / totalTools : 0.0);
             }
             meta.put("total_ms", totalMs);
             meta.put("classify_ms", classifyMs);
@@ -762,7 +773,7 @@ public final class AgentService {
                 OpenAiChatModel model = contextService.createChatModel(apiKey);
                 OpenAiChatModel fastModel = contextService.createFastChatModel(apiKey);
 
-                TopicResult topic = JsonReActAgent.detectNewTopic(model, req.goal, mapper);
+                TopicResult topic = JsonReActAgent.detectNewTopic(model, req.goal, mapper, agentConfig, traceId);
                 IntentClassifier classifier = new IntentClassifier(fastModel, mapper);
                 IntentClassifier.Intent intent = classifier.classify(req.goal);
                 
@@ -789,7 +800,7 @@ public final class AgentService {
                         ObjectNode fallbackPayload = mapper.createObjectNode().put("text", "SmartRetrieval insufficient, falling back to Agent...");
                         emitter.send(SseEmitter.event().name("agent_step").data(mapper.writeValueAsString(fallbackPayload)));
 
-                        JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+                        JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, agentConfig, symbolGraphService);
                         agentUsed = agent;
                         String augmentedGoal = req.goal + "\n\n(Note: Automatic search failed to find enough context. Please use tools like LIST_FILES or READ_FILE to explore the project structure and key config files explicitly.)";
                         long tAgent = System.nanoTime();
@@ -799,7 +810,7 @@ public final class AgentService {
                     }
                 } else {
                     route = "JsonReActAgent";
-                    JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager);
+                    JsonReActAgent agent = new JsonReActAgent(mapper, model, fastModel, search, hybridCodeSearchService, traceId, workspaceRoot, sessionRoot, traceId, workspaceRoot, indexingWorker, bootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, agentConfig, symbolGraphService);
                     agentUsed = agent;
                     long tAgent = System.nanoTime();
                     answer = agent.run(req.goal);
@@ -858,6 +869,15 @@ public final class AgentService {
                     meta.put("auto_skills", agentUsed.getAutoSkillsLoaded());
                     meta.put("edits_applied", agentUsed.getEditsApplied());
                     meta.put("edits_rejected", agentUsed.getEditsRejected());
+                    meta.put("loop_count", agentUsed.getLoopCount());
+                    
+                    // Trajectory Metrics
+                    double totalEdits = agentUsed.getEditsApplied() + agentUsed.getEditsRejected();
+                    meta.put("edit_success_rate", totalEdits > 0 ? (double) agentUsed.getEditsApplied() / totalEdits : 0.0);
+                    
+                    double totalTools = agentUsed.getToolCallCount();
+                    meta.put("tool_error_rate", totalTools > 0 ? (double) agentUsed.getToolErrorCount() / totalTools : 0.0);
+                    meta.put("loop_rate", totalTools > 0 ? (double) agentUsed.getLoopCount() / totalTools : 0.0);
                 }
                 
                 ChatResponse resp = new ChatResponse(traceId, answer, topic.isNewTopic, topic.title, meta);

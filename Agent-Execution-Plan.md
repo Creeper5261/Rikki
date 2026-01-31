@@ -48,3 +48,23 @@
 - Tool-call hard limit is enforced with a clear final response.
 - Metrics are emitted per task in logs or JSON response meta.
 - Evaluation suite can run and report pass/fail.
+
+## Optimization Recommendations (Post-Verification)
+
+### Stage 2 Optimization: Stateful Docker Sandbox
+**Theory**: "Process Isolation" (path checks) is insufficient for SOTA agents. True isolation requires "Environment Isolation" via containers to prevent system-wide damage and manage dependencies cleanly.
+**Reference**:
+- **OpenHands (OpenDevin)**: Uses `ActionServer` inside a persistent Docker container.
+- **SWE-agent**: Runs all commands in a persistent shell session within Docker.
+**Proposal**:
+- Refactor `RuntimeService` to support **Persistent Docker Sessions** (start container once -> `docker exec` for commands) instead of `docker run --rm` per command.
+- Mount the workspace volume dynamically.
+
+### Stage 3 Optimization: Process-Oriented Evaluation
+**Theory**: "Outcome Reward" (Pass/Fail) is too coarse. "Process Reward" (evaluating the trajectory) correlates better with agent reasoning quality.
+**Reference**:
+- **SWE-bench**: Standardized benchmark for software engineering agents (Jimenez et al., 2024).
+- **Process Reward Models**: OpenAI/DeepMind research on evaluating reasoning steps.
+**Proposal**:
+- **Trajectory Metrics**: Track `Edit Success Rate` (Applied/Total) and `Loop Rate` (Repeated Tools/Total) as proxies for reasoning quality. (Implemented in Phase 3)
+- **SWE-bench Lite Integration**: Create a harness to run the agent against a subset of SWE-bench issues.

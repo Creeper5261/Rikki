@@ -1,6 +1,6 @@
 package com.zzf.codeagent.core.agent;
 
-public final class TopicResult {
+public class TopicResult {
     public final boolean isNewTopic;
     public final String title;
 
@@ -10,6 +10,6 @@ public final class TopicResult {
     }
 
     public static TopicResult empty() {
-        return new TopicResult(false, null);
+        return new TopicResult(false, "");
     }
 }

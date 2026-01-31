@@ -182,8 +182,19 @@ public class RepoStructureService {
         }
 
         @Override
-        public void visit(com.github.javaparser.ast.expr.AnnotationExpr n, Void arg) {
-            // Capture annotation types: @Service, @Autowired
+        public void visit(com.github.javaparser.ast.expr.MarkerAnnotationExpr n, Void arg) {
+            usedTypes.add(n.getNameAsString());
+            super.visit(n, arg);
+        }
+
+        @Override
+        public void visit(com.github.javaparser.ast.expr.SingleMemberAnnotationExpr n, Void arg) {
+            usedTypes.add(n.getNameAsString());
+            super.visit(n, arg);
+        }
+
+        @Override
+        public void visit(com.github.javaparser.ast.expr.NormalAnnotationExpr n, Void arg) {
             usedTypes.add(n.getNameAsString());
             super.visit(n, arg);
         }

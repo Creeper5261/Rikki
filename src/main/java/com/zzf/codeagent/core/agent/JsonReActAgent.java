@@ -26,6 +26,7 @@ import com.zzf.codeagent.core.tool.ToolProtocol;
 import com.zzf.codeagent.core.tools.FileSystemToolService;
 import com.zzf.codeagent.core.util.StringUtils;
 import com.zzf.codeagent.config.AgentConfig;
+import com.zzf.codeagent.core.util.JsonUtils;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +36,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.io.File;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
@@ -97,6 +99,7 @@ public class JsonReActAgent {
     private final String ideContextPath;
     private final EventStream eventStream;
     private final RepoStructureService repoStructureService;
+    private final SymbolGraphService symbolGraphService;
     private final MemoryManager memoryManager;
     private final StringBuilder sessionSummary = new StringBuilder();
     private String repoMapCache;
@@ -135,16 +138,17 @@ public class JsonReActAgent {
     private int turnsUsed = 0;
     private int editsApplied = 0;
     private int editsRejected = 0;
+    private int loopCount = 0;
     private final List<String> autoSkillsLoaded = new ArrayList<>();
     private String lastFailedTool;
     private int toolBudgetLimit;
     private PlanExecutionState planState;
 
-    public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager, AgentConfig config) {
-        this(mapper, model, null, search, hybridSearch, traceId, workspaceRoot, workspaceRoot, traceId, workspaceRoot, indexingWorker, kafkaBootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, config);
+    public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager, AgentConfig config, SymbolGraphService symbolGraphService) {
+        this(mapper, model, null, search, hybridSearch, traceId, workspaceRoot, workspaceRoot, traceId, workspaceRoot, indexingWorker, kafkaBootstrapServers, chatHistory, ideContextPath, toolExecutionService, runtimeService, eventStream, skillManager, config, symbolGraphService);
     }
 
-    public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, OpenAiChatModel fastModel, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, String fileSystemRoot, String sessionId, String publicWorkspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager, AgentConfig config) {
+    public JsonReActAgent(ObjectMapper mapper, OpenAiChatModel model, OpenAiChatModel fastModel, ElasticsearchCodeSearchService search, HybridCodeSearchService hybridSearch, String traceId, String workspaceRoot, String fileSystemRoot, String sessionId, String publicWorkspaceRoot, IndexingWorker indexingWorker, String kafkaBootstrapServers, List<String> chatHistory, String ideContextPath, ToolExecutionService toolExecutionService, RuntimeService runtimeService, EventStream eventStream, SkillManager skillManager, AgentConfig config, SymbolGraphService symbolGraphService) {
         this.config = config;
         this.agentRole = config.getAgentRole() != null ? config.getAgentRole() : "Software Engineer";
         this.MAX_TURNS = config.getMaxTurns();
@@ -235,6 +239,10 @@ public class JsonReActAgent {
 
     public int getEditsRejected() {
         return editsRejected;
+    }
+
+    public int getLoopCount() {
+        return loopCount;
     }
 
     public List<String> getAutoSkillsLoaded() {
@@ -432,6 +440,7 @@ public class JsonReActAgent {
             }
 
             if (isLoop) {
+                loopCount++;
                 if (planState != null) {
                     planState.recordAction(tool, sig, true);
                 }

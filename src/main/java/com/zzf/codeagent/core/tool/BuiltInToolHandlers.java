@@ -1,4 +1,4 @@
-﻿package com.zzf.codeagent.core.tool;
+package com.zzf.codeagent.core.tool;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -2165,6 +2165,14 @@ public final class BuiltInToolHandlers {
         return s.length() <= maxChars ? s : s.substring(0, maxChars);
     }
 
+    private static String textOrFallback(JsonNode args, String... keys) {
+        return textFromArgs(args, keys);
+    }
+
+    private static String textOrFallback(JsonNode args, List<String> keys) {
+        return textFromArgs(args, keys.toArray(new String[0]));
+    }
+
     private static String textFromArgs(JsonNode args, String... keys) {
         if (args == null || keys == null) {
             return "";
@@ -2191,6 +2199,14 @@ public final class BuiltInToolHandlers {
             }
         }
         return "";
+    }
+
+    private static Integer intOrNull(JsonNode args, String... keys) {
+        String val = textFromArgs(args, keys);
+        if (val == null || val.isEmpty()) {
+            return null;
+        }
+        return parsePositiveInt(val);
     }
 
     private static Integer parsePositiveInt(String value) {

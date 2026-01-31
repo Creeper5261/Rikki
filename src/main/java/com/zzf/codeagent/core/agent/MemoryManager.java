@@ -46,7 +46,7 @@ public class MemoryManager {
             // Use a low temperature for factual summary
             // Note: Model configuration is usually handled at instantiation, 
             // but we rely on the passed model instance.
-            return model.generate(prompt);
+            return model.chat(prompt);
         } catch (Exception e) {
             logger.warn("memory.summarize.fail", e);
             return "";
