@@ -1,6 +1,7 @@
 plugins {
     id("java")
     id("org.jetbrains.intellij") version "1.17.3"
+    id("io.spring.dependency-management") version "1.0.15.RELEASE"
 }
 
 group = "com.zzf"
@@ -16,10 +17,22 @@ repositories {
     mavenCentral()
 }
 
+dependencyManagement {
+    imports {
+        mavenBom("org.springframework.boot:spring-boot-dependencies:2.6.13")
+    }
+}
+
 dependencies {
-    implementation(platform("org.springframework.boot:spring-boot-dependencies:2.6.13"))
-    implementation(project(":"))
+    implementation(project(":")) {
+        exclude(group = "com.fasterxml.jackson.core")
+        exclude(group = "org.springframework.boot")
+    }
     implementation("com.fasterxml.jackson.core:jackson-databind:2.15.2")
+    implementation("com.fasterxml.jackson.core:jackson-core:2.15.2")
+    implementation("com.fasterxml.jackson.core:jackson-annotations:2.15.2")
+    implementation("org.commonmark:commonmark:0.21.0")
+    implementation("org.commonmark:commonmark-ext-gfm-tables:0.21.0")
 }
 
 intellij {
