@@ -1,0 +1,66 @@
+package com.zzf.codeagent.session;
+
+import com.zzf.codeagent.agent.AgentInfo;
+import com.zzf.codeagent.session.model.MessageV2;
+import com.zzf.codeagent.session.model.PromptPart;
+import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * 消息提醒服务 (对齐 OpenCode insertReminders)
+ */
+@Service
+public class PromptReminderService {
+
+    public List<MessageV2.WithParts> insertReminders(List<MessageV2.WithParts> messages, AgentInfo agent, SessionInfo session) {
+        if (messages.isEmpty()) return messages;
+
+        MessageV2.WithParts userMessage = null;
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            if ("user".equals(messages.get(i).getInfo().getRole())) {
+                userMessage = messages.get(i);
+                break;
+            }
+        }
+
+        if (userMessage == null) return messages;
+
+        // 对齐 OpenCode 逻辑：在特定条件下向用户消息中注入系统提示词
+        // 这里可以根据 Flag 或 Agent 配置进行扩展
+        
+        return messages;
+    }
+
+    /**
+     * 为 mid-loop 中的用户消息添加包装 (对齐 prompt.ts:579)
+     */
+    public void wrapMidLoopUserMessages(List<MessageV2.WithParts> messages, String lastFinishedId) {
+        for (MessageV2.WithParts msg : messages) {
+            if (!"user".equals(msg.getInfo().getRole()) || (lastFinishedId != null && msg.getInfo().getId().compareTo(lastFinishedId) <= 0)) {
+                continue;
+            }
+
+            for (PromptPart part : msg.getParts()) {
+                if (part instanceof MessageV2.TextPart) {
+                    MessageV2.TextPart textPart = (MessageV2.TextPart) part;
+                    if (Boolean.TRUE.equals(textPart.getIgnored()) || Boolean.TRUE.equals(textPart.getSynthetic())) continue;
+                    
+                    String text = textPart.getText();
+                    if (text == null || text.trim().isEmpty()) continue;
+
+                    textPart.setText(String.join("\n",
+                        "<system-reminder>",
+                        "The user sent the following message:",
+                        text,
+                        "",
+                        "Please address this message and continue with your tasks.",
+                        "</system-reminder>"
+                    ));
+                }
+            }
+        }
+    }
+}

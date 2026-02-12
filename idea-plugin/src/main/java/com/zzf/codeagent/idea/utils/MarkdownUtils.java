@@ -1,98 +1,55 @@
 package com.zzf.codeagent.idea.utils;
 
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import org.commonmark.parser.Parser;
+import org.commonmark.renderer.html.HtmlRenderer;
+import org.commonmark.ext.gfm.tables.TablesExtension;
+import com.intellij.util.ui.UIUtil;
+import com.intellij.ui.JBColor;
+import java.awt.Color;
+import java.util.Arrays;
 
 public class MarkdownUtils {
+    private static final Parser parser = Parser.builder()
+            .extensions(Arrays.asList(TablesExtension.create()))
+            .build();
+    private static final HtmlRenderer renderer = HtmlRenderer.builder()
+            .extensions(Arrays.asList(TablesExtension.create()))
+            .escapeHtml(false) // Allow raw HTML for our auto-links
+            .build();
 
     public static String renderToHtml(String markdown) {
         if (markdown == null) return "";
         
-        // Escape HTML special characters
-        String html = escapeHtml(markdown);
-
-        // Code blocks (```lang ... ```)
-        // Use non-greedy match (?s) for dot-all, including newlines
-        // Pattern: ```(\w+)?\n?(.*?)```
-        // Replacement: <pre><code>$2</code></pre> (ignoring lang for now, or putting it in class)
+        // Auto-link file references [File.java] -> <a href="File.java">File.java</a>
+        // Regex matches [path/to/file.ext] but not following ( so not [text](link)
+        // And not preceded by ! so not ![image]
+        String processed = markdown.replaceAll("(?<!!)\\[([a-zA-Z0-9_./-]+\\.(java|xml|yml|yaml|json|md|txt|properties|kt|gradle|sh|bat|cmd|sql|ts|js|css|html))\\](?!\\()", "<a href=\"$1\">$0</a>");
         
-        // We handle code blocks manually to avoid regex complexity with nested structures or greedy matches
-        StringBuilder sb = new StringBuilder();
-        int length = html.length();
-        int pos = 0;
+        org.commonmark.node.Node document = parser.parse(processed);
+        String html = renderer.render(document);
         
-        while (pos < length) {
-            int codeStart = html.indexOf("```", pos);
-            if (codeStart == -1) {
-                sb.append(processInline(html.substring(pos)));
-                break;
-            }
-            
-            // Text before code block
-            sb.append(processInline(html.substring(pos, codeStart)));
-            
-            int codeEnd = html.indexOf("```", codeStart + 3);
-            if (codeEnd == -1) {
-                // Unclosed code block, treat as text
-                sb.append(processInline(html.substring(codeStart)));
-                break;
-            }
-            
-            // Extract content
-            String content = html.substring(codeStart + 3, codeEnd);
-            // Check for language identifier (first word before newline)
-            String language = "";
-            int firstNewline = content.indexOf('\n');
-            if (firstNewline > -1 && firstNewline < 20) { // arbitrary limit for lang length
-                String potentialLang = content.substring(0, firstNewline).trim();
-                if (!potentialLang.contains(" ") && !potentialLang.isEmpty()) {
-                    language = potentialLang;
-                    content = content.substring(firstNewline + 1);
-                }
-            }
-            
-            sb.append("<pre><code class='" + language + "'>").append(content).append("</code></pre>");
-            
-            pos = codeEnd + 3;
-        }
-        
-        return "<html><head><style>body { font-family: sans-serif; } pre { background-color: #f5f5f5; padding: 5px; border: 1px solid #ddd; } code { font-family: monospace; }</style></head><body>" + sb.toString() + "</body></html>";
+        String css = getCss();
+        return "<html><head><style>" + css + "</style></head><body>" + html + "</body></html>";
     }
 
-    private static String processInline(String text) {
-        String html = text;
-
-        // Headers (must be processed before newlines are converted)
-        html = html.replaceAll("(?m)^### (.*)$", "<h3>$1</h3>");
-        html = html.replaceAll("(?m)^## (.*)$", "<h2>$1</h2>");
-        html = html.replaceAll("(?m)^# (.*)$", "<h1>$1</h1>");
-
-        // Lists (simple bullet points)
-        html = html.replaceAll("(?m)^\\s*[-*]\\s+(.*)$", "<div>&bull; $1</div>");
-
-        // Inline code (`code`)
-        html = html.replaceAll("`([^`]+)`", "<code style='background-color:#f0f0f0;'>$1</code>");
+    private static String getCss() {
+        boolean dark = UIUtil.isUnderDarcula();
+        String textColor = colorToHex(UIUtil.getLabelForeground());
+        String linkColor = colorToHex(JBColor.BLUE); 
+        String codeBg = dark ? "#2f343a" : "#f5f5f5";
+        String borderColor = dark ? "#5e6060" : "#e0e0e0";
         
-        // Bold (**text**)
-        html = html.replaceAll("\\*\\*([^*]+)\\*\\*", "<b>$1</b>");
-        
-        // Italic (*text*)
-        html = html.replaceAll("\\*([^*]+)\\*", "<i>$1</i>");
-        
-        // Newlines to <br> (only for lines that are NOT headers or list items)
-        // This is tricky. simpler to just replace all \n with <br> 
-        // But headers/divs are block elements, so <br> after them might add extra space.
-        // JEditorPane is lenient.
-        html = html.replaceAll("\n", "<br>");
-        
-        return html;
+        return "body { font-family: sans-serif; font-size: 13px; color: " + textColor + "; background: transparent; margin: 0; padding: 0; }" +
+               "a { color: " + linkColor + "; text-decoration: none; }" +
+               "code { background-color: " + codeBg + "; font-family: monospace; padding: 2px 4px; }" +
+               "pre { background-color: " + codeBg + "; padding: 8px; border: 1px solid " + borderColor + "; border-radius: 6px; overflow-x: auto; }" +
+               "table { border-collapse: collapse; width: 100%; }" +
+               "th, td { border: 1px solid " + borderColor + "; padding: 6px; text-align: left; }" +
+               "th { background-color: " + codeBg + "; }";
     }
 
-    private static String escapeHtml(String text) {
-        return text.replace("&", "&amp;")
-                   .replace("<", "&lt;")
-                   .replace(">", "&gt;")
-                   .replace("\"", "&quot;")
-                   .replace("'", "&#x27;");
+    private static String colorToHex(Color c) {
+        return String.format("#%02x%02x%02x", c.getRed(), c.getGreen(), c.getBlue());
     }
 }
+

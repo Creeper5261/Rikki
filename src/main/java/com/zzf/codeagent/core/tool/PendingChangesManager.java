@@ -4,9 +4,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -14,8 +17,12 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Manages a list of pending workspace changes (staging area).
  * Allows accumulating multiple changes before applying them.
  */
+@lombok.extern.slf4j.Slf4j
 public class PendingChangesManager {
     private static final PendingChangesManager INSTANCE = new PendingChangesManager();
+    private static final boolean WINDOWS = System.getProperty("os.name", "")
+            .toLowerCase(Locale.ROOT)
+            .contains("win");
     private final List<PendingChange> changes = new CopyOnWriteArrayList<>();
 
     private final List<java.util.function.Consumer<PendingChange>> listeners = new CopyOnWriteArrayList<>();
@@ -75,7 +82,7 @@ public class PendingChangesManager {
             try {
                 listener.accept(toAdd);
             } catch (Exception e) {
-                e.printStackTrace();
+                log.error("Failed to notify listener", e);
             }
         }
     }
@@ -102,8 +109,33 @@ public class PendingChangesManager {
     }
 
     private String normalizePath(String path) {
-        if (path == null) return "";
-        return path.replace('\\', '/').trim();
+        return normalizeComparablePath(path);
+    }
+
+    private String normalizeWorkspaceRoot(String workspaceRoot) {
+        return normalizeComparablePath(workspaceRoot);
+    }
+
+    private String normalizeComparablePath(String rawPath) {
+        if (rawPath == null) {
+            return "";
+        }
+        String norm = rawPath.trim();
+        if (norm.isEmpty()) {
+            return "";
+        }
+        if (WINDOWS && norm.matches("^/[a-zA-Z]/.*")) {
+            char drive = Character.toLowerCase(norm.charAt(1));
+            norm = drive + ":" + norm.substring(2);
+        }
+        norm = norm.replace('\\', '/');
+        while (norm.endsWith("/")) {
+            norm = norm.substring(0, norm.length() - 1);
+        }
+        if (WINDOWS) {
+            norm = norm.toLowerCase(Locale.ROOT);
+        }
+        return norm;
     }
 
 
@@ -286,7 +318,18 @@ public class PendingChangesManager {
             this(id, path, type, oldContent, newContent, preview, timestamp, workspaceRoot, null);
         }
 
-        public PendingChange(String id, String path, String type, String oldContent, String newContent, String preview, long timestamp, String workspaceRoot, String sessionId) {
+        @JsonCreator
+        public PendingChange(
+            @JsonProperty("id") String id, 
+            @JsonProperty("path") String path, 
+            @JsonProperty("type") String type, 
+            @JsonProperty("old_content") String oldContent, 
+            @JsonProperty("new_content") String newContent, 
+            @JsonProperty("preview") String preview, 
+            @JsonProperty("timestamp") long timestamp, 
+            @JsonProperty("workspace_root") String workspaceRoot, 
+            @JsonProperty("session_id") String sessionId
+        ) {
             this.id = id;
             this.path = path;
             this.type = type;
@@ -302,7 +345,9 @@ public class PendingChangesManager {
     private boolean scopeMatches(PendingChange change, String workspaceRoot, String sessionId) {
         if (change == null) return false;
         if (workspaceRoot != null && !workspaceRoot.isEmpty()) {
-            if (change.workspaceRoot == null || !change.workspaceRoot.equals(workspaceRoot)) {
+            String expected = normalizeWorkspaceRoot(workspaceRoot);
+            String actual = normalizeWorkspaceRoot(change.workspaceRoot);
+            if (!actual.equals(expected)) {
                 return false;
             }
         }
@@ -316,7 +361,7 @@ public class PendingChangesManager {
 
     private boolean sameScope(PendingChange a, PendingChange b) {
         if (a == null || b == null) return false;
-        return java.util.Objects.equals(a.workspaceRoot, b.workspaceRoot)
+        return java.util.Objects.equals(normalizeWorkspaceRoot(a.workspaceRoot), normalizeWorkspaceRoot(b.workspaceRoot))
                 && java.util.Objects.equals(a.sessionId, b.sessionId);
     }
 }

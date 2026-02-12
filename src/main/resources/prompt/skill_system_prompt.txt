@@ -1,5 +1,0 @@
-You have access to a set of Skills that provide specialized capabilities. 
-Skills are loaded from built-in classpath resources and from the workspace (.agent/skills, .claude/skills). 
-To use a skill, you must first load it using LOAD_SKILL. 
-Once loaded, the skill will provide detailed instructions and context. 
-Below are the currently available skills:

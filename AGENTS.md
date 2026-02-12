@@ -52,6 +52,17 @@ Common env vars (non-exhaustive)
 Runtime note
 - App guards against IDE `out/production` classpaths; prefer Gradle runs.
 
+## Agent runtime (Processor-first)
+- Primary execution path is `SessionProcessor` (processor-first loop) instead of calling `JsonReActAgent.run` directly.
+- `JsonReActAgent.run` remains for compatibility, but new code should route through `SessionProcessor`.
+- Tool outputs do not enter prompts; all tool events stream as `message_part` entries.
+- Tool policy is enforced at runtime (doom-loop, budget, allow/deny); prompt stays minimal.
+- Tool schema validation is enforced before execution using ToolSpec input schema.
+
+Config (AgentConfig, prefix `codeagent.agent`)
+- `toolAllowList`: allowlist of tool names (optional, empty = allow all)
+- `toolDenyList`: denylist of tool names
+
 ## Code style guidelines
 Follow existing patterns in the file you edit. Use the closest file as reference.
 

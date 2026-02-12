@@ -28,6 +28,9 @@ dependencies {
     implementation("dev.langchain4j:langchain4j:1.10.0")
     implementation("dev.langchain4j:langchain4j-open-ai:1.10.0")
 
+    compileOnly("org.projectlombok:lombok:1.18.30")
+    annotationProcessor("org.projectlombok:lombok:1.18.30")
+
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.mockito:mockito-inline")
 }
@@ -38,6 +41,7 @@ tasks.getByName<Test>("test") {
 
 tasks.jar {
     enabled = true
+    archiveClassifier.set("")
 }
 
 tasks.bootJar {

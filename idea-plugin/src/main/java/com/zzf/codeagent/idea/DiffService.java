@@ -6,6 +6,7 @@ import com.intellij.diff.DiffRequestPanel;
 import com.intellij.diff.requests.SimpleDiffRequest;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.command.WriteCommandAction;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditor;
 import com.intellij.openapi.fileEditor.FileEditorManager;
@@ -34,12 +35,14 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Locale;
 import java.util.Collections;
 import java.util.Map;
 import java.util.WeakHashMap;
 import java.util.concurrent.CompletableFuture;
 
 public class DiffService {
+    private static final Logger LOG = Logger.getInstance(DiffService.class);
     private final Project project;
     private final Map<FileEditor, EditorNotificationPanel> notificationPanels = Collections.synchronizedMap(new WeakHashMap<>());
     private final HttpClient http;
@@ -59,7 +62,7 @@ public class DiffService {
             try {
                 applyPendingChange(change, false);
             } catch (Exception e) {
-                e.printStackTrace();
+                LOG.error(e);
             }
         });
     }
@@ -79,7 +82,7 @@ public class DiffService {
                     if (onSuccess != null) onSuccess.run();
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                LOG.error(e);
                 if (onFailure != null) onFailure.run();
             }
         });
@@ -101,7 +104,7 @@ public class DiffService {
                     if (onSuccess != null) onSuccess.run();
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                LOG.error(e);
                 if (onFailure != null) onFailure.run();
             }
         });
@@ -116,7 +119,7 @@ public class DiffService {
                     FileEditorManager.getInstance(project).openFile(file, true);
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                LOG.error(e);
             }
         });
     }
@@ -133,15 +136,30 @@ public class DiffService {
         if (pathStr == null || pathStr.isBlank()) {
             return null;
         }
-        Path p = Paths.get(pathStr);
+        Path p = parsePath(pathStr);
         if (p.isAbsolute()) {
-            return p;
+            return p.normalize();
         }
-        String base = (workspaceRoot == null || workspaceRoot.isBlank()) ? project.getBasePath() : workspaceRoot;
-        if (base == null || base.isBlank()) {
+
+        Path projectBase = null;
+        String basePath = project.getBasePath();
+        if (basePath != null && !basePath.isBlank()) {
+            projectBase = parsePath(basePath).toAbsolutePath().normalize();
+        }
+
+        Path workspaceBase = null;
+        if (workspaceRoot != null && !workspaceRoot.isBlank()) {
+            workspaceBase = parsePath(workspaceRoot).toAbsolutePath().normalize();
+        }
+
+        Path base = workspaceBase;
+        if (base == null || (projectBase != null && !sameRoot(base, projectBase))) {
+            base = projectBase;
+        }
+        if (base == null) {
             return p.toAbsolutePath();
         }
-        return Paths.get(base, pathStr);
+        return base.resolve(p).normalize();
     }
 
     private void removeNotification(VirtualFile file) {
@@ -205,7 +223,7 @@ public class DiffService {
                     }
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                LOG.error(e);
                 if (!project.isDisposed()) {
                     Messages.showErrorDialog(project, "Failed to apply changes: " + e.getMessage(), "Error");
                 }
@@ -220,9 +238,10 @@ public class DiffService {
         }
         CompletableFuture.runAsync(() -> {
             try {
-                String wsRoot = change.workspaceRoot == null || change.workspaceRoot.isBlank()
-                        ? (project.getBasePath() == null ? "" : project.getBasePath())
-                        : change.workspaceRoot;
+                String wsRoot = change.workspaceRoot == null ? "" : change.workspaceRoot;
+                if (wsRoot.isBlank()) {
+                    wsRoot = project.getBasePath() == null ? "" : project.getBasePath();
+                }
                 Map<String, Object> payload = Map.of(
                         "traceId", change.sessionId == null ? "" : change.sessionId,
                         "workspaceRoot", wsRoot,
@@ -286,9 +305,18 @@ public class DiffService {
                     try {
                         toDelete.delete(this);
                     } catch (IOException e) {
-                        e.printStackTrace();
+                        LOG.error(e);
                     }
                 });
+            } else {
+                Path absPath = resolveAbsolutePath(pathStr, change.workspaceRoot);
+                if (absPath != null) {
+                    try {
+                        Files.deleteIfExists(absPath);
+                    } catch (IOException e) {
+                        LOG.error(e);
+                    }
+                }
             }
         } else if ("CREATE".equalsIgnoreCase(change.type) && virtualFile == null) {
             Path absPath = resolveAbsolutePath(pathStr, change.workspaceRoot);
@@ -318,7 +346,7 @@ public class DiffService {
                 com.intellij.diff.contents.DiffContent c2 = DiffContentFactory.getInstance().create(newContent != null ? newContent : "");
                 SimpleDiffRequest request = new SimpleDiffRequest("Review Changes: " + path, c1, c2, "Original", "Current (Agent)");
                 new DiffDialog(project, request, null, null).show();
-             } catch(Exception e) { e.printStackTrace(); }
+             } catch(Exception e) { LOG.error(e); }
         });
     }
 
@@ -333,7 +361,7 @@ public class DiffService {
                 }
                 FileDocumentManager.getInstance().saveDocument(doc);
             } catch (IOException e) {
-                e.printStackTrace();
+                LOG.error(e);
             }
         });
     }
@@ -353,7 +381,7 @@ public class DiffService {
                     vf.setBinaryContent(content.getBytes());
                 }
             } catch (Exception e) {
-                e.printStackTrace();
+                LOG.error(e);
             }
         });
     }
@@ -385,6 +413,33 @@ public class DiffService {
             return base.substring(0, idx) + "/api/agent/pending";
         }
         return base + "/pending";
+    }
+
+    private Path parsePath(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return Paths.get(".");
+        }
+        String normalized = raw.trim();
+        boolean windows = System.getProperty("os.name", "")
+                .toLowerCase(Locale.ROOT)
+                .contains("win");
+        if (windows && normalized.matches("^/[a-zA-Z]/.*")) {
+            char drive = Character.toUpperCase(normalized.charAt(1));
+            normalized = drive + ":" + normalized.substring(2);
+        }
+        return Paths.get(normalized);
+    }
+
+    private boolean sameRoot(Path a, Path b) {
+        if (a == null || b == null) {
+            return false;
+        }
+        Path aRoot = a.getRoot();
+        Path bRoot = b.getRoot();
+        if (aRoot == null || bRoot == null) {
+            return false;
+        }
+        return aRoot.toString().equalsIgnoreCase(bRoot.toString());
     }
 
     private static class DiffDialog extends DialogWrapper {
