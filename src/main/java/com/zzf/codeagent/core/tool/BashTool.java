@@ -36,6 +36,8 @@ public class BashTool implements Tool {
     private static final long DEFAULT_TIMEOUT_MS = 60000;
     private static final int MAX_METADATA_LENGTH = 1000;
     private static final int MAX_OUTPUT_LENGTH = 8000;
+    private static final boolean FAIL_ON_NON_ZERO_EXIT =
+            Boolean.parseBoolean(System.getProperty("codeagent.bash.failOnNonZeroExit", "true"));
     private static final ObjectMapper objectMapper = new ObjectMapper();
     
     private final ShellService shellService;
@@ -190,7 +192,9 @@ public class BashTool implements Tool {
                 boolean finished = process.waitFor(timeout, TimeUnit.MILLISECONDS);
                 if (!finished) {
                     shellService.killTree(process);
-                    output.append("\n\n<bash_metadata>\nbash tool terminated command after exceeding timeout ").append(timeout).append(" ms\n</bash_metadata>");
+                    output.append("\n\n<bash_metadata>\nbash tool terminated command after exceeding timeout ")
+                            .append(timeout)
+                            .append(" ms\n</bash_metadata>");
                 }
 
                 int exitCode = finished ? process.exitValue() : -1;
@@ -201,6 +205,24 @@ public class BashTool implements Tool {
                 resultMetadata.put("exit", exitCode);
                 resultMetadata.put("description", description);
                 resultMetadata.put("command", command);
+                resultMetadata.put("shell", shell);
+
+                if (!finished) {
+                    String timeoutMsg = "Command timed out after " + timeout + " ms: " + command;
+                    String timeoutDetails = finalOutput.length() > MAX_OUTPUT_LENGTH
+                            ? finalOutput.substring(0, MAX_OUTPUT_LENGTH) + "\n\n..."
+                            : finalOutput;
+                    throw new RuntimeException(timeoutMsg + (timeoutDetails.isBlank() ? "" : "\n" + timeoutDetails));
+                }
+
+                if (FAIL_ON_NON_ZERO_EXIT && exitCode != 0) {
+                    String err = finalOutput == null ? "" : finalOutput.trim();
+                    if (err.length() > MAX_OUTPUT_LENGTH) {
+                        err = err.substring(0, MAX_OUTPUT_LENGTH) + "\n\n...";
+                    }
+                    String msg = "Command failed with exit code " + exitCode + ": " + command;
+                    throw new RuntimeException(err.isEmpty() ? msg : msg + "\n" + err);
+                }
 
                 return Result.builder()
                         .title(description)

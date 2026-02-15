@@ -46,6 +46,43 @@ public class PendingCommandsManager {
         commands.remove(id);
     }
 
+    public boolean hasPendingForSession(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return false;
+        }
+        for (PendingCommand command : commands.values()) {
+            if (command != null && sessionId.equals(command.sessionId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean hasPendingForScope(String workspaceRoot, String sessionId) {
+        if ((workspaceRoot == null || workspaceRoot.isBlank())
+                && (sessionId == null || sessionId.isBlank())) {
+            return !commands.isEmpty();
+        }
+        String expectedRoot = normalize(workspaceRoot);
+        for (PendingCommand command : commands.values()) {
+            if (command == null) {
+                continue;
+            }
+            if (sessionId != null && !sessionId.isBlank()
+                    && (command.sessionId == null || !sessionId.equals(command.sessionId))) {
+                continue;
+            }
+            if (workspaceRoot != null && !workspaceRoot.isBlank()) {
+                String actualRoot = normalize(command.workspaceRoot);
+                if (!expectedRoot.equals(actualRoot)) {
+                    continue;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
     void clear() {
         commands.clear();
     }

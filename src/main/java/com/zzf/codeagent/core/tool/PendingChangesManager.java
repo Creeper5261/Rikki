@@ -149,6 +149,12 @@ public class PendingChangesManager {
                 .collect(java.util.stream.Collectors.toList());
     }
 
+    public boolean hasPendingDeleteForScope(String workspaceRoot, String sessionId) {
+        return changes.stream()
+                .filter(c -> "DELETE".equalsIgnoreCase(c.type))
+                .anyMatch(c -> scopeMatches(c, workspaceRoot, sessionId));
+    }
+
     public void clear() {
         changes.clear();
     }

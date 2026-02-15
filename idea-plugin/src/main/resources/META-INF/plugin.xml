@@ -4,6 +4,7 @@
     <vendor>zzf</vendor>
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.java</depends>
+    <depends>org.jetbrains.plugins.terminal</depends>
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="Rikki Agent" anchor="right" factoryClass="com.zzf.codeagent.idea.ChatToolWindowFactory"/>
         <notificationGroup id="Rikki Agent" displayType="LOG_ONLY"/>

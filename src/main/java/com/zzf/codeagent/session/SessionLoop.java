@@ -12,6 +12,8 @@ import com.zzf.codeagent.session.SessionInfo;
 import com.zzf.codeagent.session.model.MessageV2;
 import com.zzf.codeagent.session.model.PromptPart;
 import com.zzf.codeagent.shell.ShellService;
+import com.zzf.codeagent.core.tool.PendingChangesManager;
+import com.zzf.codeagent.core.tool.PendingCommandsManager;
 import com.zzf.codeagent.core.tool.Tool;
 import com.zzf.codeagent.core.tool.ToolRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -35,6 +37,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class SessionLoop {
 
     private static final int MAX_TOOL_DESCRIPTION_FOR_FUNCTION = 1024;
+    private static final long TOOL_WAIT_TIMEOUT_MS = Long.getLong("codeagent.toolWaitTimeoutMs", 30L * 60L * 1000L);
+    private static final long TOOL_WAIT_POLL_MS = Long.getLong("codeagent.toolWaitPollMs", 150L);
 
     private final SessionService sessionService;
     private final AgentService agentService;
@@ -268,7 +272,7 @@ public class SessionLoop {
                     String nextAction = processor.process(streamInput, tools).join();
                     
                     // Wait for any running tools to complete
-                    waitForRunningTools(sessionID, assistantInfo.getId());
+                    waitForRunningTools(sessionID, assistantInfo.getId(), session.getDirectory());
 
                     if ("stop".equals(nextAction)) {
                         // Double check if we really should stop (e.g. if we have tool calls)
@@ -306,27 +310,48 @@ public class SessionLoop {
         });
     }
 
-    private void waitForRunningTools(String sessionID, String messageID) {
-        int maxRetries = 600; // 60 seconds max
-        for (int i = 0; i < maxRetries; i++) {
+    private void waitForRunningTools(String sessionID, String messageID, String workspaceRoot) {
+        long startedAt = System.currentTimeMillis();
+        long deadline = startedAt + Math.max(TOOL_WAIT_TIMEOUT_MS, 5_000L);
+        boolean timedOut = false;
+
+        while (true) {
             MessageV2.WithParts msg = sessionService.getMessage(messageID);
-            boolean hasRunningTools = msg.getParts().stream()
+            boolean hasRunningTools = msg != null && msg.getParts().stream()
                     .filter(p -> p instanceof MessageV2.ToolPart)
                     .map(p -> (MessageV2.ToolPart) p)
-                    .anyMatch(p -> "running".equals(p.getState().getStatus()));
-            
-            if (!hasRunningTools) {
+                    .filter(p -> p.getState() != null)
+                    .anyMatch(p -> {
+                        String status = p.getState().getStatus();
+                        return "running".equalsIgnoreCase(status) || "pending".equalsIgnoreCase(status);
+                    });
+            boolean hasPendingCommands = PendingCommandsManager.getInstance()
+                    .hasPendingForScope(workspaceRoot, sessionID);
+            boolean hasPendingDeletes = PendingChangesManager.getInstance()
+                    .hasPendingDeleteForScope(workspaceRoot, sessionID);
+
+            if (!hasRunningTools && !hasPendingCommands && !hasPendingDeletes) {
                 return;
             }
-            
+
+            if (System.currentTimeMillis() >= deadline) {
+                timedOut = true;
+                break;
+            }
+
             try {
-                Thread.sleep(100);
+                Thread.sleep(Math.max(TOOL_WAIT_POLL_MS, 50L));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
             }
         }
-        log.warn("Timeout waiting for tools to complete in session {}", sessionID);
+
+        if (timedOut) {
+            log.warn("Timeout waiting for tools/approvals in session {} message {}. pending commands/deletes may still exist.", sessionID, messageID);
+        } else {
+            log.warn("Stopped waiting for tools/approvals due to interruption in session {} message {}", sessionID, messageID);
+        }
     }
 
     private Map<String, Object> convertToToolDefinitions(Map<String, Tool> tools) {

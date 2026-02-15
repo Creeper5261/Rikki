@@ -60,6 +60,67 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         persistToDisk();
     }
 
+    public synchronized List<UiMessage> getUiMessages() {
+        ChatSession current = getCurrentSession();
+        if (current == null || current.uiMessages == null) {
+            return new ArrayList<>();
+        }
+        List<UiMessage> copy = new ArrayList<>();
+        for (UiMessage message : current.uiMessages) {
+            copy.add(cloneUiMessage(message));
+        }
+        return copy;
+    }
+
+    public synchronized String appendUiMessage(UiMessage message) {
+        if (message == null) {
+            return "";
+        }
+        ChatSession current = getCurrentSession();
+        if (current == null) {
+            current = createSession("New Chat");
+        }
+        UiMessage normalized = cloneUiMessage(message);
+        normalizeUiMessage(normalized);
+        current.uiMessages.add(normalized);
+        persistToDisk();
+        return normalized.id;
+    }
+
+    public synchronized void upsertUiMessage(UiMessage message) {
+        if (message == null) {
+            return;
+        }
+        ChatSession current = getCurrentSession();
+        if (current == null) {
+            current = createSession("New Chat");
+        }
+        UiMessage normalized = cloneUiMessage(message);
+        normalizeUiMessage(normalized);
+        if (current.uiMessages == null) {
+            current.uiMessages = new ArrayList<>();
+        }
+        if (normalized.id == null || normalized.id.isBlank()) {
+            normalized.id = UUID.randomUUID().toString();
+            current.uiMessages.add(normalized);
+        } else {
+            int idx = -1;
+            for (int i = 0; i < current.uiMessages.size(); i++) {
+                UiMessage existing = current.uiMessages.get(i);
+                if (existing != null && normalized.id.equals(existing.id)) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx >= 0) {
+                current.uiMessages.set(idx, normalized);
+            } else {
+                current.uiMessages.add(normalized);
+            }
+        }
+        persistToDisk();
+    }
+
     public synchronized ChatSession createSession(String title) {
         ChatSession session = new ChatSession();
         session.id = UUID.randomUUID().toString();
@@ -215,6 +276,9 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         if (session.messages == null) {
             session.messages = new ArrayList<>();
         }
+        if (session.uiMessages == null) {
+            session.uiMessages = new ArrayList<>();
+        }
         if (session.title == null || session.title.isBlank()) {
             session.title = "New Chat";
         }
@@ -223,6 +287,78 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         }
         if (session.settings == null) {
             session.settings = new SessionSettings();
+        }
+        for (UiMessage message : session.uiMessages) {
+            normalizeUiMessage(message);
+        }
+    }
+
+    private void normalizeUiMessage(UiMessage message) {
+        if (message == null) {
+            return;
+        }
+        if (message.id == null || message.id.isBlank()) {
+            message.id = UUID.randomUUID().toString();
+        }
+        if (message.role == null || message.role.isBlank()) {
+            message.role = "assistant";
+        }
+        if (message.text == null) {
+            message.text = "";
+        }
+        if (message.thought == null) {
+            message.thought = "";
+        }
+        if (message.timestamp <= 0L) {
+            message.timestamp = System.currentTimeMillis();
+        }
+        if (message.toolActivities == null) {
+            message.toolActivities = new ArrayList<>();
+        }
+        for (ToolActivity activity : message.toolActivities) {
+            normalizeToolActivity(activity);
+        }
+    }
+
+    private void normalizeToolActivity(ToolActivity activity) {
+        if (activity == null) {
+            return;
+        }
+        if (activity.id == null || activity.id.isBlank()) {
+            activity.id = UUID.randomUUID().toString();
+        }
+        if (activity.callID == null) {
+            activity.callID = "";
+        }
+        if (activity.tool == null) {
+            activity.tool = "";
+        }
+        if (activity.summary == null) {
+            activity.summary = "";
+        }
+        if (activity.expandedSummary == null) {
+            activity.expandedSummary = "";
+        }
+        if (activity.meta == null) {
+            activity.meta = "";
+        }
+        if (activity.details == null) {
+            activity.details = "";
+        }
+        if (activity.status == null) {
+            activity.status = "";
+        }
+        if (activity.renderType == null) {
+            activity.renderType = "";
+        }
+        if (activity.targetPath == null) {
+            activity.targetPath = "";
+        }
+        if (activity.lineStart < 0) {
+            activity.lineStart = -1;
+        }
+        if (activity.lineEnd < 0) {
+            activity.lineEnd = -1;
         }
     }
 
@@ -278,6 +414,17 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
                 target.messages = new ArrayList<>(incoming.messages);
             }
         }
+        if (incoming.uiMessages != null) {
+            int incomingSize = incoming.uiMessages.size();
+            int targetSize = target.uiMessages == null ? 0 : target.uiMessages.size();
+            if (incomingSize > targetSize
+                    || (incomingSize == targetSize && totalUiChars(incoming.uiMessages) > totalUiChars(target.uiMessages))) {
+                target.uiMessages = new ArrayList<>();
+                for (UiMessage message : incoming.uiMessages) {
+                    target.uiMessages.add(cloneUiMessage(message));
+                }
+            }
+        }
         if ((target.backendSessionId == null || target.backendSessionId.isBlank())
                 && incoming.backendSessionId != null && !incoming.backendSessionId.isBlank()) {
             target.backendSessionId = incoming.backendSessionId;
@@ -322,9 +469,55 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         session.createdAt = source.createdAt;
         session.backendSessionId = source.backendSessionId;
         session.messages = source.messages == null ? new ArrayList<>() : new ArrayList<>(source.messages);
+        session.uiMessages = new ArrayList<>();
+        if (source.uiMessages != null) {
+            for (UiMessage message : source.uiMessages) {
+                session.uiMessages.add(cloneUiMessage(message));
+            }
+        }
         session.settings = cloneSettings(source.settings);
         normalizeSession(session);
         return session;
+    }
+
+    private UiMessage cloneUiMessage(UiMessage source) {
+        UiMessage message = new UiMessage();
+        if (source == null) {
+            normalizeUiMessage(message);
+            return message;
+        }
+        message.id = source.id;
+        message.role = source.role;
+        message.messageID = source.messageID;
+        message.text = source.text;
+        message.thought = source.thought;
+        message.timestamp = source.timestamp;
+        message.toolActivities = new ArrayList<>();
+        if (source.toolActivities != null) {
+            for (ToolActivity activity : source.toolActivities) {
+                ToolActivity copied = new ToolActivity();
+                if (activity != null) {
+                    copied.id = activity.id;
+                    copied.callID = activity.callID;
+                    copied.tool = activity.tool;
+                    copied.summary = activity.summary;
+                    copied.expandedSummary = activity.expandedSummary;
+                    copied.meta = activity.meta;
+                    copied.details = activity.details;
+                    copied.status = activity.status;
+                    copied.durationMs = activity.durationMs;
+                    copied.renderType = activity.renderType;
+                    copied.targetPath = activity.targetPath;
+                    copied.lineStart = activity.lineStart;
+                    copied.lineEnd = activity.lineEnd;
+                    copied.navigable = activity.navigable;
+                }
+                normalizeToolActivity(copied);
+                message.toolActivities.add(copied);
+            }
+        }
+        normalizeUiMessage(message);
+        return message;
     }
 
     private SessionSettings cloneSettings(SessionSettings source) {
@@ -367,6 +560,44 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         for (String line : lines) {
             if (line != null) {
                 total += line.length();
+            }
+        }
+        return total;
+    }
+
+    private int totalUiChars(List<UiMessage> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return 0;
+        }
+        int total = 0;
+        for (UiMessage message : messages) {
+            if (message == null) {
+                continue;
+            }
+            if (message.text != null) {
+                total += message.text.length();
+            }
+            if (message.thought != null) {
+                total += message.thought.length();
+            }
+            if (message.toolActivities != null) {
+                for (ToolActivity activity : message.toolActivities) {
+                    if (activity == null) {
+                        continue;
+                    }
+                    if (activity.summary != null) {
+                        total += activity.summary.length();
+                    }
+                    if (activity.meta != null) {
+                        total += activity.meta.length();
+                    }
+                    if (activity.details != null) {
+                        total += activity.details.length();
+                    }
+                    if (activity.targetPath != null) {
+                        total += activity.targetPath.length();
+                    }
+                }
             }
         }
         return total;
@@ -417,7 +648,37 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         public String backendSessionId;
         @XCollection(style = XCollection.Style.v2)
         public List<String> messages = new ArrayList<>();
+        @XCollection(style = XCollection.Style.v2)
+        public List<UiMessage> uiMessages = new ArrayList<>();
         public SessionSettings settings = new SessionSettings();
+    }
+
+    public static final class UiMessage {
+        public String id;
+        public String role;
+        public String messageID;
+        public String text;
+        public String thought;
+        public long timestamp;
+        @XCollection(style = XCollection.Style.v2)
+        public List<ToolActivity> toolActivities = new ArrayList<>();
+    }
+
+    public static final class ToolActivity {
+        public String id;
+        public String callID;
+        public String tool;
+        public String summary;
+        public String expandedSummary;
+        public String meta;
+        public String details;
+        public String status;
+        public long durationMs;
+        public String renderType;
+        public String targetPath;
+        public int lineStart = -1;
+        public int lineEnd = -1;
+        public boolean navigable;
     }
 
     public static final class SessionSettings {

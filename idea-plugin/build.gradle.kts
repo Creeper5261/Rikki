@@ -41,7 +41,7 @@ intellij {
     version.set("2023.2")
     type.set("IC")
     sandboxDir.set(layout.buildDirectory.dir("idea-sandbox").get().asFile.absolutePath)
-    plugins.set(listOf("java"))
+    plugins.set(listOf("java", "org.jetbrains.plugins.terminal"))
 }
 
 tasks.patchPluginXml {
