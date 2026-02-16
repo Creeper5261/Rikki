@@ -11,10 +11,16 @@ import org.springframework.util.StreamUtils;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * 系统提示词生成 (对齐 OpenCode SystemPrompt)
@@ -54,20 +60,74 @@ public class SystemPrompt {
 
     public List<String> environment(ModelInfo model, String directory) {
         List<String> env = new ArrayList<>();
+        String workspaceRoot = resolveWorkspaceRoot(directory);
         env.add("You are powered by the model named " + model.getId() + ". The exact model ID is " + model.getProviderID() + "/" + model.getId());
         env.add("Here is some useful information about the environment you are running in:");
         env.add("<env>");
-        env.add("  Working directory: " + (directory != null ? directory : projectContext.getDirectory()));
-        env.add("  Is directory a git repo: " + (projectContext.isGit() ? "yes" : "no"));
+        env.add("  Working directory: " + workspaceRoot);
+        env.add("  Is directory a git repo: " + (isGitRepo(workspaceRoot) ? "yes" : "no"));
         env.add("  Platform: " + System.getProperty("os.name"));
         env.add("  Today's date: " + LocalDate.now().format(DateTimeFormatter.ofPattern("EEE MMM dd yyyy")));
         env.add("</env>");
         env.add("Do not output the contents of the <env> block in your response. It is for your information only.");
         env.add("<files>");
-        // TODO: Ripgrep tree if needed (aligned with OpenCode environment function)
+        env.addAll(buildWorkspaceFileIndex(workspaceRoot));
         env.add("</files>");
+        env.add("All files under the working directory are available to tools. Use read/glob/grep to inspect concrete contents when needed.");
         
         return List.of(String.join("\n", env));
+    }
+
+    private String resolveWorkspaceRoot(String directory) {
+        String raw = directory;
+        if (raw == null || raw.isBlank()) {
+            raw = projectContext.getDirectory();
+        }
+        if (raw == null || raw.isBlank()) {
+            raw = System.getProperty("user.dir");
+        }
+        return Paths.get(raw).toAbsolutePath().normalize().toString();
+    }
+
+    private boolean isGitRepo(String directory) {
+        try {
+            return Files.exists(Paths.get(directory).resolve(".git"));
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private List<String> buildWorkspaceFileIndex(String workspaceRoot) {
+        Path root = Paths.get(workspaceRoot).toAbsolutePath().normalize();
+        if (!Files.exists(root) || !Files.isDirectory(root)) {
+            return List.of();
+        }
+
+        int limit = Integer.getInteger("codeagent.prompt.fileListLimit", 200);
+        List<String> result = new ArrayList<>();
+        try (Stream<Path> walk = Files.walk(root)) {
+            List<Path> files = walk
+                    .filter(Files::isRegularFile)
+                    .filter(path -> !path.startsWith(root.resolve(".git")))
+                    .sorted(Comparator.comparing(Path::toString))
+                    .collect(Collectors.toList());
+
+            int end = Math.min(files.size(), Math.max(limit, 0));
+            for (int i = 0; i < end; i++) {
+                Path relative = root.relativize(files.get(i));
+                result.add("  " + relative.toString().replace('\\', '/'));
+            }
+            if (files.size() > end) {
+                result.add("  ... (+" + (files.size() - end) + " more files omitted)");
+            }
+        } catch (IOException e) {
+            log.debug("Failed to build workspace file index for {}", workspaceRoot, e);
+        }
+
+        if (result.isEmpty()) {
+            result.add("  (no files indexed)");
+        }
+        return result;
     }
 
     private String loadPrompt(String path) {

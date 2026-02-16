@@ -24,11 +24,14 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -67,6 +70,8 @@ public class BashTool implements Tool {
     private final ShellService shellService;
     private final ProjectContext projectContext;
     private final ResourceLoader resourceLoader;
+    private final Map<String, Process> runningProcessesByCall = new ConcurrentHashMap<>();
+    private final Map<String, String> runningCallSession = new ConcurrentHashMap<>();
 
     public BashTool(ShellService shellService, ProjectContext projectContext, ResourceLoader resourceLoader) {
         this.shellService = shellService;
@@ -114,6 +119,25 @@ public class BashTool implements Tool {
     }
 
     @Override
+    public void cancel(String sessionID, String callID) {
+        if (callID != null && !callID.isBlank()) {
+            killRunningProcess(callID);
+            return;
+        }
+        if (sessionID != null && !sessionID.isBlank()) {
+            List<String> callIds = new ArrayList<>();
+            for (Map.Entry<String, String> entry : runningCallSession.entrySet()) {
+                if (sessionID.equals(entry.getValue())) {
+                    callIds.add(entry.getKey());
+                }
+            }
+            for (String id : callIds) {
+                killRunningProcess(id);
+            }
+        }
+    }
+
+    @Override
     public CompletableFuture<Result> execute(JsonNode args, Context ctx) {
         return CompletableFuture.supplyAsync(() -> {
             String command = args.get("command").asText();
@@ -124,10 +148,16 @@ public class BashTool implements Tool {
             long timeout = args.has("timeout") ? args.get("timeout").asLong() : DEFAULT_TIMEOUT_MS;
             String workspaceRoot = ToolPathResolver.resolveWorkspaceRoot(projectContext, ctx);
             String workdirStr = args.has("workdir") ? args.get("workdir").asText() : workspaceRoot;
-            Path workdir = ToolPathResolver.resolvePath(projectContext, ctx, workdirStr);
+            Path workdir;
+            try {
+                workdir = ToolPathResolver.resolvePath(projectContext, ctx, workdirStr);
+            } catch (IllegalArgumentException ex) {
+                throw new RuntimeException("Workdir must stay inside workspace root: " + ex.getMessage());
+            }
             String shell = resolveExecutionShell(shellService.acceptable(), command);
 
             RiskAssessment risk = assessRisk(command);
+            risk = mergeWorkspaceBoundaryRisk(risk, command, workspaceRoot);
             String sessionId = ctx != null ? ctx.getSessionID() : null;
             String commandFamily = extractCommandFamily(command);
             boolean autoApprovedByPolicy = risk.requiresApproval
@@ -300,6 +330,14 @@ public class BashTool implements Tool {
 
         long startedAt = System.currentTimeMillis();
         Process process = pb.start();
+        String callID = ctx != null ? firstNonBlank(ctx.getCallID()) : "";
+        String sessionID = ctx != null ? firstNonBlank(ctx.getSessionID()) : "";
+        if (!callID.isBlank()) {
+            runningProcessesByCall.put(callID, process);
+            if (!sessionID.isBlank()) {
+                runningCallSession.put(callID, sessionID);
+            }
+        }
 
         if (streamMetadata && ctx != null) {
             Map<String, Object> meta = new HashMap<>();
@@ -308,34 +346,67 @@ public class BashTool implements Tool {
             ctx.metadata(description, meta);
         }
 
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                output.append(line).append("\n");
-                if (streamMetadata && ctx != null && output.length() < MAX_METADATA_LENGTH) {
-                    Map<String, Object> updateMeta = new HashMap<>();
-                    updateMeta.put("output", output.toString());
-                    updateMeta.put("description", description);
-                    ctx.metadata(description, updateMeta);
+        try {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        shellService.killTree(process);
+                        output.append("\nCommand terminated due to interruption.");
+                        return new CommandExecution(command, -1, output.toString(), false, shell, System.currentTimeMillis() - startedAt);
+                    }
+                    output.append(line).append("\n");
+                    if (streamMetadata && ctx != null && output.length() < MAX_METADATA_LENGTH) {
+                        Map<String, Object> updateMeta = new HashMap<>();
+                        updateMeta.put("output", output.toString());
+                        updateMeta.put("description", description);
+                        ctx.metadata(description, updateMeta);
+                    }
                 }
             }
-        }
 
-        boolean finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
-        if (!finished) {
-            shellService.killTree(process);
-            output.append("\nCommand terminated due to timeout (").append(timeoutMs).append(" ms).");
-            return new CommandExecution(command, -1, output.toString(), true, shell, System.currentTimeMillis() - startedAt);
-        }
+            if (Thread.currentThread().isInterrupted()) {
+                shellService.killTree(process);
+                output.append("\nCommand terminated due to interruption.");
+                return new CommandExecution(command, -1, output.toString(), false, shell, System.currentTimeMillis() - startedAt);
+            }
 
-        return new CommandExecution(
-                command,
-                process.exitValue(),
-                output.toString(),
-                false,
-                shell,
-                System.currentTimeMillis() - startedAt
-        );
+            boolean finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
+            if (!finished) {
+                shellService.killTree(process);
+                output.append("\nCommand terminated due to timeout (").append(timeoutMs).append(" ms).");
+                return new CommandExecution(command, -1, output.toString(), true, shell, System.currentTimeMillis() - startedAt);
+            }
+
+            return new CommandExecution(
+                    command,
+                    process.exitValue(),
+                    output.toString(),
+                    false,
+                    shell,
+                    System.currentTimeMillis() - startedAt
+            );
+        } finally {
+            if (!callID.isBlank()) {
+                runningProcessesByCall.remove(callID, process);
+                runningCallSession.remove(callID);
+            }
+        }
+    }
+
+    private void killRunningProcess(String callID) {
+        if (callID == null || callID.isBlank()) {
+            return;
+        }
+        Process process = runningProcessesByCall.remove(callID);
+        runningCallSession.remove(callID);
+        if (process != null && process.isAlive()) {
+            try {
+                shellService.killTree(process);
+            } catch (Exception e) {
+                log.warn("Failed to kill running bash process for call {}", callID, e);
+            }
+        }
     }
 
     private BuildSelfHealReport processBuildSelfHeal(
@@ -1614,6 +1685,155 @@ public class BashTool implements Tool {
         boolean strictApproval = reasons.stream().anyMatch(this::isStrictRiskReason);
         String riskCategory = strictApproval ? "destructive" : "restricted";
         return new RiskAssessment(!reasons.isEmpty(), reasons, strictApproval, riskCategory);
+    }
+
+    private RiskAssessment mergeWorkspaceBoundaryRisk(
+            RiskAssessment baseRisk,
+            String command,
+            String workspaceRoot
+    ) {
+        List<String> boundaryReasons = detectWorkspaceBoundaryRisk(command, workspaceRoot);
+        if (boundaryReasons.isEmpty()) {
+            return baseRisk;
+        }
+        List<String> mergedReasons = new ArrayList<>();
+        if (baseRisk != null && baseRisk.reasons != null) {
+            mergedReasons.addAll(baseRisk.reasons);
+        }
+        for (String reason : boundaryReasons) {
+            if (reason == null || reason.isBlank()) {
+                continue;
+            }
+            if (!mergedReasons.contains(reason)) {
+                mergedReasons.add(reason);
+            }
+        }
+        return new RiskAssessment(true, mergedReasons, true, "workspace_boundary");
+    }
+
+    private List<String> detectWorkspaceBoundaryRisk(String command, String workspaceRoot) {
+        List<String> reasons = new ArrayList<>();
+        if (command == null || command.isBlank() || workspaceRoot == null || workspaceRoot.isBlank()) {
+            return reasons;
+        }
+        Path root;
+        try {
+            root = Paths.get(workspaceRoot).toAbsolutePath().normalize();
+        } catch (Exception ignored) {
+            return reasons;
+        }
+
+        if (containsParentTraversal(command)) {
+            reasons.add("parent-directory traversal detected (may escape workspace)");
+        }
+
+        Set<Path> candidates = extractAbsolutePathCandidates(command);
+        int outsideCount = 0;
+        for (Path candidate : candidates) {
+            if (candidate == null) {
+                continue;
+            }
+            Path normalized = candidate.toAbsolutePath().normalize();
+            if (!normalized.startsWith(root)) {
+                reasons.add("outside-workspace path access detected: " + normalized);
+                outsideCount++;
+                if (outsideCount >= 3) {
+                    break;
+                }
+            }
+        }
+        return reasons;
+    }
+
+    private boolean containsParentTraversal(String command) {
+        if (command == null || command.isBlank()) {
+            return false;
+        }
+        String normalized = command.toLowerCase(Locale.ROOT)
+                .replace('\r', ' ')
+                .replace('\n', ' ');
+        return normalized.matches(".*(?:^|[;&|])\\s*cd\\s+\\.\\.(?:[\\\\/][^;&|\\s]+)*.*")
+                || normalized.matches(".*(?:^|[;&|])\\s*pushd\\s+\\.\\.(?:[\\\\/][^;&|\\s]+)*.*")
+                || normalized.matches(".*(?:^|[;&|])\\s*set-location\\s+\\.\\.(?:[\\\\/][^;&|\\s]+)*.*");
+    }
+
+    private Set<Path> extractAbsolutePathCandidates(String command) {
+        Set<Path> candidates = new LinkedHashSet<>();
+        if (command == null || command.isBlank()) {
+            return candidates;
+        }
+        Matcher matcher = Pattern.compile("\"([^\"]+)\"|'([^']+)'|(\\S+)").matcher(command);
+        while (matcher.find()) {
+            String token = firstNonBlank(matcher.group(1), matcher.group(2), matcher.group(3));
+            addAbsolutePathCandidate(candidates, token);
+        }
+        return candidates;
+    }
+
+    private void addAbsolutePathCandidate(Set<Path> candidates, String rawToken) {
+        if (candidates == null || rawToken == null || rawToken.isBlank()) {
+            return;
+        }
+        String token = sanitizePathToken(rawToken);
+        if (token.isBlank()) {
+            return;
+        }
+        int equalsIndex = token.indexOf('=');
+        if (equalsIndex > 0 && equalsIndex + 1 < token.length()) {
+            addAbsolutePathCandidate(candidates, token.substring(equalsIndex + 1));
+        }
+        Path absolute = parseAbsolutePathCandidate(token);
+        if (absolute != null) {
+            candidates.add(absolute);
+        }
+    }
+
+    private String sanitizePathToken(String token) {
+        if (token == null || token.isBlank()) {
+            return "";
+        }
+        String sanitized = token.trim();
+        while (!sanitized.isBlank() && "([{".indexOf(sanitized.charAt(0)) >= 0) {
+            sanitized = sanitized.substring(1).trim();
+        }
+        while (!sanitized.isBlank() && ")]},;|&".indexOf(sanitized.charAt(sanitized.length() - 1)) >= 0) {
+            sanitized = sanitized.substring(0, sanitized.length() - 1).trim();
+        }
+        if (sanitized.startsWith("file://")) {
+            sanitized = sanitized.substring("file://".length());
+        }
+        if (sanitized.startsWith("~/")) {
+            sanitized = System.getProperty("user.home", "") + sanitized.substring(1);
+        }
+        return sanitized;
+    }
+
+    private Path parseAbsolutePathCandidate(String token) {
+        if (token == null || token.isBlank()) {
+            return null;
+        }
+        String normalized = token.trim();
+        if (isWindows()) {
+            if (normalized.matches("^/[a-zA-Z]/.*")) {
+                char drive = Character.toUpperCase(normalized.charAt(1));
+                normalized = drive + ":" + normalized.substring(2);
+            }
+            if (normalized.matches("^[a-zA-Z]:[\\\\/].*")) {
+                try {
+                    return Paths.get(normalized).toAbsolutePath().normalize();
+                } catch (Exception ignored) {
+                    return null;
+                }
+            }
+        }
+        if (normalized.startsWith("\\\\") || normalized.startsWith("/")) {
+            try {
+                return Paths.get(normalized).toAbsolutePath().normalize();
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private boolean containsAny(String source, String... fragments) {

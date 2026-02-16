@@ -164,6 +164,13 @@ public class PendingChangesManager {
                 .anyMatch(c -> sessionId.equals(c.sessionId));
     }
 
+    public void clearPendingDeletesForSession(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return;
+        }
+        changes.removeIf(c -> "DELETE".equalsIgnoreCase(c.type) && sessionId.equals(c.sessionId));
+    }
+
     public void clear() {
         changes.clear();
     }

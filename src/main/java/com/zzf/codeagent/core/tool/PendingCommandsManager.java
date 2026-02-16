@@ -114,6 +114,16 @@ public class PendingCommandsManager {
         return false;
     }
 
+    public void clearPendingForSession(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return;
+        }
+        commands.entrySet().removeIf(entry -> {
+            PendingCommand command = entry.getValue();
+            return command != null && sessionId.equals(command.sessionId);
+        });
+    }
+
     public boolean hasPendingForScope(String workspaceRoot, String sessionId) {
         boolean hasWorkspaceScope = workspaceRoot != null && !workspaceRoot.isBlank();
         boolean hasSessionScope = sessionId != null && !sessionId.isBlank();

@@ -2,6 +2,7 @@ package com.zzf.codeagent.controller;
 
 import com.zzf.codeagent.bus.AgentBus;
 import com.zzf.codeagent.id.Identifier;
+import com.zzf.codeagent.project.ProjectContext;
 import com.zzf.codeagent.session.SessionInfo;
 import com.zzf.codeagent.session.SessionLoop;
 import com.zzf.codeagent.session.SessionService;
@@ -21,6 +22,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.nio.file.Paths;
 
 /**
  * Agent Chat Controller (閫傞厤 Plugin SSE)
@@ -34,6 +36,7 @@ public class AgentChatController {
     private final SessionLoop sessionLoop;
     private final SessionService sessionService;
     private final AgentBus agentBus;
+    private final ProjectContext projectContext;
     private final Map<String, SseEmitter> emitters = new ConcurrentHashMap<>();
     private final Map<String, List<Runnable>> unsubs = new ConcurrentHashMap<>();
 
@@ -62,6 +65,17 @@ public class AgentChatController {
         }
     }
 
+    @Data
+    public static class StopRequest {
+        private String sessionID;
+        private String traceId;
+        private String reason;
+
+        public String getEffectiveSessionID() {
+            return (sessionID != null && !sessionID.isEmpty()) ? sessionID : traceId;
+        }
+    }
+
     @PostMapping("/chat/stream")
     public SseEmitter chat(@RequestBody ChatRequest request) {
         SseEmitter emitter = new SseEmitter(60 * 60 * 1000L); // 60 min timeout
@@ -80,9 +94,18 @@ public class AgentChatController {
         }
 
         String sessionID = session.getId();
-        if (request.getWorkspaceRoot() != null && !request.getWorkspaceRoot().isEmpty()
-                && !request.getWorkspaceRoot().equals(session.getDirectory())) {
-            sessionService.update(sessionID, s -> s.setDirectory(request.getWorkspaceRoot()));
+        String effectiveWorkspaceRoot = request.getWorkspaceRoot();
+        if (effectiveWorkspaceRoot == null || effectiveWorkspaceRoot.isBlank()) {
+            effectiveWorkspaceRoot = session.getDirectory();
+        }
+        if (effectiveWorkspaceRoot != null && !effectiveWorkspaceRoot.isBlank()) {
+            String normalizedWorkspaceRoot = Paths.get(effectiveWorkspaceRoot).toAbsolutePath().normalize().toString();
+            if (!normalizedWorkspaceRoot.equals(session.getDirectory())) {
+                final String directory = normalizedWorkspaceRoot;
+                sessionService.update(sessionID, s -> s.setDirectory(directory));
+            }
+            projectContext.setDirectory(normalizedWorkspaceRoot);
+            projectContext.setWorktree(normalizedWorkspaceRoot);
         }
         if (request.getAgent() != null && !request.getAgent().isEmpty()) {
             final String requestedAgent = request.getAgent();
@@ -312,6 +335,39 @@ public class AgentChatController {
         return emitter;
     }
 
+    @PostMapping("/chat/stop")
+    public Map<String, Object> stop(@RequestBody(required = false) StopRequest request) {
+        Map<String, Object> response = new HashMap<>();
+        String sessionID = request != null ? request.getEffectiveSessionID() : null;
+        if (sessionID == null || sessionID.isBlank()) {
+            response.put("status", "error");
+            response.put("error", "sessionID is required");
+            return response;
+        }
+        String reason = request != null && request.getReason() != null && !request.getReason().isBlank()
+                ? request.getReason().trim()
+                : "Stopped by user";
+        boolean stopped = sessionLoop.stop(sessionID, reason);
+        response.put("status", "ok");
+        response.put("sessionID", sessionID);
+        response.put("stopped", stopped);
+        response.put("reason", reason);
+
+        SseEmitter emitter = emitters.get(sessionID);
+        if (emitter != null) {
+            try {
+                Map<String, Object> status = new HashMap<>();
+                status.put("type", "idle");
+                status.put("message", reason);
+                sendSse(emitter, "status", status);
+                emitter.complete();
+            } catch (Exception ignored) {
+                // ignore emitter completion failures
+            }
+        }
+        return response;
+    }
+
     private List<String> buildAdditionalSystemInstructions(
             ChatRequest request,
             Map<String, Object> sanitizedIdeContext
@@ -324,7 +380,10 @@ public class AgentChatController {
         instructions.add("IDE environment context is available via tool `ide_context`. Fetch it only when needed.");
         Object bridgeUrlObj = sanitizedIdeContext.get("ideBridgeUrl");
         if (bridgeUrlObj instanceof String && !((String) bridgeUrlObj).isBlank()) {
-            instructions.add("IDE bridge is available. For compile/build/test/run, prefer `ide_build`, `ide_test`, and `ide_run` before shell `bash`.");
+            instructions.add("IDE bridge is available. Prefer `ide_capabilities` then unified `ide_action` for build/run/test/status/cancel workflows.");
+            instructions.add("Use `ide_action` with async job flow: start operation -> poll status -> cancel if needed.");
+            instructions.add("For run/test started with wait=false, continue polling `ide_action(operation=status, jobId=..., sinceRevision=...)` to stream logs.");
+            instructions.add("Legacy tools `ide_build`, `ide_test`, and `ide_run` remain available for compatibility.");
             instructions.add("Use shell `bash` for filesystem/inspection commands, or as fallback if IDE tools are unavailable.");
         }
         return instructions;

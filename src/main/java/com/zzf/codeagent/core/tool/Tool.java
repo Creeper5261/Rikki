@@ -78,4 +78,8 @@ public interface Tool {
     JsonNode getParametersSchema();
 
     CompletableFuture<Result> execute(JsonNode args, Context ctx);
+
+    default void cancel(String sessionID, String callID) {
+        // Optional cancellation hook for long-running tools.
+    }
 }

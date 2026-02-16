@@ -41,6 +41,8 @@ import com.zzf.codeagent.core.tools.FileSystemToolService;
 import com.zzf.codeagent.idea.utils.MarkdownUtils;
 
 import javax.swing.*;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
@@ -98,7 +100,9 @@ final class ChatPanel {
     private final JBTextArea input;
     private final JButton send;
     private final JLabel status;
+    private final JLabel chatTitleLabel;
     private final JButton jumpToBottomButton;
+    private final ThinkingStatusPanel thinkingStatusPanel;
     private final HttpClient http;
     private final Project project;
     private final String workspaceRoot;
@@ -116,6 +120,7 @@ final class ChatPanel {
     private JButton commitAllButton;
     private JButton pendingChangesToggle;
     private JBPopup activePendingPopup;
+    private JBPopup activeHistoryPopup;
     private final List<PendingChangesManager.PendingChange> pendingChanges = new ArrayList<>();
     private final Set<String> pendingApprovalKeys = ConcurrentHashMap.newKeySet();
     private volatile boolean runtimeBusy;
@@ -148,10 +153,13 @@ final class ChatPanel {
         
         this.scrollPane = new JBScrollPane(wrapper);
         this.scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        this.scrollPane.setWheelScrollingEnabled(true);
+        this.scrollPane.getVerticalScrollBar().setUnitIncrement(JBUI.scale(18));
         
         this.input = new JBTextArea(4, 10);
-        this.send = new JButton("Send");
+        this.send = createRoundSendButton();
         this.status = new JLabel("Ready");
+        this.chatTitleLabel = new JLabel("New Chat");
         this.jumpToBottomButton = createJumpToBottomButton();
         this.jumpToBottomButton.addActionListener(e -> {
             followStreamingOutput = true;
@@ -198,42 +206,80 @@ final class ChatPanel {
         
         input.setLineWrap(true);
         input.setWrapStyleWord(true);
-        
-        // Header Panel: Title + Session Toggle + Pending Changes
-        JPanel headerPanel = new JPanel();
-        headerPanel.setLayout(new BoxLayout(headerPanel, BoxLayout.Y_AXIS));
-        
-        JPanel titleBar = new JPanel(new BorderLayout());
-        JButton toggleSessions = new JButton("History");
-        toggleSessions.setBorderPainted(false);
-        toggleSessions.setContentAreaFilled(false);
-        toggleSessions.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        input.setBorder(JBUI.Borders.empty(0));
+        input.setOpaque(false);
+        input.setForeground(new JBColor(new Color(0xE6EBF2), new Color(0xE6EBF2)));
+        input.setCaretColor(new JBColor(new Color(0xE6EBF2), new Color(0xE6EBF2)));
+        this.chatTitleLabel.setFont(this.chatTitleLabel.getFont().deriveFont(Font.BOLD, 15f));
+        this.chatTitleLabel.setForeground(new JBColor(new Color(0xE6EBF2), new Color(0xE6EBF2)));
 
-        
-        titleBar.add(toggleSessions, BorderLayout.WEST);
-        titleBar.add(new JLabel(" Chat with Agent", SwingConstants.CENTER), BorderLayout.CENTER);
-        
+        JPanel headerPanel = new JPanel(new BorderLayout(8, 0));
+        headerPanel.setOpaque(false);
+        headerPanel.setBorder(JBUI.Borders.empty(2, 2, 4, 2));
+
+        JButton toggleSessions = createHeaderIconButton("\u2190", "Show history");
+        JPanel navLeft = new JPanel(new BorderLayout(6, 0));
+        navLeft.setOpaque(false);
+        navLeft.add(toggleSessions, BorderLayout.WEST);
+        navLeft.add(chatTitleLabel, BorderLayout.CENTER);
+
+        JPanel navRight = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        navRight.setOpaque(false);
+        JButton historyBtn = createHeaderIconButton("\u21BA", "History");
+        historyBtn.addActionListener(e -> openHistoryBrowserPopup(historyBtn));
+        JButton settingsBtn = createHeaderIconButton("\u2699", "Agent settings");
+        settingsBtn.addActionListener(e -> openSettingsDialogForCurrentSession());
+        JButton newChatActionBtn = createHeaderIconButton("\u270E", "New chat");
+        newChatActionBtn.addActionListener(e -> {
+            pruneEmptyCurrentSessionIfNeeded();
+            history.createSession("New Chat");
+            currentSessionId = null;
+            refreshSessionList();
+            rebuildConversationFromHistory();
+            refreshChatHeaderTitle();
+        });
+        navRight.add(historyBtn);
+        navRight.add(settingsBtn);
+        navRight.add(newChatActionBtn);
+
         if (pendingWorkflowEnabled) {
-            pendingChangesToggle = new JButton("Pending (0)");
-            pendingChangesToggle.setBorderPainted(false);
-            pendingChangesToggle.setContentAreaFilled(false);
-            pendingChangesToggle.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            pendingChangesToggle.setVisible(false); // Hidden if 0
+            pendingChangesToggle = createHeaderIconButton("\u25CF", "Pending changes");
+            pendingChangesToggle.setVisible(false);
             pendingChangesToggle.addActionListener(e -> showPendingChangesPopup());
-            titleBar.add(pendingChangesToggle, BorderLayout.EAST);
-            
-            // Initialize the list panel for the popup
+            navRight.add(pendingChangesToggle);
             initPendingChangesList();
         }
-        
-        headerPanel.add(titleBar);
-        headerPanel.add(Box.createVerticalStrut(5));
-        // Removed inline pendingChangesPanel
-        
-        JPanel bottom = new JPanel(new BorderLayout(6, 6));
-        bottom.add(new JBScrollPane(input), BorderLayout.CENTER);
-        bottom.add(send, BorderLayout.EAST);
-        bottom.add(status, BorderLayout.SOUTH);
+
+        headerPanel.add(navLeft, BorderLayout.CENTER);
+        headerPanel.add(navRight, BorderLayout.EAST);
+
+        JPanel bottom = new JPanel(new BorderLayout());
+        bottom.setOpaque(false);
+        this.thinkingStatusPanel = new ThinkingStatusPanel();
+        this.thinkingStatusPanel.setVisible(false);
+        bottom.add(thinkingStatusPanel, BorderLayout.NORTH);
+
+        RoundedPanel inputCard = new RoundedPanel(
+                18,
+                new JBColor(new Color(0x2F353D), new Color(0x2B3037)),
+                new JBColor(new Color(0x4B5563), new Color(0x4B5563))
+        );
+        inputCard.setLayout(new BorderLayout(8, 8));
+        inputCard.setBorder(JBUI.Borders.empty(8, 10, 8, 8));
+
+        JBScrollPane inputScroll = new JBScrollPane(input);
+        inputScroll.setBorder(BorderFactory.createEmptyBorder());
+        inputScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        inputScroll.setOpaque(false);
+        inputScroll.getViewport().setOpaque(false);
+        inputCard.add(inputScroll, BorderLayout.CENTER);
+
+        JPanel inputFooter = new JPanel(new BorderLayout(0, 0));
+        inputFooter.setOpaque(false);
+        inputFooter.add(send, BorderLayout.EAST);
+        inputCard.add(inputFooter, BorderLayout.SOUTH);
+
+        bottom.add(inputCard, BorderLayout.CENTER);
 
         rightPanel.add(headerPanel, BorderLayout.NORTH);
         rightPanel.add(chatCenterPanel, BorderLayout.CENTER);
@@ -248,15 +294,26 @@ final class ChatPanel {
         toggleSessions.addActionListener(e -> {
             boolean visible = leftPanel.isVisible();
             leftPanel.setVisible(!visible);
-            if (!visible) refreshSessionList();
+            if (!visible) {
+                pruneEmptyCurrentSessionIfNeeded();
+                refreshSessionList();
+            }
             splitPane.setDividerLocation(visible ? 0 : 200);
         });
 
-        send.addActionListener(e -> onSend());
+        send.addActionListener(e -> {
+            if (runtimeBusy || awaitingUserApproval) {
+                requestStopCurrentRun();
+                return;
+            }
+            onSend();
+        });
+        updateSendButtonMode(false);
         installConversationScrollBehavior();
         
         initSessionList();
         rebuildConversationFromHistory();
+        refreshChatHeaderTitle();
     }
 
     JComponent getComponent() {
@@ -268,69 +325,434 @@ final class ChatPanel {
     private void initSessionList() {
         refreshSessionList();
     }
+
+    private void openSettingsDialogForCurrentSession() {
+        ChatHistoryService.ChatSession session = history.getCurrentSession();
+        if (session == null) {
+            return;
+        }
+        SettingsDialog dialog = new SettingsDialog(session.settings);
+        if (dialog.showAndGet()) {
+            refreshSessionList();
+            refreshChatHeaderTitle();
+        }
+    }
     
     private void refreshSessionList() {
         leftPanel.removeAll();
-        
-        JPanel list = new JPanel();
-        list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
-        
-        JButton newChatBtn = new JButton("+ New Chat");
-        newChatBtn.setAlignmentX(Component.CENTER_ALIGNMENT);
+
+        JPanel container = new JPanel(new BorderLayout(0, 8));
+        container.setOpaque(false);
+        container.setBorder(JBUI.Borders.empty(4, 4, 4, 4));
+
+        JPanel topBar = new JPanel(new BorderLayout(8, 0));
+        topBar.setOpaque(false);
+        JButton newChatBtn = createHeaderIconButton("\u270E", "New chat");
         newChatBtn.addActionListener(e -> {
+            pruneEmptyCurrentSessionIfNeeded();
             history.createSession("New Chat");
             currentSessionId = null;
             refreshSessionList();
             rebuildConversationFromHistory();
+            refreshChatHeaderTitle();
         });
-        
-        JPanel top = new JPanel(new BorderLayout());
-        top.setBorder(JBUI.Borders.empty(5));
-        top.add(newChatBtn, BorderLayout.CENTER);
-        leftPanel.add(top, BorderLayout.NORTH);
-        
+        JLabel title = new JLabel("Recent");
+        title.setForeground(new JBColor(new Color(0xAEB8C8), new Color(0xAEB8C8)));
+        title.setFont(title.getFont().deriveFont(Font.BOLD, 12f));
+        topBar.add(title, BorderLayout.WEST);
+        topBar.add(newChatBtn, BorderLayout.EAST);
+        container.add(topBar, BorderLayout.NORTH);
+
+        JPanel list = new JPanel();
+        list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
+        list.setOpaque(false);
+
         List<ChatHistoryService.ChatSession> sessions = history.getSessions();
-        ChatHistoryService.ChatSession current = history.getCurrentSession();
-        
+        String currentId = history.getCurrentSessionIdRaw();
+        int visibleCount = 0;
         for (ChatHistoryService.ChatSession session : sessions) {
-            JPanel item = new JPanel(new BorderLayout());
-            item.setBorder(JBUI.Borders.empty(5));
-            if (current != null && current.id.equals(session.id)) {
-                item.setBackground(new JBColor(new Color(220, 230, 240), new Color(70, 76, 84)));
+            String titleText = firstNonBlank(session.title, "New Chat");
+            SessionListRowPanel item = new SessionListRowPanel();
+            item.setLayout(new BorderLayout(8, 0));
+            item.setBorder(JBUI.Borders.empty(7, 10, 7, 10));
+            item.setAlignmentX(Component.LEFT_ALIGNMENT);
+            item.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
+            item.setPreferredSize(new Dimension(10, 38));
+            item.setMinimumSize(new Dimension(10, 34));
+            if (currentId != null && !currentId.isBlank() && currentId.equals(session.id)) {
+                item.setSelectedRow(true);
             }
 
-            JLabel title = new JLabel(session.title);
-            title.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            title.addMouseListener(new MouseAdapter() {
+            JLabel itemTitle = new JLabel(trimForUi(titleText, 54));
+            itemTitle.setFont(itemTitle.getFont().deriveFont(Font.BOLD, 13f));
+            itemTitle.setForeground(new JBColor(new Color(0xE6EBF2), new Color(0xE6EBF2)));
+            JLabel age = new JLabel(formatSessionAge(session.createdAt));
+            age.setForeground(new JBColor(new Color(0x9AA6B8), new Color(0x9AA6B8)));
+            age.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
+            item.add(itemTitle, BorderLayout.CENTER);
+            item.add(age, BorderLayout.EAST);
+            item.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+
+            MouseAdapter openSession = new MouseAdapter() {
                 @Override
                 public void mouseClicked(MouseEvent e) {
                     history.setCurrentSession(session.id);
-                    currentSessionId = session.backendSessionId;
+                    currentSessionId = firstNonBlank(session.backendSessionId);
                     refreshSessionList();
                     rebuildConversationFromHistory();
+                    refreshChatHeaderTitle();
                 }
-            });
-
-            JButton delBtn = new JButton("Delete");
-            delBtn.setBorderPainted(false);
-            delBtn.setContentAreaFilled(false);
-            delBtn.setPreferredSize(new Dimension(20, 20));
-            delBtn.addActionListener(e -> {
-                history.deleteSession(session.id);
-                refreshSessionList();
-                rebuildConversationFromHistory();
-            });
-
-            item.add(title, BorderLayout.CENTER);
-            item.add(delBtn, BorderLayout.EAST);
-            item.setMaximumSize(new Dimension(Integer.MAX_VALUE, 30));
-
+            };
+            item.addMouseListener(openSession);
+            itemTitle.addMouseListener(openSession);
+            age.addMouseListener(openSession);
             list.add(item);
+            list.add(Box.createVerticalStrut(2));
+            visibleCount++;
+        }
+        if (visibleCount == 0) {
+            JLabel empty = new JLabel("No conversations yet");
+            empty.setForeground(UIUtil.getContextHelpForeground());
+            empty.setBorder(JBUI.Borders.empty(8, 4, 0, 4));
+            list.add(empty);
         }
 
-        leftPanel.add(new JBScrollPane(list), BorderLayout.CENTER);
+        JBScrollPane listScroll = new JBScrollPane(list);
+        listScroll.setBorder(BorderFactory.createEmptyBorder());
+        listScroll.getViewport().setOpaque(false);
+        listScroll.setOpaque(false);
+        container.add(listScroll, BorderLayout.CENTER);
+
+        leftPanel.add(container, BorderLayout.CENTER);
         leftPanel.revalidate();
         leftPanel.repaint();
+    }
+
+    private void openHistoryBrowserPopup(Component anchor) {
+        if (project == null || project.isDisposed()) {
+            return;
+        }
+        if (activeHistoryPopup != null && !activeHistoryPopup.isDisposed()) {
+            activeHistoryPopup.cancel();
+            activeHistoryPopup = null;
+        }
+
+        JPanel root = new JPanel(new BorderLayout(0, 8));
+        root.setOpaque(false);
+        root.setBorder(JBUI.Borders.empty(8));
+        root.setPreferredSize(new Dimension(420, 520));
+
+        JTextField searchField = new JTextField();
+        searchField.setToolTipText("Search recent tasks");
+        searchField.putClientProperty("JTextField.placeholderText", "Search recent tasks");
+        searchField.setBorder(BorderFactory.createCompoundBorder(
+                new RoundedLineBorder(new JBColor(new Color(0x323943), new Color(0x515D6E)), 12),
+                JBUI.Borders.empty(6, 10, 6, 10)
+        ));
+        root.add(searchField, BorderLayout.NORTH);
+
+        JPanel list = new JPanel();
+        list.setLayout(new BoxLayout(list, BoxLayout.Y_AXIS));
+        list.setOpaque(false);
+
+        Runnable renderList = () -> {
+            list.removeAll();
+            List<ChatHistoryService.ChatSession> sessions = history.getSessions();
+            String currentId = history.getCurrentSessionIdRaw();
+            String query = firstNonBlank(searchField.getText()).trim().toLowerCase();
+            int visibleCount = 0;
+            for (ChatHistoryService.ChatSession session : sessions) {
+                String titleText = firstNonBlank(session.title, "New Chat");
+                if (!query.isBlank() && !titleText.toLowerCase().contains(query)) {
+                    continue;
+                }
+                SessionListRowPanel item = new SessionListRowPanel();
+                item.setLayout(new BorderLayout(8, 0));
+                item.setBorder(JBUI.Borders.empty(8, 10, 8, 10));
+                item.setAlignmentX(Component.LEFT_ALIGNMENT);
+                item.setMaximumSize(new Dimension(Integer.MAX_VALUE, 40));
+                if (currentId != null && !currentId.isBlank() && currentId.equals(session.id)) {
+                    item.setSelectedRow(true);
+                }
+
+                JLabel itemTitle = new JLabel(trimForUi(titleText, 72));
+                itemTitle.setForeground(new JBColor(new Color(0xE6EBF2), new Color(0xE6EBF2)));
+                itemTitle.setFont(itemTitle.getFont().deriveFont(Font.BOLD, 13f));
+                JLabel age = new JLabel(formatSessionAge(session.createdAt));
+                age.setForeground(new JBColor(new Color(0x9AA6B8), new Color(0x9AA6B8)));
+                age.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
+                item.add(itemTitle, BorderLayout.CENTER);
+                item.add(age, BorderLayout.EAST);
+                item.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+
+                MouseAdapter openSession = new MouseAdapter() {
+                    @Override
+                    public void mouseClicked(MouseEvent e) {
+                        history.setCurrentSession(session.id);
+                        currentSessionId = firstNonBlank(session.backendSessionId);
+                        rebuildConversationFromHistory();
+                        refreshChatHeaderTitle();
+                        refreshSessionList();
+                        if (activeHistoryPopup != null && !activeHistoryPopup.isDisposed()) {
+                            activeHistoryPopup.cancel();
+                            activeHistoryPopup = null;
+                        }
+                    }
+                };
+                item.addMouseListener(openSession);
+                itemTitle.addMouseListener(openSession);
+                age.addMouseListener(openSession);
+                list.add(item);
+                list.add(Box.createVerticalStrut(2));
+                visibleCount++;
+            }
+            if (visibleCount == 0) {
+                JLabel empty = new JLabel("No conversations");
+                empty.setForeground(UIUtil.getContextHelpForeground());
+                empty.setBorder(JBUI.Borders.empty(12, 6, 0, 6));
+                list.add(empty);
+            }
+            list.revalidate();
+            list.repaint();
+        };
+        renderList.run();
+
+        searchField.getDocument().addDocumentListener(new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent e) {
+                renderList.run();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent e) {
+                renderList.run();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent e) {
+                renderList.run();
+            }
+        });
+
+        JBScrollPane listScroll = new JBScrollPane(list);
+        listScroll.setBorder(BorderFactory.createEmptyBorder());
+        listScroll.setOpaque(false);
+        listScroll.getViewport().setOpaque(false);
+        root.add(listScroll, BorderLayout.CENTER);
+
+        activeHistoryPopup = JBPopupFactory.getInstance()
+                .createComponentPopupBuilder(root, searchField)
+                .setTitle("History")
+                .setRequestFocus(true)
+                .setMovable(true)
+                .setResizable(true)
+                .setCancelOnClickOutside(true)
+                .setCancelOnOtherWindowOpen(true)
+                .createPopup();
+        if (anchor != null && anchor.isShowing()) {
+            activeHistoryPopup.showUnderneathOf(anchor);
+        } else {
+            activeHistoryPopup.showCenteredInCurrentWindow(project);
+        }
+    }
+
+    private void refreshChatHeaderTitle() {
+        if (chatTitleLabel == null || history == null) {
+            return;
+        }
+        ChatHistoryService.ChatSession session = history.peekCurrentSession();
+        chatTitleLabel.setText(trimForUi(session == null ? "New Chat" : firstNonBlank(session.title, "New Chat"), 48));
+    }
+
+    private void pruneEmptyCurrentSessionIfNeeded() {
+        if (history == null) {
+            return;
+        }
+        ChatHistoryService.ChatSession current = history.peekCurrentSession();
+        if (current == null || !isSessionEffectivelyEmpty(current)) {
+            return;
+        }
+        String removingId = current.id;
+        history.deleteSession(removingId);
+        ChatHistoryService.ChatSession next = history.peekCurrentSession();
+        if (next == null) {
+            currentSessionId = null;
+        } else if (next.backendSessionId != null && !next.backendSessionId.isBlank()) {
+            currentSessionId = next.backendSessionId;
+        } else {
+            currentSessionId = null;
+        }
+    }
+
+    private boolean isSessionEffectivelyEmpty(ChatHistoryService.ChatSession session) {
+        if (session == null) {
+            return true;
+        }
+        if (session.messages != null) {
+            for (String line : session.messages) {
+                if (line != null && !line.isBlank()) {
+                    return false;
+                }
+            }
+        }
+        if (session.uiMessages != null) {
+            for (ChatHistoryService.UiMessage msg : session.uiMessages) {
+                if (msg == null) {
+                    continue;
+                }
+                if (!firstNonBlank(msg.text).isBlank() || !firstNonBlank(msg.thought).isBlank()) {
+                    return false;
+                }
+                if (msg.toolActivities != null) {
+                    for (ChatHistoryService.ToolActivity activity : msg.toolActivities) {
+                        if (activity == null) {
+                            continue;
+                        }
+                        if (!firstNonBlank(activity.summary, activity.expandedSummary, activity.meta, activity.details, activity.status).isBlank()) {
+                            return false;
+                        }
+                        if (activity.durationMs > 0L) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    private JButton createHeaderIconButton(String text, String tooltip) {
+        JButton button = new JButton(text == null ? "" : text);
+        button.setToolTipText(tooltip);
+        button.setBorderPainted(false);
+        button.setContentAreaFilled(false);
+        button.setOpaque(false);
+        button.setFocusable(false);
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        button.setFont(button.getFont().deriveFont(Font.BOLD, 13f));
+        button.setForeground(new JBColor(new Color(0xC9D2DF), new Color(0xC9D2DF)));
+        button.setMargin(JBUI.insets(2, 8, 2, 8));
+        return button;
+    }
+
+    private JButton createRoundSendButton() {
+        JButton button = new JButton("\u2191") {
+            @Override
+            protected void paintComponent(Graphics g) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                int size = Math.min(getWidth(), getHeight()) - 1;
+                int x = (getWidth() - size) / 2;
+                int y = (getHeight() - size) / 2;
+                boolean stopMode = Boolean.TRUE.equals(getClientProperty("mode.stop"));
+                Color fill = stopMode
+                        ? new JBColor(new Color(0xF0D4D4), new Color(0x6A3434))
+                        : new JBColor(new Color(0xD9DEE6), new Color(0xD7DCE4));
+                Color border = stopMode
+                        ? new JBColor(new Color(0xD6A3A3), new Color(0x9A4A4A))
+                        : new JBColor(new Color(0xC7D0DD), new Color(0xAAB4C1));
+                g2.setColor(fill);
+                g2.fillOval(x, y, size, size);
+                g2.setColor(border);
+                g2.drawOval(x, y, size, size);
+                g2.dispose();
+                super.paintComponent(g);
+            }
+        };
+        button.setPreferredSize(new Dimension(38, 38));
+        button.setMinimumSize(new Dimension(38, 38));
+        button.setMaximumSize(new Dimension(38, 38));
+        button.setHorizontalAlignment(SwingConstants.CENTER);
+        button.setVerticalAlignment(SwingConstants.CENTER);
+        button.setBorderPainted(false);
+        button.setContentAreaFilled(false);
+        button.setOpaque(false);
+        button.setFocusable(false);
+        button.setMargin(JBUI.emptyInsets());
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        button.setForeground(new JBColor(new Color(0x20252E), new Color(0x20252E)));
+        button.setFont(button.getFont().deriveFont(Font.BOLD, 16f));
+        button.setToolTipText("Send");
+        return button;
+    }
+
+    private void updateSendButtonMode(boolean stopMode) {
+        send.putClientProperty("mode.stop", stopMode);
+        send.setText(stopMode ? "\u25A0" : "\u2191");
+        send.setToolTipText(stopMode ? "Stop generation" : "Send");
+        send.setForeground(stopMode
+                ? new JBColor(new Color(0x7A1E1E), new Color(0xF5DCDC))
+                : new JBColor(new Color(0x20252E), new Color(0x20252E)));
+        send.repaint();
+    }
+
+    private void requestStopCurrentRun() {
+        if (!(runtimeBusy || awaitingUserApproval)) {
+            return;
+        }
+        String sessionId = firstNonBlank(
+                currentSessionId,
+                history != null && history.peekCurrentSession() != null ? history.peekCurrentSession().backendSessionId : ""
+        );
+        if (sessionId.isBlank()) {
+            return;
+        }
+        updateSendButtonMode(true);
+        setBusy(true, "Stopping...");
+        new Thread(() -> {
+            try {
+                ObjectNode reqNode = mapper.createObjectNode();
+                reqNode.put("sessionID", sessionId);
+                reqNode.put("reason", "Stopped by user");
+                String endpoint = resolveStopEndpoint();
+                HttpRequest req = HttpRequest.newBuilder(URI.create(endpoint))
+                        .timeout(Duration.ofSeconds(20))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(reqNode), StandardCharsets.UTF_8))
+                        .build();
+                http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            } catch (Exception e) {
+                logger.warn("chat.stop_failed", e);
+                setBusy(false, "Ready");
+            }
+        }, "rikki-stop-request").start();
+    }
+
+    private String resolveStopEndpoint() {
+        String endpointUrl = System.getProperty("codeagent.endpoint", DEFAULT_AGENT_ENDPOINT + "/stream");
+        String normalized = endpointUrl == null ? "" : endpointUrl.trim();
+        if (normalized.isBlank()) {
+            return DEFAULT_AGENT_ENDPOINT + "/stop";
+        }
+        if (normalized.endsWith("/stream")) {
+            return normalized.substring(0, normalized.length() - "/stream".length()) + "/stop";
+        }
+        if (normalized.endsWith("/chat")) {
+            return normalized + "/stop";
+        }
+        if (normalized.endsWith("/")) {
+            return normalized + "stop";
+        }
+        return normalized + "/stop";
+    }
+
+    private String formatSessionAge(long createdAt) {
+        if (createdAt <= 0L) {
+            return "";
+        }
+        long diff = Math.max(0L, System.currentTimeMillis() - createdAt);
+        long dayMs = 24L * 60L * 60L * 1000L;
+        long hourMs = 60L * 60L * 1000L;
+        if (diff >= 7L * dayMs) {
+            return (diff / dayMs / 7L) + "w";
+        }
+        if (diff >= dayMs) {
+            return (diff / dayMs) + "d";
+        }
+        if (diff >= hourMs) {
+            return (diff / hourMs) + "h";
+        }
+        return "now";
     }
 
     // --- Chat Logic ---
@@ -355,6 +777,7 @@ final class ChatPanel {
         history.appendLine("You: " + text.trim());
         persistUserUiMessage(text.trim());
         refreshSessionList(); // Update title if new
+        refreshChatHeaderTitle();
         
         // 2. Add Agent Placeholder
         AgentMessageUI placeholderUi = addMessage(false, null, null, true);
@@ -928,7 +1351,7 @@ final class ChatPanel {
         }
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setBorder(BorderFactory.createTitledBorder("Activity"));
+        panel.setBorder(JBUI.Borders.empty(1, 0, 1, 0));
         panel.setOpaque(false);
 
         int insertIndex = ui.messagePanel.getComponentCount();
@@ -939,7 +1362,7 @@ final class ChatPanel {
             }
         }
         ui.messagePanel.add(panel, insertIndex);
-        ui.messagePanel.add(Box.createVerticalStrut(5), insertIndex + 1);
+        ui.messagePanel.add(Box.createVerticalStrut(2), insertIndex + 1);
         ui.activityPanel = panel;
         ui.messagePanel.revalidate();
         ui.messagePanel.repaint();
@@ -1889,6 +2312,7 @@ final class ChatPanel {
         if (state == null) {
             return;
         }
+        boolean running = isToolStatusRunning(state.status);
         state.uiSummary = buildToolSummary(state);
         state.uiExpandedSummary = resolveExpandedSummary(state);
         state.uiMeta = buildToolMeta(state);
@@ -1903,10 +2327,12 @@ final class ChatPanel {
             state.panel.setDetails(state.uiDetails);
             String executionStatus = state.renderType == ToolRenderType.TERMINAL ? buildTerminalExecutionStatus(state) : "";
             state.panel.setExecutionStatus(executionStatus, colorForToolStatus(state.status));
+            state.panel.setRunning(running);
         }
         if (state.inlineRow != null) {
             state.inlineRow.setSummaryText(state.uiSummary);
             state.inlineRow.setMetaText(state.uiMeta, colorForToolStatus(state.status));
+            state.inlineRow.setRunning(running);
             if (state.renderType == ToolRenderType.READ && state.targetNavigable) {
                 state.inlineRow.setAction(true, () -> navigateToReadTarget(state));
             } else {
@@ -1914,6 +2340,16 @@ final class ChatPanel {
             }
         }
         refreshInlineDiffCard(state);
+    }
+
+    private boolean isToolStatusRunning(String status) {
+        if (status == null || status.isBlank()) {
+            return false;
+        }
+        String normalized = status.trim().toLowerCase();
+        return "running".equals(normalized)
+                || "pending".equals(normalized)
+                || "retry".equals(normalized);
     }
 
     private String extractToolOutput(JsonNode node, JsonNode metaNode) {
@@ -2633,19 +3069,25 @@ final class ChatPanel {
         AgentMessageUI ui = new AgentMessageUI();
         JPanel messagePanel = new JPanel();
         messagePanel.setLayout(new BoxLayout(messagePanel, BoxLayout.Y_AXIS));
-        messagePanel.setBorder(JBUI.Borders.empty(5, 0));
+        messagePanel.setBorder(JBUI.Borders.empty(6, 0));
         ui.messagePanel = messagePanel;
         
         if (isUser) {
-            JPanel bubble = new JPanel(new BorderLayout());
-            bubble.setBackground(new JBColor(new Color(230, 240, 255), new Color(66, 73, 86)));
-            bubble.setBorder(JBUI.Borders.empty(8));
+            JPanel bubble = new RoundedPanel(
+                    12,
+                    new JBColor(new Color(232, 240, 252), new Color(0x3A4250)),
+                    new JBColor(new Color(0xD4DFEF), new Color(0x4A5466))
+            );
+            bubble.setLayout(new BorderLayout());
+            bubble.setBorder(JBUI.Borders.empty(8, 9, 8, 9));
             
             JTextArea textArea = new JTextArea("You: " + text);
             textArea.setLineWrap(true);
             textArea.setWrapStyleWord(true);
             textArea.setEditable(false);
             textArea.setOpaque(false);
+            textArea.setForeground(new JBColor(new Color(0x243043), new Color(0xE6EBF2)));
+            textArea.setBorder(JBUI.Borders.empty(0));
             
             bubble.add(textArea, BorderLayout.CENTER);
             messagePanel.add(bubble);
@@ -2692,7 +3134,6 @@ final class ChatPanel {
         }
         
         conversationList.add(messagePanel);
-        conversationList.add(new JSeparator());
         
         conversationList.revalidate();
         conversationList.repaint();
@@ -3493,10 +3934,10 @@ final class ChatPanel {
             if (project.isDisposed() || suppressScrollTracking) {
                 return;
             }
-            if (isAtBottom(vertical)) {
-                followStreamingOutput = true;
-            } else if (isManualScrollRecent() || e.getValueIsAdjusting()) {
+            if (isManualScrollRecent() || e.getValueIsAdjusting()) {
                 followStreamingOutput = false;
+            } else if (isAtBottom(vertical)) {
+                followStreamingOutput = true;
             }
             updateJumpToBottomVisibility(vertical);
         });
@@ -3701,14 +4142,15 @@ final class ChatPanel {
         private final JLabel summaryLabel;
         private final JLabel metaLabel;
         private Runnable action;
+        private boolean hover;
+        private boolean running;
+        private Timer shimmerTimer;
+        private int shimmerOffset;
 
         InlineToolRowPanel(String marker) {
             setLayout(new BorderLayout(8, 0));
             setOpaque(false);
-            setBorder(BorderFactory.createCompoundBorder(
-                    BorderFactory.createLineBorder(UIUtil.getBoundsColor(), 1),
-                    JBUI.Borders.empty(4, 6, 4, 6)
-            ));
+            setBorder(JBUI.Borders.empty(3, 4, 3, 4));
             setCursor(Cursor.getDefaultCursor());
 
             JPanel left = new JPanel(new BorderLayout(6, 0));
@@ -3738,6 +4180,18 @@ final class ChatPanel {
                         action.run();
                     }
                 }
+
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    hover = true;
+                    repaint();
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    hover = false;
+                    repaint();
+                }
             };
             addMouseListener(click);
             left.addMouseListener(click);
@@ -3758,12 +4212,276 @@ final class ChatPanel {
         void setAction(boolean enabled, Runnable action) {
             this.action = enabled ? action : null;
             setCursor(enabled ? Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) : Cursor.getDefaultCursor());
+            repaint();
+        }
+
+        void setRunning(boolean running) {
+            if (this.running == running) {
+                return;
+            }
+            this.running = running;
+            if (running) {
+                startShimmer();
+            } else {
+                stopShimmer();
+            }
+            repaint();
+        }
+
+        private void startShimmer() {
+            if (shimmerTimer != null && shimmerTimer.isRunning()) {
+                return;
+            }
+            shimmerOffset = -Math.max(80, getWidth() / 3);
+            shimmerTimer = new Timer(36, e -> {
+                int width = Math.max(120, getWidth());
+                int band = Math.max(90, width / 3);
+                shimmerOffset += Math.max(6, width / 28);
+                if (shimmerOffset > width + band) {
+                    shimmerOffset = -band;
+                }
+                repaint();
+            });
+            shimmerTimer.start();
+        }
+
+        private void stopShimmer() {
+            if (shimmerTimer != null) {
+                shimmerTimer.stop();
+                shimmerTimer = null;
+            }
+        }
+
+        @Override
+        public void removeNotify() {
+            stopShimmer();
+            super.removeNotify();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            if (hover || action != null) {
+                Color fill = hover
+                        ? new JBColor(new Color(0xEEF2F7), new Color(0x313844))
+                        : new JBColor(new Color(0xF6F8FC), new Color(0x2B313B));
+                g2.setColor(fill);
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 12, 12);
+            }
+            if (running) {
+                int width = Math.max(1, getWidth());
+                int height = Math.max(1, getHeight());
+                int band = Math.max(90, width / 3);
+                float x1 = shimmerOffset - band;
+                float x2 = shimmerOffset + band;
+                LinearGradientPaint paint = new LinearGradientPaint(
+                        x1, 0f, x2, 0f,
+                        new float[]{0f, 0.5f, 1f},
+                        new Color[]{
+                                new Color(255, 255, 255, 0),
+                                new Color(255, 255, 255, 55),
+                                new Color(255, 255, 255, 0)
+                        }
+                );
+                g2.setPaint(paint);
+                g2.fillRoundRect(0, 0, width, height, 12, 12);
+            }
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    }
+
+    private static class SessionListRowPanel extends JPanel {
+        private boolean hover;
+        private boolean selected;
+
+        SessionListRowPanel() {
+            setOpaque(false);
+            MouseAdapter hoverListener = new MouseAdapter() {
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    hover = true;
+                    repaint();
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    hover = false;
+                    repaint();
+                }
+            };
+            addMouseListener(hoverListener);
+        }
+
+        void setSelectedRow(boolean selected) {
+            this.selected = selected;
+            repaint();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            if (selected || hover) {
+                Color fill = selected
+                        ? new JBColor(new Color(0x14548B), new Color(0x0B4A7D))
+                        : new JBColor(new Color(0xEEF2F8), new Color(0x2F3744));
+                g2.setColor(fill);
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 12, 12);
+            }
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    }
+
+    private static class RoundedPanel extends JPanel {
+        private final int radius;
+        private final Color fill;
+        private final Color border;
+
+        RoundedPanel(int radius, Color fill, Color border) {
+            this.radius = Math.max(4, radius);
+            this.fill = fill;
+            this.border = border;
+            setOpaque(false);
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            if (fill != null) {
+                g2.setColor(fill);
+                g2.fillRoundRect(0, 0, getWidth() - 1, getHeight() - 1, radius, radius);
+            }
+            if (border != null) {
+                g2.setColor(border);
+                g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, radius, radius);
+            }
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    }
+
+    private static class RoundedLineBorder extends javax.swing.border.AbstractBorder {
+        private final Color color;
+        private final int radius;
+
+        RoundedLineBorder(Color color, int radius) {
+            this.color = color == null ? UIUtil.getBoundsColor() : color;
+            this.radius = Math.max(4, radius);
+        }
+
+        @Override
+        public void paintBorder(Component c, Graphics g, int x, int y, int width, int height) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setColor(color);
+            g2.drawRoundRect(x, y, width - 1, height - 1, radius, radius);
+            g2.dispose();
+        }
+
+        @Override
+        public Insets getBorderInsets(Component c) {
+            return new Insets(1, 1, 1, 1);
+        }
+    }
+
+    private static class ThinkingStatusPanel extends JPanel {
+        private final JLabel textLabel;
+        private boolean active;
+        private Timer shimmerTimer;
+        private int shimmerOffset;
+
+        ThinkingStatusPanel() {
+            setOpaque(false);
+            setLayout(new FlowLayout(FlowLayout.LEFT, 12, 0));
+            setBorder(JBUI.Borders.empty(0, 2, 6, 2));
+            textLabel = new JLabel("正在思考");
+            textLabel.setForeground(new JBColor(new Color(0xC9D2DF), new Color(0xC9D2DF)));
+            textLabel.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL).deriveFont(Font.BOLD));
+            add(textLabel);
+            setPreferredSize(new Dimension(10, 22));
+        }
+
+        void setState(boolean active, String text) {
+            if (text != null && !text.isBlank()) {
+                textLabel.setText(text);
+            }
+            if (this.active == active) {
+                return;
+            }
+            this.active = active;
+            if (active) {
+                startShimmer();
+            } else {
+                stopShimmer();
+            }
+            repaint();
+        }
+
+        private void startShimmer() {
+            if (shimmerTimer != null && shimmerTimer.isRunning()) {
+                return;
+            }
+            shimmerOffset = -Math.max(120, getWidth() / 2);
+            shimmerTimer = new Timer(34, e -> {
+                int width = Math.max(240, getWidth());
+                int band = Math.max(140, width / 3);
+                shimmerOffset += Math.max(8, width / 28);
+                if (shimmerOffset > width + band) {
+                    shimmerOffset = -band;
+                }
+                repaint();
+            });
+            shimmerTimer.start();
+        }
+
+        private void stopShimmer() {
+            if (shimmerTimer != null) {
+                shimmerTimer.stop();
+                shimmerTimer = null;
+            }
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            super.paintComponent(g);
+            if (!active) {
+                return;
+            }
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            int width = Math.max(1, getWidth());
+            int height = Math.max(1, getHeight());
+            int band = Math.max(140, width / 3);
+            float x1 = shimmerOffset - band;
+            float x2 = shimmerOffset + band;
+            LinearGradientPaint paint = new LinearGradientPaint(
+                    x1, 0f, x2, 0f,
+                    new float[]{0f, 0.5f, 1f},
+                    new Color[]{
+                            new Color(255, 255, 255, 0),
+                            new Color(255, 255, 255, 70),
+                            new Color(255, 255, 255, 0)
+                    }
+            );
+            g2.setPaint(paint);
+            g2.fillRoundRect(0, 0, width, height, 10, 10);
+            g2.dispose();
+        }
+
+        @Override
+        public void removeNotify() {
+            stopShimmer();
+            super.removeNotify();
         }
     }
 
     private static class ActivityCommandPanel extends JPanel {
         private final JPanel headerPanel;
-        private final JLabel arrowLabel;
+        private final JLabel chevronLabel;
         private final JLabel summaryLabel;
         private final JLabel subtitleLabel;
         private final JLabel metaLabel;
@@ -3777,24 +4495,28 @@ final class ChatPanel {
         private final JButton whitelistButton;
         private final JButton alwaysAllowButton;
         private final JButton rejectButton;
+        private Timer detailAnimation;
+        private int detailAnimatedHeight;
         private String summary = "";
         private String expandedSummary = "";
         private String subtitle = "";
         private boolean expanded;
+        private boolean headerHover;
+        private boolean running;
+        private Timer shimmerTimer;
+        private int shimmerOffset;
 
         ActivityCommandPanel(String summary) {
-            setLayout(new BorderLayout(0, 4));
+            setLayout(new BorderLayout(0, 2));
             setOpaque(false);
 
             headerPanel = new JPanel(new BorderLayout(8, 0));
             headerPanel.setOpaque(false);
-            headerPanel.setBorder(JBUI.Borders.empty(2, 0));
+            headerPanel.setBorder(JBUI.Borders.empty(2, 4, 2, 4));
             headerPanel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
             JPanel left = new JPanel(new BorderLayout(6, 0));
             left.setOpaque(false);
-            arrowLabel = new JLabel(">");
-            arrowLabel.setForeground(UIUtil.getContextHelpForeground());
             summaryLabel = new JLabel();
             summaryLabel.setForeground(UIUtil.getLabelForeground());
             subtitleLabel = new JLabel();
@@ -3807,20 +4529,37 @@ final class ChatPanel {
             textColumn.add(summaryLabel);
             textColumn.add(subtitleLabel);
 
-            left.add(arrowLabel, BorderLayout.WEST);
             left.add(textColumn, BorderLayout.CENTER);
 
             metaLabel = new JLabel("");
             metaLabel.setForeground(UIUtil.getContextHelpForeground());
             metaLabel.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
+            chevronLabel = new JLabel(">");
+            chevronLabel.setForeground(new JBColor(new Color(0x8B96A8), new Color(0x9AA6B8)));
+            chevronLabel.setVisible(false);
+
+            JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
+            right.setOpaque(false);
+            right.add(metaLabel);
+            right.add(chevronLabel);
 
             headerPanel.add(left, BorderLayout.CENTER);
-            headerPanel.add(metaLabel, BorderLayout.EAST);
+            headerPanel.add(right, BorderLayout.EAST);
 
             MouseAdapter toggle = new MouseAdapter() {
                 @Override
                 public void mouseClicked(MouseEvent e) {
                     setExpanded(!expanded);
+                }
+
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    setHeaderHover(true);
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    setHeaderHover(false);
                 }
             };
             headerPanel.addMouseListener(toggle);
@@ -3829,46 +4568,56 @@ final class ChatPanel {
             summaryLabel.addMouseListener(toggle);
             subtitleLabel.addMouseListener(toggle);
             metaLabel.addMouseListener(toggle);
-            arrowLabel.addMouseListener(toggle);
+            chevronLabel.addMouseListener(toggle);
+            right.addMouseListener(toggle);
 
             detailArea = new JTextArea();
             detailArea.setEditable(false);
             detailArea.setLineWrap(false);
             detailArea.setWrapStyleWord(false);
-            detailArea.setBackground(UIUtil.getTextFieldBackground());
-            detailArea.setForeground(UIUtil.getLabelForeground());
-            detailArea.setBorder(JBUI.Borders.empty(8));
+            detailArea.setOpaque(false);
+            detailArea.setBackground(new JBColor(new Color(0xF8FAFD), new Color(0x2A303A)));
+            detailArea.setForeground(new JBColor(new Color(0x1F2937), new Color(0xD6DCE8)));
+            detailArea.setBorder(JBUI.Borders.empty(0));
             Font currentFont = detailArea.getFont();
             detailArea.setFont(new Font(Font.MONOSPACED, currentFont.getStyle(), currentFont.getSize()));
 
             detailScroll = new JBScrollPane(detailArea);
             detailScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
             detailScroll.setVerticalScrollBarPolicy(ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED);
-            detailScroll.setPreferredSize(new Dimension(10, 150));
-            detailScroll.setMinimumSize(new Dimension(10, 150));
-            detailScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 150));
+            detailScroll.setBorder(BorderFactory.createEmptyBorder());
+            detailScroll.getViewport().setOpaque(false);
+            detailScroll.setOpaque(false);
 
             detailPanel = new JPanel(new BorderLayout());
             detailPanel.setOpaque(false);
-            detailPanel.add(detailScroll, BorderLayout.CENTER);
+            detailPanel.setBorder(JBUI.Borders.empty(0, 18, 0, 0));
+
+            RoundedPanel detailCard = new RoundedPanel(
+                    14,
+                    new JBColor(new Color(0xF7F9FC), new Color(0x2B313B)),
+                    new JBColor(new Color(0xDCE3EE), new Color(0x3D4654))
+            );
+            detailCard.setLayout(new BorderLayout(0, 4));
+            detailCard.setBorder(JBUI.Borders.empty(8, 10, 6, 10));
+            detailCard.add(detailScroll, BorderLayout.CENTER);
+
             detailFooter = new JPanel(new BorderLayout());
             detailFooter.setOpaque(false);
-            detailFooter.setBorder(JBUI.Borders.empty(2, 8, 4, 8));
+            detailFooter.setBorder(JBUI.Borders.empty(2, 0, 0, 0));
             executionStatusLabel = new JLabel("");
             executionStatusLabel.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
             executionStatusLabel.setForeground(UIUtil.getContextHelpForeground());
             detailFooter.add(executionStatusLabel, BorderLayout.EAST);
             detailFooter.setVisible(false);
-            detailPanel.add(detailFooter, BorderLayout.SOUTH);
+            detailCard.add(detailFooter, BorderLayout.SOUTH);
+            detailPanel.add(detailCard, BorderLayout.CENTER);
             detailPanel.setVisible(false);
-            detailPanel.setBorder(BorderFactory.createCompoundBorder(
-                    JBUI.Borders.empty(0, 18, 0, 0),
-                    BorderFactory.createLineBorder(UIUtil.getBoundsColor(), 1)
-            ));
+            applyDetailHeight(0);
 
             decisionPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
             decisionPanel.setOpaque(false);
-            decisionPanel.setBorder(JBUI.Borders.empty(2, 18, 0, 0));
+            decisionPanel.setBorder(JBUI.Borders.empty(3, 18, 0, 0));
             approveButton = new JButton("Approve");
             whitelistButton = new JButton("Whitelist");
             alwaysAllowButton = new JButton("Always allow");
@@ -3891,6 +4640,102 @@ final class ChatPanel {
             setSummary(summary);
             setSubtitle("");
             setExpanded(false);
+        }
+
+        private void setHeaderHover(boolean hover) {
+            if (headerHover == hover) {
+                return;
+            }
+            headerHover = hover;
+            chevronLabel.setVisible(headerHover);
+            repaint();
+        }
+
+        void setRunning(boolean running) {
+            if (this.running == running) {
+                return;
+            }
+            this.running = running;
+            if (running) {
+                startShimmer();
+            } else {
+                stopShimmer();
+            }
+            repaint();
+        }
+
+        private void startShimmer() {
+            if (shimmerTimer != null && shimmerTimer.isRunning()) {
+                return;
+            }
+            shimmerOffset = -Math.max(120, getWidth() / 3);
+            shimmerTimer = new Timer(34, e -> {
+                int width = Math.max(140, getWidth());
+                int band = Math.max(140, width / 3);
+                shimmerOffset += Math.max(8, width / 30);
+                if (shimmerOffset > width + band) {
+                    shimmerOffset = -band;
+                }
+                repaint();
+            });
+            shimmerTimer.start();
+        }
+
+        private void stopShimmer() {
+            if (shimmerTimer != null) {
+                shimmerTimer.stop();
+                shimmerTimer = null;
+            }
+        }
+
+        private void applyDetailHeight(int height) {
+            int safe = Math.max(0, height);
+            detailAnimatedHeight = safe;
+            detailPanel.setPreferredSize(new Dimension(10, safe));
+            detailPanel.setMinimumSize(new Dimension(10, safe));
+            detailPanel.setMaximumSize(new Dimension(Integer.MAX_VALUE, safe));
+            int scrollHeight = Math.max(72, safe - 28);
+            detailScroll.setPreferredSize(new Dimension(10, scrollHeight));
+            detailScroll.setMinimumSize(new Dimension(10, scrollHeight));
+            detailScroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, scrollHeight));
+        }
+
+        private void animateDetailHeight(boolean expand) {
+            int target = expand ? 190 : 0;
+            if (detailAnimation != null && detailAnimation.isRunning()) {
+                detailAnimation.stop();
+            }
+            int start = detailAnimatedHeight;
+            if (start == target) {
+                detailPanel.setVisible(expand);
+                return;
+            }
+            if (expand) {
+                detailPanel.setVisible(true);
+            }
+            final int steps = 10;
+            final int delayMs = 16;
+            final int[] tick = {0};
+            detailAnimation = new Timer(delayMs, null);
+            detailAnimation.addActionListener(e -> {
+                tick[0]++;
+                float t = Math.min(1f, tick[0] / (float) steps);
+                float eased = (float) (1.0 - Math.pow(1.0 - t, 3.0));
+                int current = start + Math.round((target - start) * eased);
+                applyDetailHeight(current);
+                revalidate();
+                repaint();
+                if (tick[0] >= steps) {
+                    detailAnimation.stop();
+                    applyDetailHeight(target);
+                    if (!expand) {
+                        detailPanel.setVisible(false);
+                    }
+                    revalidate();
+                    repaint();
+                }
+            });
+            detailAnimation.start();
         }
 
         void setSummary(String summary) {
@@ -4078,11 +4923,43 @@ final class ChatPanel {
             }
         }
 
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            if (running) {
+                int width = Math.max(1, getWidth());
+                int height = Math.max(1, headerPanel == null ? getHeight() : headerPanel.getHeight());
+                int band = Math.max(150, width / 3);
+                float x1 = shimmerOffset - band;
+                float x2 = shimmerOffset + band;
+                LinearGradientPaint paint = new LinearGradientPaint(
+                        x1, 0f, x2, 0f,
+                        new float[]{0f, 0.5f, 1f},
+                        new Color[]{
+                                new Color(255, 255, 255, 0),
+                                new Color(255, 255, 255, 55),
+                                new Color(255, 255, 255, 0)
+                        }
+                );
+                g2.setPaint(paint);
+                g2.fillRoundRect(0, 0, width, height, 12, 12);
+            }
+            g2.dispose();
+            super.paintComponent(g);
+        }
+
+        @Override
+        public void removeNotify() {
+            stopShimmer();
+            super.removeNotify();
+        }
+
         void setExpanded(boolean expanded) {
             this.expanded = expanded;
-            detailPanel.setVisible(expanded);
-            arrowLabel.setText(expanded ? "v" : ">");
+            chevronLabel.setText(expanded ? "v" : ">");
             refreshHeaderLabels();
+            animateDetailHeight(expanded);
             revalidate();
             repaint();
         }
@@ -5092,7 +5969,13 @@ final class ChatPanel {
         SwingUtilities.invokeLater(() -> {
             if (project.isDisposed()) return;
             boolean effectiveBusy = runtimeBusy || awaitingUserApproval;
-            send.setEnabled(!effectiveBusy);
+            send.setEnabled(true);
+            updateSendButtonMode(effectiveBusy);
+            if (thinkingStatusPanel != null) {
+                String text = awaitingUserApproval ? "等待确认" : "正在思考";
+                thinkingStatusPanel.setVisible(effectiveBusy);
+                thinkingStatusPanel.setState(effectiveBusy, text);
+            }
             status.setText(awaitingUserApproval ? approvalBusyMessage : runtimeBusyMessage);
         });
     }
@@ -5202,6 +6085,7 @@ final class ChatPanel {
             state.uiExpandedSummary = firstNonBlank(activity.expandedSummary, resolveExpandedSummary(state));
             state.uiMeta = firstNonBlank(activity.meta, buildToolMeta(state));
             state.uiDetails = firstNonBlank(activity.details, buildToolDetails(state));
+            boolean running = isToolStatusRunning(state.status);
             if (state.panel != null) {
                 state.panel.setSummary(state.uiSummary);
                 state.panel.setExpandedSummary(state.uiExpandedSummary);
@@ -5210,11 +6094,13 @@ final class ChatPanel {
                 state.panel.setDetails(state.uiDetails);
                 String executionStatus = state.renderType == ToolRenderType.TERMINAL ? buildTerminalExecutionStatus(state) : "";
                 state.panel.setExecutionStatus(executionStatus, colorForToolStatus(state.status));
+                state.panel.setRunning(running);
                 state.panel.clearDecisionActions();
             }
             if (state.inlineRow != null) {
                 state.inlineRow.setSummaryText(state.uiSummary);
                 state.inlineRow.setMetaText(state.uiMeta, colorForToolStatus(state.status));
+                state.inlineRow.setRunning(running);
                 if (state.renderType == ToolRenderType.READ && state.targetNavigable) {
                     state.inlineRow.setAction(true, () -> navigateToReadTarget(state));
                 } else {

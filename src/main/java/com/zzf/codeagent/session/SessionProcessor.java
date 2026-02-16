@@ -17,7 +17,9 @@ import org.springframework.context.ApplicationContext;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -40,10 +42,15 @@ public class SessionProcessor {
     private final ContextCompactionService compactionService;
     private final ObjectMapper objectMapper;
 
-    private final Map<String, MessageV2.ToolPart> toolcalls = new HashMap<>();
+    private final Map<String, MessageV2.ToolPart> toolcalls = new ConcurrentHashMap<>();
+    private final Map<String, CompletableFuture<Tool.Result>> runningToolExecutions = new ConcurrentHashMap<>();
+    private final Map<String, Tool> runningExecutionTools = new ConcurrentHashMap<>();
     private final AtomicBoolean needsCompaction = new AtomicBoolean(false);
     private final AtomicBoolean blocked = new AtomicBoolean(false);
+    private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
     private int attempt = 0;
+    private volatile CompletableFuture<Void> llmStreamFuture;
+    private volatile CompletableFuture<String> activeResultFuture;
 
     public MessageV2.Assistant getMessage() {
         return assistantMessage;
@@ -62,15 +69,36 @@ public class SessionProcessor {
         this.tools = tools;
         needsCompaction.set(false);
         blocked.set(false);
+        cancelRequested.set(false);
+        runningToolExecutions.clear();
+        runningExecutionTools.clear();
         attempt = 0;
         
         CompletableFuture<String> result = new CompletableFuture<>();
+        activeResultFuture = result;
         processLoop(streamInput, tools, result);
         return result;
     }
 
+    public void cancel(String reason) {
+        if (!cancelRequested.compareAndSet(false, true)) {
+            return;
+        }
+        log.info("Cancelling session processor for session {}: {}", sessionID, reason);
+        CompletableFuture<Void> streamFuture = llmStreamFuture;
+        if (streamFuture != null && !streamFuture.isDone()) {
+            streamFuture.cancel(true);
+        }
+        cancelRunningTools(reason);
+        markRunningToolsCancelled(reason);
+        CompletableFuture<String> result = activeResultFuture;
+        if (result != null && !result.isDone()) {
+            result.complete("stop");
+        }
+    }
+
     private void processLoop(LLMService.StreamInput streamInput, Map<String, Tool> tools, CompletableFuture<String> result) {
-        llmService.stream(streamInput, new LLMService.StreamCallback() {
+        llmStreamFuture = llmService.stream(streamInput, new LLMService.StreamCallback() {
             private MessageV2.TextPart currentText;
             private Map<String, MessageV2.ReasoningPart> reasoningMap = new HashMap<>();
             private String snapshot;
@@ -87,11 +115,17 @@ public class SessionProcessor {
 
             @Override
             public void onStart() {
+                if (cancelRequested.get()) {
+                    return;
+                }
                 sessionStatus.set(sessionID, SessionStatus.Info.builder().type("busy").build());
             }
 
             @Override
             public void onStepStart() {
+                if (cancelRequested.get()) {
+                    return;
+                }
                 // snapshot = snapshotService.track();
                 MessageV2.StepStartPart part = new MessageV2.StepStartPart();
                 part.setId(Identifier.ascending("part"));
@@ -104,6 +138,9 @@ public class SessionProcessor {
 
             @Override
             public void onStepFinish(String finishReason, Map<String, Object> usage, Map<String, Object> metadata) {
+                if (cancelRequested.get()) {
+                    return;
+                }
                 assistantMessage.setFinish(true);
                 assistantMessage.setFinishReason(normalizeFinishReason(finishReason));
                 
@@ -144,6 +181,9 @@ public class SessionProcessor {
 
             @Override
             public void onTextStart(String id, Map<String, Object> metadata) {
+                if (cancelRequested.get()) {
+                    return;
+                }
                 currentText = new MessageV2.TextPart();
                 currentText.setId(Identifier.ascending("part"));
                 currentText.setMessageID(assistantMessage.getId());
@@ -160,6 +200,9 @@ public class SessionProcessor {
             @Override
             public synchronized void onTextDelta(String text, Map<String, Object> metadata) {
                 if (text == null || text.isEmpty()) return;
+                if (cancelRequested.get()) {
+                    return;
+                }
                 
                 // Append to buffer for XML parsing
                 xmlBuffer.append(text);
@@ -448,6 +491,9 @@ public class SessionProcessor {
 
             @Override
             public void onTextEnd(Map<String, Object> metadata) {
+                if (cancelRequested.get()) {
+                    return;
+                }
                 // Flush remaining buffer
                 if (xmlBuffer.length() > 0) {
                     if (inXmlTool) {
@@ -501,6 +547,9 @@ public class SessionProcessor {
 
             @Override
             public void onReasoningStart(String id, Map<String, Object> metadata) {
+                if (cancelRequested.get()) {
+                    return;
+                }
                 providerReasoningObserved = true;
                 String reasoningKey = (id == null || id.isBlank()) ? "default" : id;
                 activeReasoningKey = reasoningKey;
@@ -521,6 +570,9 @@ public class SessionProcessor {
 
             @Override
             public synchronized void onReasoningDelta(String text, Map<String, Object> metadata) {
+                if (cancelRequested.get()) {
+                    return;
+                }
                 String id = activeReasoningKey != null ? activeReasoningKey : "default";
                 MessageV2.ReasoningPart part = reasoningMap.get(id);
                 if (part == null) {
@@ -546,6 +598,9 @@ public class SessionProcessor {
 
             @Override
             public void onReasoningEnd(Map<String, Object> metadata) {
+                if (cancelRequested.get()) {
+                    return;
+                }
                 String id = activeReasoningKey != null ? activeReasoningKey : "default";
                 MessageV2.ReasoningPart part = reasoningMap.get(id);
                 if (part != null) {
@@ -577,6 +632,9 @@ public class SessionProcessor {
 
             @Override
             public void onToolInputStart(String name, String id) {
+                if (cancelRequested.get()) {
+                    return;
+                }
                 String callId = (id == null || id.isBlank()) ? "call_" + System.currentTimeMillis() : id;
                 MessageV2.ToolPart part = new MessageV2.ToolPart();
                 part.setId(Identifier.ascending("part"));
@@ -598,6 +656,9 @@ public class SessionProcessor {
 
             @Override
             public void onToolCall(String name, String id, Map<String, Object> input, Map<String, Object> metadata) {
+                if (cancelRequested.get()) {
+                    return;
+                }
                 String callId = (id == null || id.isBlank()) ? "call_" + System.currentTimeMillis() : id;
                 Map<String, Object> safeInput = input != null ? new HashMap<>(input) : new HashMap<>();
                 log.info("Assistant calling tool: {} with input: {}", name, safeInput);
@@ -653,11 +714,23 @@ public class SessionProcessor {
 
                     JsonNode args = objectMapper.valueToTree(safeInput);
                     CompletableFuture<Tool.Result> execution = tool.execute(args, ctx);
+                    runningToolExecutions.put(callId, execution);
+                    runningExecutionTools.put(callId, tool);
                     
                     // Add timeout (aligned with opencode's intent, although opencode uses AbortSignal)
                     execution.orTimeout(60, TimeUnit.SECONDS)
-                        .thenAccept(res -> onToolResult(callId, safeInput, res.getOutput(), res.getMetadata()))
+                        .thenAccept(res -> {
+                            runningToolExecutions.remove(callId);
+                            runningExecutionTools.remove(callId);
+                            if (cancelRequested.get()) {
+                                onToolError(callId, safeInput, new CancellationException("Tool execution cancelled"));
+                                return;
+                            }
+                            onToolResult(callId, safeInput, res.getOutput(), res.getMetadata());
+                        })
                         .exceptionally(e -> {
+                            runningToolExecutions.remove(callId);
+                            runningExecutionTools.remove(callId);
                             onToolError(callId, safeInput, e);
                             return null;
                         });
@@ -687,9 +760,18 @@ public class SessionProcessor {
             public void onToolError(String id, Map<String, Object> input, Throwable error) {
                 MessageV2.ToolPart part = toolcalls.get(id);
                 if (part != null) {
-                    part.getState().setStatus("error");
+                    boolean cancelled = isCancellationThrowable(error) || cancelRequested.get();
+                    part.getState().setStatus(cancelled ? "cancelled" : "error");
                     part.getState().setInput(input != null ? input : part.getState().getInput());
-                    part.getState().setError(error.toString());
+                    if (cancelled) {
+                        String msg = error != null && error.getMessage() != null
+                                ? error.getMessage()
+                                : "Tool execution cancelled";
+                        part.getState().setOutput(msg);
+                        part.getState().setError("");
+                    } else {
+                        part.getState().setError(error == null ? "Unknown tool error" : error.toString());
+                    }
                     if (part.getState().getTime() == null) part.getState().setTime(new MessageV2.ToolState.TimeInfo());
                     part.getState().getTime().setEnd(System.currentTimeMillis());
                     
@@ -700,6 +782,18 @@ public class SessionProcessor {
 
     @Override
     public void onComplete(String finishReason) {
+        if (cancelRequested.get()) {
+            markRunningToolsCancelled("Cancelled by user");
+            assistantMessage.setFinish(true);
+            assistantMessage.setFinishReason("cancelled");
+            if (assistantMessage.getTime() == null) {
+                assistantMessage.setTime(MessageV2.MessageTime.builder().build());
+            }
+            assistantMessage.getTime().setEnd(System.currentTimeMillis());
+            sessionService.updateMessage(assistantMessage.withParts());
+            result.complete("stop");
+            return;
+        }
         if (assistantMessage.getTime() == null) {
             assistantMessage.setTime(MessageV2.MessageTime.builder().build());
         }
@@ -726,6 +820,19 @@ public class SessionProcessor {
 
     @Override
     public void onError(Throwable t) {
+        if (cancelRequested.get() || isCancellationThrowable(t)) {
+            log.info("Stream cancelled for session {}", sessionID);
+            markRunningToolsCancelled("Cancelled by user");
+            assistantMessage.setFinish(true);
+            assistantMessage.setFinishReason("cancelled");
+            if (assistantMessage.getTime() == null) {
+                assistantMessage.setTime(MessageV2.MessageTime.builder().build());
+            }
+            assistantMessage.getTime().setEnd(System.currentTimeMillis());
+            sessionService.updateMessage(assistantMessage.withParts());
+            result.complete("stop");
+            return;
+        }
         log.error("Stream error", t);
         String retryableMsg = SessionRetry.getRetryableMessage(t);
         if (retryableMsg != null && attempt < 3) {
@@ -749,7 +856,71 @@ public class SessionProcessor {
             result.complete("stop");
         }
     }
-        });
+        }, () -> cancelRequested.get() || Thread.currentThread().isInterrupted());
+    }
+
+    private void cancelRunningTools(String reason) {
+        for (Map.Entry<String, CompletableFuture<Tool.Result>> entry : runningToolExecutions.entrySet()) {
+            String callID = entry.getKey();
+            CompletableFuture<Tool.Result> execution = entry.getValue();
+            Tool tool = runningExecutionTools.get(callID);
+            if (tool != null) {
+                try {
+                    tool.cancel(sessionID, callID);
+                } catch (Exception e) {
+                    log.warn("Failed to cancel tool {} call {} in session {}", tool.getId(), callID, sessionID, e);
+                }
+            }
+            if (execution != null && !execution.isDone()) {
+                execution.cancel(true);
+            }
+        }
+        runningToolExecutions.clear();
+        runningExecutionTools.clear();
+    }
+
+    private void markRunningToolsCancelled(String reason) {
+        String message = (reason == null || reason.isBlank()) ? "Cancelled by user" : reason;
+        for (MessageV2.ToolPart part : new java.util.ArrayList<>(toolcalls.values())) {
+            if (part == null || part.getState() == null) {
+                continue;
+            }
+            String status = part.getState().getStatus();
+            if (!"running".equalsIgnoreCase(status) && !"pending".equalsIgnoreCase(status)) {
+                continue;
+            }
+            part.getState().setStatus("cancelled");
+            part.getState().setOutput(message);
+            part.getState().setError("");
+            if (part.getState().getTime() == null) {
+                part.getState().setTime(new MessageV2.ToolState.TimeInfo());
+            }
+            part.getState().getTime().setEnd(System.currentTimeMillis());
+            sessionService.updatePart(part);
+        }
+    }
+
+    private boolean isCancellationThrowable(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof CancellationException || current instanceof InterruptedException) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null) {
+                String normalized = message.toLowerCase(java.util.Locale.ROOT);
+                if (normalized.contains("cancelled")
+                        || normalized.contains("canceled")
+                        || normalized.contains("interrupted")) {
+                    return true;
+                }
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private Map<String, Object> buildToolContextExtra() {

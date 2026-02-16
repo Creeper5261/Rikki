@@ -14,18 +14,22 @@ import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StreamUtils;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-/**
- * ListTool 实现 (对齐 opencode/src/tool/ls.ts)
- */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -36,14 +40,7 @@ public class ListTool implements Tool {
     private final ShellService shellService;
     private final ResourceLoader resourceLoader;
 
-    private static final List<String> IGNORE_PATTERNS = Arrays.asList(
-            "node_modules/", "__pycache__/", ".git/", "dist/", "build/", "target/",
-            "vendor/", "bin/", "obj/", ".idea/", ".vscode/", ".zig-cache/",
-            "zig-out", ".coverage", "coverage/", "tmp/", "temp/", ".cache/",
-            "cache/", "logs/", ".venv/", "venv/", "env/"
-    );
-
-    private static final int LIMIT = 100;
+    private static final int LIMIT = 500;
 
     @Override
     public String getId() {
@@ -52,10 +49,6 @@ public class ListTool implements Tool {
 
     @Override
     public String getDescription() {
-        return loadDescription();
-    }
-
-    private String loadDescription() {
         try {
             Resource resource = resourceLoader.getResource("classpath:prompts/tool/ls.txt");
             if (resource.exists()) {
@@ -64,7 +57,7 @@ public class ListTool implements Tool {
         } catch (IOException e) {
             log.error("Failed to load ls tool description", e);
         }
-        return "Lists files and directories in a given path."; // Fallback
+        return "Lists files and directories in a given path.";
     }
 
     @Override
@@ -72,10 +65,12 @@ public class ListTool implements Tool {
         ObjectNode schema = objectMapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode properties = schema.putObject("properties");
-        
-        properties.putObject("path").put("type", "string").put("description", "The absolute path to the directory to list (must be absolute, not relative)");
-        properties.putObject("ignore").put("type", "array").set("items", objectMapper.createObjectNode().put("type", "string"));
-
+        properties.putObject("path")
+                .put("type", "string")
+                .put("description", "The absolute path to the directory to list (must be absolute, not relative)");
+        properties.putObject("ignore")
+                .put("type", "array")
+                .set("items", objectMapper.createObjectNode().put("type", "string"));
         return schema;
     }
 
@@ -95,37 +90,11 @@ public class ListTool implements Tool {
                 }
 
                 Path searchPath = ToolPathResolver.resolvePath(projectContext, ctx, searchPathStr);
-
-                // 准备 ripgrep 命令
-                List<String> cmdParts = new ArrayList<>();
-                cmdParts.add("rg");
-                cmdParts.add("--files");
-                
-                for (String p : IGNORE_PATTERNS) {
-                    cmdParts.add("--glob");
-                    cmdParts.add("\"!" + p + "*\"");
-                }
-                for (String p : userIgnore) {
-                    cmdParts.add("--glob");
-                    cmdParts.add("\"!" + p + "\"");
-                }
-                
-                cmdParts.add("\"" + searchPath.toString() + "\"");
-
-                String command = String.join(" ", cmdParts);
-                ExecuteResult result = shellService.execute(command, null, null);
-
-                List<String> files = new ArrayList<>();
-                if (result.getExitCode() == 0 || !result.text().trim().isEmpty()) {
-                    String[] lines = result.text().trim().split("\n");
-                    for (String line : lines) {
-                        if (line.isEmpty()) continue;
-                        if (files.size() >= LIMIT) break;
-                        files.add(line);
-                    }
+                List<String> files = listWithRipgrep(searchPath, userIgnore);
+                if (files.isEmpty()) {
+                    files = listFilesFallback(searchPath, LIMIT);
                 }
 
-                // 构建目录树结构
                 Set<String> dirs = new HashSet<>();
                 Map<String, List<String>> filesByDir = new HashMap<>();
 
@@ -135,16 +104,16 @@ public class ListTool implements Tool {
                     try {
                         relativePath = searchPath.relativize(filePath);
                     } catch (Exception e) {
-                        relativePath = filePath.getFileName() != null ? Paths.get(filePath.getFileName().toString()) : filePath;
+                        relativePath = filePath.getFileName() != null
+                                ? Paths.get(filePath.getFileName().toString())
+                                : filePath;
                     }
                     Path parent = relativePath.getParent();
-                    
-                    String dirKey = (parent == null) ? "." : parent.toString().replace("\\", "/");
-                    
-                    // 添加所有父目录
-                    String[] parts = dirKey.equals(".") ? new String[0] : dirKey.split("/");
+                    String dirKey = parent == null ? "." : parent.toString().replace("\\", "/");
+
+                    String[] parts = ".".equals(dirKey) ? new String[0] : dirKey.split("/");
                     for (int i = 0; i <= parts.length; i++) {
-                        String dirPath = (i == 0) ? "." : String.join("/", Arrays.copyOfRange(parts, 0, i));
+                        String dirPath = i == 0 ? "." : String.join("/", java.util.Arrays.copyOfRange(parts, 0, i));
                         dirs.add(dirPath);
                     }
 
@@ -158,8 +127,7 @@ public class ListTool implements Tool {
                 Map<String, Object> metadata = new HashMap<>();
                 metadata.put("count", files.size());
                 metadata.put("truncated", files.size() >= LIMIT);
-                
-                // Add structured view
+
                 Map<String, Object> fileView = new HashMap<>();
                 fileView.put("type", "directory");
                 fileView.put("path", searchPath.toString());
@@ -171,12 +139,56 @@ public class ListTool implements Tool {
                         .output(output.toString().trim())
                         .metadata(metadata)
                         .build();
-
             } catch (Exception e) {
                 log.error("Failed to execute list tool", e);
                 throw new RuntimeException(e.getMessage());
             }
         });
+    }
+
+    private List<String> listWithRipgrep(Path searchPath, List<String> userIgnore) {
+        List<String> cmdParts = new ArrayList<>();
+        cmdParts.add("rg");
+        cmdParts.add("--files");
+        cmdParts.add("--hidden");
+        cmdParts.add("--no-ignore");
+        cmdParts.add("--no-ignore-vcs");
+        for (String p : userIgnore) {
+            cmdParts.add("--glob");
+            cmdParts.add("\"!" + p + "\"");
+        }
+        cmdParts.add("\"" + searchPath + "\"");
+
+        ExecuteResult result = shellService.execute(String.join(" ", cmdParts), null, null);
+        if (result.getExitCode() != 0 && result.text().trim().isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        List<String> files = new ArrayList<>();
+        String[] lines = result.text().trim().split("\n");
+        for (String line : lines) {
+            if (line == null || line.isBlank()) {
+                continue;
+            }
+            files.add(line);
+            if (files.size() >= LIMIT) {
+                break;
+            }
+        }
+        return files;
+    }
+
+    private List<String> listFilesFallback(Path searchPath, int limit) {
+        List<String> files = new ArrayList<>();
+        try (Stream<Path> walk = Files.walk(searchPath)) {
+            walk.filter(Files::isRegularFile)
+                    .sorted()
+                    .limit(limit)
+                    .forEach(path -> files.add(path.toString()));
+        } catch (Exception e) {
+            log.warn("List fallback scan failed for {}: {}", searchPath, e.getMessage());
+        }
+        return files;
     }
 
     private String renderDir(String dirPath, int depth, Set<String> dirs, Map<String, List<String>> filesByDir) {
@@ -188,12 +200,12 @@ public class ListTool implements Tool {
         }
 
         String childIndent = "  ".repeat(depth + 1);
-        
-        // 渲染子目录
         List<String> children = dirs.stream()
                 .filter(d -> {
-                    if (d.equals(dirPath)) return false;
-                    String parent = (d.contains("/")) ? d.substring(0, d.lastIndexOf("/")) : ".";
+                    if (d.equals(dirPath)) {
+                        return false;
+                    }
+                    String parent = d.contains("/") ? d.substring(0, d.lastIndexOf("/")) : ".";
                     return parent.equals(dirPath);
                 })
                 .sorted()
@@ -203,7 +215,6 @@ public class ListTool implements Tool {
             sb.append(renderDir(child, depth + 1, dirs, filesByDir));
         }
 
-        // 渲染文件
         List<String> files = filesByDir.getOrDefault(dirPath, new ArrayList<>());
         Collections.sort(files);
         for (String file : files) {

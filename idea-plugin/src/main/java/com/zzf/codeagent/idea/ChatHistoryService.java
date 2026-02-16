@@ -165,6 +165,23 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         });
     }
 
+    public synchronized @Nullable ChatSession peekCurrentSession() {
+        if (state.currentSessionId == null || state.currentSessionId.isBlank()) {
+            return null;
+        }
+        String id = state.currentSessionId;
+        for (ChatSession session : state.sessions) {
+            if (session != null && id.equals(session.id)) {
+                return session;
+            }
+        }
+        return null;
+    }
+
+    public synchronized String getCurrentSessionIdRaw() {
+        return state.currentSessionId == null ? "" : state.currentSessionId;
+    }
+
     public synchronized List<ChatSession> getSessions() {
         return new ArrayList<>(state.sessions);
     }

@@ -30,11 +30,14 @@ final class ToolPathResolver {
 
     static Path resolvePath(ProjectContext projectContext, Tool.Context ctx, String rawPath) {
         Path parsed = parse(rawPath);
+        Path resolved;
         if (parsed.isAbsolute()) {
-            return parsed.normalize();
+            resolved = parsed.normalize();
+        } else {
+            Path workspace = parse(resolveWorkspaceRoot(projectContext, ctx));
+            resolved = workspace.resolve(parsed).normalize();
         }
-        Path workspace = parse(resolveWorkspaceRoot(projectContext, ctx));
-        return workspace.resolve(parsed).normalize();
+        return ensureInsideWorkspace(projectContext, ctx, resolved);
     }
 
     static Path resolveAgainst(Path base, String rawPath) {
@@ -73,6 +76,19 @@ final class ToolPathResolver {
     static String normalizeToAbsoluteString(String rawPath) {
         Path p = parse(rawPath);
         return p.toAbsolutePath().normalize().toString();
+    }
+
+    static Path ensureInsideWorkspace(ProjectContext projectContext, Tool.Context ctx, Path targetPath) {
+        Path normalizedTarget = targetPath.toAbsolutePath().normalize();
+        String workspaceRoot = resolveWorkspaceRoot(projectContext, ctx);
+        if (workspaceRoot == null || workspaceRoot.isBlank()) {
+            return normalizedTarget;
+        }
+        Path root = parse(workspaceRoot).toAbsolutePath().normalize();
+        if (!normalizedTarget.startsWith(root)) {
+            throw new IllegalArgumentException("Path escapes workspace root: " + normalizedTarget);
+        }
+        return normalizedTarget;
     }
 
     private static Path parse(String rawPath) {

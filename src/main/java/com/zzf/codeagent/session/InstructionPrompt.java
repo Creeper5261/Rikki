@@ -18,13 +18,16 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Duration;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
-/**
- * 指令解析器 (对齐 OpenCode InstructionPrompt)
- */
 @Component
 @Slf4j
 @RequiredArgsConstructor
@@ -34,7 +37,6 @@ public class InstructionPrompt {
     private final ProjectContext projectContext;
     private final FilesystemUtil filesystemUtil;
 
-    // 常见的指令文件名
     private static final List<String> FILES = List.of(
             "AGENTS.md",
             "CLAUDE.md",
@@ -45,44 +47,32 @@ public class InstructionPrompt {
             .connectTimeout(Duration.ofSeconds(5))
             .build();
 
-    /**
-     * 获取全局指令文件
-     */
     private List<String> globalFiles() {
         List<String> files = new ArrayList<>();
-        
-        // 1. Config Dir AGENTS.md
+
         String configDir = System.getenv("OPENCODE_CONFIG_DIR");
-        if (configDir != null) {
+        if (configDir != null && !configDir.isBlank()) {
             files.add(Paths.get(configDir, "AGENTS.md").toString());
-        } else {
-            // Default config dir if not set (mirroring Global.Path.config logic if needed)
-            // For now, follow TS logic strictly: path.join(Global.Path.config, "AGENTS.md")
-            // Assuming we have a way to get global config path, but let's stick to env for now.
         }
-        
-        // 2. ~/.claude/CLAUDE.md (unless disabled)
+
         String disableClaude = System.getenv("OPENCODE_DISABLE_CLAUDE_CODE_PROMPT");
         if (!"true".equalsIgnoreCase(disableClaude)) {
             String home = System.getProperty("user.home");
             files.add(Paths.get(home, ".claude", "CLAUDE.md").toString());
         }
-        
+
         return files;
     }
 
-    /**
-     * 解析相对路径指令
-     */
-    private List<String> resolveRelative(String instruction) {
+    private List<String> resolveRelative(String instruction, String directory, String worktree) {
         String disableProjectConfig = System.getenv("OPENCODE_DISABLE_PROJECT_CONFIG");
         String configDir = System.getenv("OPENCODE_CONFIG_DIR");
 
         if (!"true".equalsIgnoreCase(disableProjectConfig)) {
-            return filesystemUtil.globUp(instruction, projectContext.getDirectory(), projectContext.getWorktree());
+            return filesystemUtil.globUp(instruction, directory, worktree);
         }
 
-        if (configDir == null) {
+        if (configDir == null || configDir.isBlank()) {
             log.warn("Skipping relative instruction \"{}\" - no OPENCODE_CONFIG_DIR set while project config is disabled", instruction);
             return Collections.emptyList();
         }
@@ -90,32 +80,23 @@ public class InstructionPrompt {
         return filesystemUtil.globUp(instruction, configDir, configDir);
     }
 
-    /**
-     * 获取所有生效的指令路径 (本地文件或 URL)
-     */
-    public CompletableFuture<Set<String>> systemPaths() {
+    public CompletableFuture<Set<String>> systemPaths(String workspaceRoot) {
         return CompletableFuture.supplyAsync(() -> {
             Set<String> paths = new LinkedHashSet<>();
             String disableProjectConfig = System.getenv("OPENCODE_DISABLE_PROJECT_CONFIG");
+            String directory = normalizeWorkspaceRoot(workspaceRoot);
+            String worktree = directory;
 
-            // 1. 查找项目目录向上直到工作树根目录的指令文件
             if (!"true".equalsIgnoreCase(disableProjectConfig)) {
                 for (String filename : FILES) {
-                    List<String> found = filesystemUtil.findUp(filename, projectContext.getDirectory(), projectContext.getWorktree());
+                    List<String> found = filesystemUtil.findUp(filename, directory, worktree);
                     if (!found.isEmpty()) {
                         paths.addAll(found);
-                        break; // OpenCode: matches.length > 0 break inner loop? 
-                        // OpenCode source: 
-                        // for (const file of FILES) { 
-                        //   const matches = await findUp... 
-                        //   if (matches.length > 0) { matches.forEach... break } 
-                        // }
-                        // So yes, break after finding first type of file.
+                        break;
                     }
                 }
             }
 
-            // 2. Global files
             for (String file : globalFiles()) {
                 if (filesystemUtil.exists(file)) {
                     paths.add(Paths.get(file).toAbsolutePath().toString());
@@ -123,14 +104,13 @@ public class InstructionPrompt {
                 }
             }
 
-            // 3. Config instructions
             List<String> configInstructions = configManager.getConfig().getInstructions();
             if (configInstructions != null) {
                 for (String instruction : configInstructions) {
                     if (instruction.startsWith("http://") || instruction.startsWith("https://")) {
-                        continue; // Handled in system()
+                        continue;
                     }
-                    
+
                     String resolvedInstruction = instruction;
                     if (instruction.startsWith("~/")) {
                         resolvedInstruction = Paths.get(System.getProperty("user.home"), instruction.substring(2)).toString();
@@ -138,9 +118,12 @@ public class InstructionPrompt {
 
                     if (Paths.get(resolvedInstruction).isAbsolute()) {
                         Path absPath = Paths.get(resolvedInstruction);
-                        paths.addAll(filesystemUtil.glob(absPath.getParent().toString(), absPath.getFileName().toString()));
+                        Path parent = absPath.getParent();
+                        if (parent != null) {
+                            paths.addAll(filesystemUtil.glob(parent.toString(), absPath.getFileName().toString()));
+                        }
                     } else {
-                        paths.addAll(resolveRelative(resolvedInstruction));
+                        paths.addAll(resolveRelative(resolvedInstruction, directory, worktree));
                     }
                 }
             }
@@ -149,28 +132,25 @@ public class InstructionPrompt {
         });
     }
 
-    /**
-     * 加载所有指令内容
-     */
-    public CompletableFuture<List<String>> system() {
-        return systemPaths().thenCompose(paths -> {
+    public CompletableFuture<Set<String>> systemPaths() {
+        return systemPaths(projectContext.getDirectory());
+    }
+
+    public CompletableFuture<List<String>> system(String workspaceRoot) {
+        return systemPaths(workspaceRoot).thenCompose(paths -> {
             List<CompletableFuture<String>> futures = new ArrayList<>();
 
-            // Files
             for (String path : paths) {
-                futures.add(readContent(path).thenApply(content -> 
-                    content != null ? "Instructions from: " + path + "\n" + content : ""
-                ));
+                futures.add(readContent(path).thenApply(content ->
+                        content != null ? "Instructions from: " + path + "\n" + content : ""));
             }
 
-            // URLs from config
             List<String> configInstructions = configManager.getConfig().getInstructions();
             if (configInstructions != null) {
                 for (String instruction : configInstructions) {
                     if (instruction.startsWith("http://") || instruction.startsWith("https://")) {
-                        futures.add(fetchUrl(instruction).thenApply(content -> 
-                            content != null ? "Instructions from: " + instruction + "\n" + content : ""
-                        ));
+                        futures.add(fetchUrl(instruction).thenApply(content ->
+                                content != null ? "Instructions from: " + instruction + "\n" + content : ""));
                     }
                 }
             }
@@ -181,6 +161,10 @@ public class InstructionPrompt {
                             .filter(s -> s != null && !s.isEmpty())
                             .collect(Collectors.toList()));
         });
+    }
+
+    public CompletableFuture<List<String>> system() {
+        return system(projectContext.getDirectory());
     }
 
     private CompletableFuture<String> readContent(String path) {
@@ -208,38 +192,37 @@ public class InstructionPrompt {
         });
     }
 
-    /**
-     * Check if instructions are already loaded in messages (via read tool)
-     */
     public Set<String> loaded(List<MessageV2.WithParts> messages) {
         Set<String> paths = new HashSet<>();
         for (MessageV2.WithParts msg : messages) {
             for (PromptPart part : msg.getParts()) {
-                if (part instanceof MessageV2.ToolPart) {
-                    MessageV2.ToolPart toolPart = (MessageV2.ToolPart) part;
-                    if ("read".equals(toolPart.getTool()) && 
-                        toolPart.getState() != null && 
-                        "completed".equals(toolPart.getState().getStatus())) {
-                        
-                        // Check if compacted
-                        if (toolPart.getState().getTime() != null && 
-                            Boolean.TRUE.equals(toolPart.getState().getTime().getCompacted())) {
-                            continue;
-                        }
-                        
-                        // Check metadata loaded
-                        Map<String, Object> metadata = toolPart.getState().getMetadata();
-                        if (metadata != null && metadata.containsKey("loaded")) {
-                            Object loadedObj = metadata.get("loaded");
-                            if (loadedObj instanceof List) {
-                                List<?> loadedList = (List<?>) loadedObj;
-                                for (Object item : loadedList) {
-                                    if (item instanceof String) {
-                                        paths.add((String) item);
-                                    }
-                                }
-                            }
-                        }
+                if (!(part instanceof MessageV2.ToolPart)) {
+                    continue;
+                }
+                MessageV2.ToolPart toolPart = (MessageV2.ToolPart) part;
+                if (!"read".equals(toolPart.getTool())
+                        || toolPart.getState() == null
+                        || !"completed".equals(toolPart.getState().getStatus())) {
+                    continue;
+                }
+
+                if (toolPart.getState().getTime() != null
+                        && Boolean.TRUE.equals(toolPart.getState().getTime().getCompacted())) {
+                    continue;
+                }
+
+                Map<String, Object> metadata = toolPart.getState().getMetadata();
+                if (metadata == null || !metadata.containsKey("loaded")) {
+                    continue;
+                }
+                Object loadedObj = metadata.get("loaded");
+                if (!(loadedObj instanceof List<?>)) {
+                    continue;
+                }
+                List<?> loadedList = (List<?>) loadedObj;
+                for (Object item : loadedList) {
+                    if (item instanceof String) {
+                        paths.add((String) item);
                     }
                 }
             }
@@ -247,29 +230,26 @@ public class InstructionPrompt {
         return paths;
     }
 
-    /**
-     * Find instruction file in specific directory
-     */
     public CompletableFuture<String> find(String dir) {
         return CompletableFuture.supplyAsync(() -> {
             for (String file : FILES) {
                 Path p = Paths.get(dir, file);
-                if (Files.exists(p)) return p.toAbsolutePath().toString();
+                if (Files.exists(p)) {
+                    return p.toAbsolutePath().toString();
+                }
             }
             return null;
         });
     }
 
-    /**
-     * Resolve instructions relative to a file being worked on
-     */
-    public CompletableFuture<List<InstructionResult>> resolve(List<MessageV2.WithParts> messages, String filepath) {
-        return systemPaths().thenCompose(system -> {
+    public CompletableFuture<List<InstructionResult>> resolve(List<MessageV2.WithParts> messages,
+                                                              String filepath,
+                                                              String workspaceRoot) {
+        return systemPaths(workspaceRoot).thenCompose(system -> {
             Set<String> already = loaded(messages);
-            
             Path current = Paths.get(filepath).toAbsolutePath().getParent();
-            Path root = Paths.get(projectContext.getDirectory()).toAbsolutePath();
-            
+            Path root = Paths.get(normalizeWorkspaceRoot(workspaceRoot)).toAbsolutePath();
+
             if (current == null || !current.startsWith(root)) {
                 return CompletableFuture.completedFuture(Collections.emptyList());
             }
@@ -278,7 +258,15 @@ public class InstructionPrompt {
         });
     }
 
-    private CompletableFuture<List<InstructionResult>> resolveRecursive(Path current, Path root, Set<String> system, Set<String> already, List<InstructionResult> results) {
+    public CompletableFuture<List<InstructionResult>> resolve(List<MessageV2.WithParts> messages, String filepath) {
+        return resolve(messages, filepath, projectContext.getDirectory());
+    }
+
+    private CompletableFuture<List<InstructionResult>> resolveRecursive(Path current,
+                                                                        Path root,
+                                                                        Set<String> system,
+                                                                        Set<String> already,
+                                                                        List<InstructionResult> results) {
         return find(current.toString()).thenCompose(found -> {
             CompletableFuture<Void> nextStep;
             if (found != null && !system.contains(found) && !already.contains(found)) {
@@ -303,7 +291,18 @@ public class InstructionPrompt {
             });
         });
     }
-    
+
+    private String normalizeWorkspaceRoot(String workspaceRoot) {
+        String candidate = workspaceRoot;
+        if (candidate == null || candidate.isBlank()) {
+            candidate = projectContext.getDirectory();
+        }
+        if (candidate == null || candidate.isBlank()) {
+            candidate = System.getProperty("user.dir");
+        }
+        return Paths.get(candidate).toAbsolutePath().normalize().toString();
+    }
+
     @lombok.Data
     @lombok.AllArgsConstructor
     public static class InstructionResult {

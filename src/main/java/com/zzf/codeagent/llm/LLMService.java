@@ -30,7 +30,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
 
 /**
@@ -89,6 +91,11 @@ public class LLMService {
     }
 
     public CompletableFuture<Void> stream(StreamInput input, StreamCallback callback) {
+        return stream(input, callback, () -> false);
+    }
+
+    public CompletableFuture<Void> stream(StreamInput input, StreamCallback callback, BooleanSupplier cancelRequested) {
+        BooleanSupplier cancellation = cancelRequested != null ? cancelRequested : () -> false;
         // 1. Resolve Model
         ModelInfo model = input.model;
         if (model == null && input.agent != null && input.agent.getModel() != null) {
@@ -206,6 +213,10 @@ public class LLMService {
 
             return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofLines())
                     .thenAccept(response -> {
+                        if (cancellation.getAsBoolean()) {
+                            callback.onError(new CancellationException("LLM stream cancelled"));
+                            return;
+                        }
                         if (response.statusCode() != 200) {
                             String errorBody = "";
                             try (Stream<String> errorLines = response.body()) {
@@ -226,21 +237,25 @@ public class LLMService {
                             Map<Integer, String> toolCallIds = new HashMap<>();
                             Map<Integer, StringBuilder> toolCallArgs = new HashMap<>();
                             Set<Integer> toolInputStarted = new HashSet<>();
-
-                            lines.forEach(line -> {
+                            java.util.Iterator<String> iterator = lines.iterator();
+                            boolean cancelledMidStream = false;
+                            while (iterator.hasNext()) {
+                                if (cancellation.getAsBoolean() || Thread.currentThread().isInterrupted()) {
+                                    cancelledMidStream = true;
+                                    break;
+                                }
+                                String line = iterator.next();
                                 if (line.startsWith("data:")) {
                                     String data = line.substring(5).trim();
-                                    if ("[DONE]".equals(data)) return;
+                                    if ("[DONE]".equals(data)) {
+                                        continue;
+                                    }
                                     try {
-                                        // Log raw chunk for debugging (user request for full transparency)
-                                        // log.info("LLM Stream Chunk: {}", data);
-
                                         Map<String, Object> chunk = objectMapper.readValue(data, Map.class);
                                         List<Map<String, Object>> choices = (List<Map<String, Object>>) chunk.get("choices");
                                         if (choices != null && !choices.isEmpty()) {
                                             Map<String, Object> delta = (Map<String, Object>) choices.get(0).get("delta");
-                                            
-                                            // Handle Reasoning (Align with extractReasoningMiddleware)
+
                                             if (delta.containsKey("reasoning_content") && delta.get("reasoning_content") != null) {
                                                 if (!reasoningOpen[0]) {
                                                     callback.onReasoningStart("reasoning", null);
@@ -248,8 +263,7 @@ public class LLMService {
                                                 }
                                                 callback.onReasoningDelta((String) delta.get("reasoning_content"), null);
                                             }
-                                            
-                                            // Handle Text
+
                                             if (delta.containsKey("content") && delta.get("content") != null) {
                                                 if (!textOpen[0]) {
                                                     callback.onTextStart("text", null);
@@ -258,7 +272,6 @@ public class LLMService {
                                                 callback.onTextDelta((String) delta.get("content"), null);
                                             }
 
-                                            // Handle Tool Calls
                                             if (delta.containsKey("tool_calls")) {
                                                 List<Map<String, Object>> toolCalls = (List<Map<String, Object>>) delta.get("tool_calls");
                                                 for (Map<String, Object> tc : toolCalls) {
@@ -293,11 +306,10 @@ public class LLMService {
                                                     }
                                                 }
                                             }
-                                            
+
                                             String finishReason = (String) choices.get(0).get("finish_reason");
                                             if (finishReason != null) {
                                                 finalFinishReason[0] = "tool_calls".equals(finishReason) ? "tool-calls" : finishReason;
-                                                // If finished with tool_calls, notify final state
                                                 if ("tool_calls".equals(finishReason)) {
                                                     toolCallArgs.forEach((index, argsBuilder) -> {
                                                         String name = toolCallNames.get(index);
@@ -311,7 +323,6 @@ public class LLMService {
                                                             callback.onToolCall(name, id, parsedArgs, null);
                                                         } catch (Exception e) {
                                                             log.error("Failed to parse tool arguments: {}", fullArgs, e);
-                                                            // Fallback to raw string or empty map
                                                             callback.onToolCall(name, id, new HashMap<>(), null);
                                                         }
                                                     });
@@ -335,7 +346,19 @@ public class LLMService {
                                         log.error("Parse error: {}", data, e);
                                     }
                                 }
-                            });
+                            }
+                            if (cancelledMidStream) {
+                                if (textOpen[0]) {
+                                    callback.onTextEnd(null);
+                                    textOpen[0] = false;
+                                }
+                                if (reasoningOpen[0]) {
+                                    callback.onReasoningEnd(null);
+                                    reasoningOpen[0] = false;
+                                }
+                                callback.onError(new CancellationException("LLM stream cancelled"));
+                                return;
+                            }
                         }
                         if (textOpen[0]) {
                             callback.onTextEnd(null);

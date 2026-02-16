@@ -29,6 +29,8 @@ import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * ReAct Loop 閺嶇绺鹃柅鏄忕帆 (鐎靛綊缍?OpenCode prompt.ts loop)
@@ -62,6 +64,19 @@ public class SessionLoop {
 
     private final SessionProcessorFactory processorFactory;
     private final ProviderManager providerManager;
+    private final Map<String, RunHandle> activeRuns = new ConcurrentHashMap<>();
+
+    private static final class RunHandle {
+        final String sessionID;
+        final AtomicBoolean cancelRequested = new AtomicBoolean(false);
+        final AtomicReference<Thread> loopThread = new AtomicReference<>();
+        final AtomicReference<SessionProcessor> processor = new AtomicReference<>();
+        final AtomicReference<CompletableFuture<MessageV2.WithParts>> future = new AtomicReference<>();
+
+        private RunHandle(String sessionID) {
+            this.sessionID = sessionID;
+        }
+    }
 
     @Async
     public void start(String sessionID, String userInput) {
@@ -72,9 +87,35 @@ public class SessionLoop {
     public void start(String sessionID, String userInput, List<String> additionalSystemInstructions) {
         log.info("Starting session loop for session: {}", sessionID);
         loop(sessionID, userInput, additionalSystemInstructions).exceptionally(e -> {
-            log.error("Loop failed", e);
+            if (isCancellationThrowable(e)) {
+                log.info("Session loop cancelled for session {}", sessionID);
+            } else {
+                log.error("Loop failed", e);
+            }
             return null;
         });
+    }
+
+    public boolean stop(String sessionID, String reason) {
+        if (sessionID == null || sessionID.isBlank()) {
+            return false;
+        }
+        RunHandle handle = activeRuns.get(sessionID);
+        if (handle == null) {
+            clearPendingApprovals(sessionID);
+            sessionStatus.set(sessionID, SessionStatus.Info.builder()
+                    .type("idle")
+                    .message(firstNonBlank(reason, "Stopped"))
+                    .build());
+            return false;
+        }
+        requestStop(handle, reason);
+        clearPendingApprovals(sessionID);
+        sessionStatus.set(sessionID, SessionStatus.Info.builder()
+                .type("idle")
+                .message(firstNonBlank(reason, "Stopped"))
+                .build());
+        return true;
     }
 
     /**
@@ -90,7 +131,15 @@ public class SessionLoop {
             List<String> additionalSystemInstructions
     ) {
         final List<String> requestScopedSystemInstructions = normalizeSystemInstructions(additionalSystemInstructions);
-        return CompletableFuture.supplyAsync(() -> {
+        final RunHandle runHandle = new RunHandle(sessionID);
+        RunHandle previous = activeRuns.put(sessionID, runHandle);
+        if (previous != null) {
+            requestStop(previous, "Superseded by a new request");
+            clearPendingApprovals(sessionID);
+        }
+
+        CompletableFuture<MessageV2.WithParts> loopFuture = CompletableFuture.supplyAsync(() -> {
+            runHandle.loopThread.set(Thread.currentThread());
             try {
                 // 1. Get/Create Session & User Message
                 SessionInfo session = sessionService.get(sessionID)
@@ -130,6 +179,10 @@ public class SessionLoop {
                 Set<String> autoValidatedMessageIds = new HashSet<>();
                 int autoValidationRounds = 0;
                 while (true) {
+                    if (isRunCancelled(runHandle)) {
+                        log.info("Session {} loop cancelled before step {}", sessionID, step);
+                        break;
+                    }
                     if (step >= MAX_LOOP_STEPS) {
                         log.warn("Loop stopped after reaching max steps {} for session {}", MAX_LOOP_STEPS, sessionID);
                         break;
@@ -274,6 +327,7 @@ public class SessionLoop {
                     sessionService.addMessage(sessionID, new MessageV2.WithParts(assistantInfo.toInfo(), new ArrayList<>()));
                     
                     SessionProcessor processor = processorFactory.create(assistantInfo, sessionID, model);
+                    runHandle.processor.set(processor);
                     
                     // Resolve Tools
                     boolean bypassAgentCheck = lastUserMsg.getParts().stream()
@@ -285,7 +339,7 @@ public class SessionLoop {
                     List<String> instructions = new ArrayList<>();
                     instructions.addAll(systemPrompt.environment(model, session.getDirectory()));
                     instructions.addAll(systemPrompt.provider(model));
-                    instructions.addAll(instructionPrompt.system().join());
+                    instructions.addAll(instructionPrompt.system(session.getDirectory()).join());
                     instructions.addAll(requestScopedSystemInstructions);
 
                     LLMService.StreamInput streamInput = LLMService.StreamInput.builder()
@@ -299,9 +353,18 @@ public class SessionLoop {
                             .build();
 
                     String nextAction = processor.process(streamInput, tools).join();
+                    runHandle.processor.compareAndSet(processor, null);
+                    if (isRunCancelled(runHandle)) {
+                        log.info("Session {} loop cancelled after processor step {}", sessionID, step);
+                        break;
+                    }
                     
                     // Wait for any running tools to complete
-                    waitForRunningTools(sessionID, assistantInfo.getId(), session.getDirectory());
+                    waitForRunningTools(sessionID, assistantInfo.getId(), session.getDirectory(), runHandle);
+                    if (isRunCancelled(runHandle)) {
+                        log.info("Session {} loop cancelled while waiting tools at step {}", sessionID, step);
+                        break;
+                    }
 
                     if ("stop".equals(nextAction)) {
                         // Double check if we really should stop (e.g. if we have tool calls)
@@ -336,10 +399,20 @@ public class SessionLoop {
                     }
                 }
             } catch (Exception e) {
+                if (isRunCancelled(runHandle) || isCancellationThrowable(e)) {
+                    log.info("Session {} loop stopped by cancellation: {}", sessionID, e.getMessage());
+                    return sessionService.getFilteredMessages(sessionID).stream()
+                            .filter(m -> "assistant".equals(m.getInfo().getRole()))
+                            .reduce((first, second) -> second)
+                            .orElse(null);
+                }
                 log.error("Loop failed", e);
                 throw new RuntimeException(e);
             } finally {
+                runHandle.processor.set(null);
+                runHandle.loopThread.set(null);
                 sessionStatus.set(sessionID, SessionStatus.Info.builder().type("idle").build());
+                activeRuns.remove(sessionID, runHandle);
             }
             
             // Return last assistant message
@@ -348,6 +421,8 @@ public class SessionLoop {
                     .reduce((first, second) -> second)
                     .orElse(null);
         });
+        runHandle.future.set(loopFuture);
+        return loopFuture;
     }
 
     private boolean maybeRunAutoBuildValidation(
@@ -740,8 +815,75 @@ public class SessionLoop {
         return current == null ? error : current;
     }
 
-    private String firstNonBlank(String value) {
-        return value == null ? "" : value;
+    private void requestStop(RunHandle runHandle, String reason) {
+        if (runHandle == null) {
+            return;
+        }
+        if (!runHandle.cancelRequested.compareAndSet(false, true)) {
+            return;
+        }
+        SessionProcessor processor = runHandle.processor.get();
+        if (processor != null) {
+            try {
+                processor.cancel(firstNonBlank(reason, "Cancelled by user"));
+            } catch (Exception e) {
+                log.warn("Failed to cancel session processor for session {}", runHandle.sessionID, e);
+            }
+        }
+        CompletableFuture<MessageV2.WithParts> future = runHandle.future.get();
+        if (future != null && !future.isDone()) {
+            future.cancel(true);
+        }
+        Thread thread = runHandle.loopThread.get();
+        if (thread != null && thread.isAlive()) {
+            thread.interrupt();
+        }
+    }
+
+    private boolean isRunCancelled(RunHandle runHandle) {
+        return runHandle != null
+                && (runHandle.cancelRequested.get() || Thread.currentThread().isInterrupted());
+    }
+
+    private void clearPendingApprovals(String sessionID) {
+        PendingCommandsManager.getInstance().clearPendingForSession(sessionID);
+        PendingChangesManager.getInstance().clearPendingDeletesForSession(sessionID);
+    }
+
+    private boolean isCancellationThrowable(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof java.util.concurrent.CancellationException
+                    || current instanceof InterruptedException) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null) {
+                String normalized = message.toLowerCase(Locale.ROOT);
+                if (normalized.contains("cancelled")
+                        || normalized.contains("canceled")
+                        || normalized.contains("interrupted")) {
+                    return true;
+                }
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return "";
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return "";
     }
 
     private List<String> normalizeSystemInstructions(List<String> instructions) {
@@ -764,12 +906,16 @@ public class SessionLoop {
         return Collections.unmodifiableList(normalized);
     }
 
-    private void waitForRunningTools(String sessionID, String messageID, String workspaceRoot) {
+    private void waitForRunningTools(String sessionID, String messageID, String workspaceRoot, RunHandle runHandle) {
         long startedAt = System.currentTimeMillis();
         long deadline = startedAt + Math.max(TOOL_WAIT_TIMEOUT_MS, 5_000L);
         boolean timedOut = false;
 
         while (true) {
+            if (isRunCancelled(runHandle)) {
+                clearPendingApprovals(sessionID);
+                return;
+            }
             MessageV2.WithParts msg = sessionService.getMessage(messageID);
             boolean hasRunningTools = msg != null && msg.getParts().stream()
                     .filter(p -> p instanceof MessageV2.ToolPart)
@@ -808,6 +954,7 @@ public class SessionLoop {
                 Thread.sleep(Math.max(TOOL_WAIT_POLL_MS, 50L));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                clearPendingApprovals(sessionID);
                 break;
             }
         }

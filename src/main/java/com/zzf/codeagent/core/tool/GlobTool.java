@@ -13,20 +13,19 @@ import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StreamUtils;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Stream;
 
-/**
- * GlobTool 实现 (对齐 opencode/src/tool/glob.ts)
- */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -44,10 +43,6 @@ public class GlobTool implements Tool {
 
     @Override
     public String getDescription() {
-        return loadDescription();
-    }
-
-    private String loadDescription() {
         try {
             Resource resource = resourceLoader.getResource("classpath:prompts/tool/glob.txt");
             if (resource.exists()) {
@@ -56,7 +51,7 @@ public class GlobTool implements Tool {
         } catch (IOException e) {
             log.error("Failed to load glob tool description", e);
         }
-        return "Fast file pattern matching tool."; // Fallback
+        return "Fast file pattern matching tool.";
     }
 
     @Override
@@ -64,9 +59,11 @@ public class GlobTool implements Tool {
         ObjectNode schema = objectMapper.createObjectNode();
         schema.put("type", "object");
         ObjectNode properties = schema.putObject("properties");
-        
-        properties.putObject("pattern").put("type", "string").put("description", "The glob pattern to match files against");
-        properties.putObject("path").put("type", "string").put("description", "The directory to search in. If not specified, the current working directory will be used. IMPORTANT: Omit this field to use the default directory. DO NOT enter \"undefined\" or \"null\" - simply omit it for the default behavior. Must be a valid directory path if provided.");
+
+        properties.putObject("pattern").put("type", "string")
+                .put("description", "The glob pattern to match files against");
+        properties.putObject("path").put("type", "string")
+                .put("description", "The directory to search in. If not specified, current working directory is used.");
 
         schema.putArray("required").add("pattern");
         return schema;
@@ -82,57 +79,22 @@ public class GlobTool implements Tool {
                         : ToolPathResolver.resolveWorkspaceRoot(projectContext, ctx);
                 Path searchPath = ToolPathResolver.resolvePath(projectContext, ctx, searchPathStr);
 
-                // 使用 ripgrep 进行文件查找 (rg --files -g pattern)
-                List<String> cmdParts = new ArrayList<>();
-                cmdParts.add("rg");
-                cmdParts.add("--files");
-                cmdParts.add("--glob");
-                cmdParts.add("\"" + pattern + "\"");
-                cmdParts.add("\"" + searchPath.toString() + "\"");
-
-                String command = String.join(" ", cmdParts);
-                ExecuteResult result = shellService.execute(command, null, null);
-
-                if (result.getExitCode() != 0 && !result.text().trim().isEmpty()) {
-                    // 如果退出码非0但有输出，可能是部分成功
-                } else if (result.getExitCode() != 0) {
-                    return Result.builder()
-                            .title(projectContext.getWorktree())
-                            .output("No files found")
-                            .metadata(Map.of("count", 0, "truncated", false))
-                            .build();
+                List<Map<String, Object>> files = globWithRipgrep(searchPath, pattern);
+                if (files.isEmpty()) {
+                    files = globFallback(searchPath, pattern);
                 }
 
-                String[] lines = result.text().trim().split("\n");
-                List<Map<String, Object>> files = new ArrayList<>();
+                files.sort((a, b) -> Long.compare((long) b.get("mtime"), (long) a.get("mtime")));
                 int limit = 100;
-                boolean truncated = false;
-
-                for (String line : lines) {
-                    if (line.isEmpty()) continue;
-                    if (files.size() >= limit) {
-                        truncated = true;
-                        break;
-                    }
-                    Path resolved = ToolPathResolver.resolveAgainst(searchPath, line);
-                    File file = resolved.toFile();
-                    if (file.exists()) {
-                        Map<String, Object> f = new HashMap<>();
-                        f.put("path", resolved.toString());
-                        f.put("mtime", file.lastModified());
-                        files.add(f);
-                    }
-                }
-
-                // 按修改时间排序
-                files.sort((a, b) -> Long.compare((long)b.get("mtime"), (long)a.get("mtime")));
+                boolean truncated = files.size() > limit;
+                List<Map<String, Object>> finalFiles = truncated ? files.subList(0, limit) : files;
 
                 StringBuilder output = new StringBuilder();
-                if (files.isEmpty()) {
+                if (finalFiles.isEmpty()) {
                     output.append("No files found");
                 } else {
-                    for (Map<String, Object> f : files) {
-                        output.append(f.get("path")).append("\n");
+                    for (Map<String, Object> file : finalFiles) {
+                        output.append(file.get("path")).append("\n");
                     }
                     if (truncated) {
                         output.append("\n(Results are truncated. Consider using a more specific path or pattern.)");
@@ -140,7 +102,7 @@ public class GlobTool implements Tool {
                 }
 
                 Map<String, Object> metadata = new HashMap<>();
-                metadata.put("count", files.size());
+                metadata.put("count", finalFiles.size());
                 metadata.put("truncated", truncated);
 
                 return Result.builder()
@@ -148,11 +110,74 @@ public class GlobTool implements Tool {
                         .output(output.toString().trim())
                         .metadata(metadata)
                         .build();
-
             } catch (Exception e) {
                 log.error("Failed to execute glob tool", e);
                 throw new RuntimeException(e.getMessage());
             }
         });
+    }
+
+    private List<Map<String, Object>> globWithRipgrep(Path searchPath, String pattern) {
+        List<String> cmdParts = new ArrayList<>();
+        cmdParts.add("rg");
+        cmdParts.add("--files");
+        cmdParts.add("--hidden");
+        cmdParts.add("--no-ignore");
+        cmdParts.add("--no-ignore-vcs");
+        cmdParts.add("--glob");
+        cmdParts.add("\"" + pattern + "\"");
+        cmdParts.add("\"" + searchPath + "\"");
+
+        ExecuteResult result = shellService.execute(String.join(" ", cmdParts), null, null);
+        if (result.getExitCode() != 0 && result.text().trim().isEmpty()) {
+            return new ArrayList<>();
+        }
+
+        List<Map<String, Object>> files = new ArrayList<>();
+        String[] lines = result.text().trim().split("\n");
+        for (String line : lines) {
+            if (line == null || line.isBlank()) {
+                continue;
+            }
+            Path resolved = ToolPathResolver.resolveAgainst(searchPath, line);
+            if (!Files.exists(resolved) || !Files.isRegularFile(resolved)) {
+                continue;
+            }
+            Map<String, Object> f = new HashMap<>();
+            f.put("path", resolved.toString());
+            try {
+                f.put("mtime", Files.getLastModifiedTime(resolved).toMillis());
+            } catch (IOException ignored) {
+                f.put("mtime", 0L);
+            }
+            files.add(f);
+        }
+        return files;
+    }
+
+    private List<Map<String, Object>> globFallback(Path searchPath, String pattern) {
+        List<Map<String, Object>> files = new ArrayList<>();
+        java.nio.file.PathMatcher matcher = FileSystems.getDefault().getPathMatcher("glob:" + pattern);
+        try (Stream<Path> walk = Files.walk(searchPath)) {
+            walk.filter(Files::isRegularFile)
+                    .sorted(Comparator.naturalOrder())
+                    .forEach(path -> {
+                        Path relative = searchPath.relativize(path);
+                        if (!matcher.matches(relative) && !matcher.matches(relative.getFileName())) {
+                            return;
+                        }
+                        Map<String, Object> f = new HashMap<>();
+                        f.put("path", path.toString());
+                        try {
+                            f.put("mtime", Files.getLastModifiedTime(path).toMillis());
+                        } catch (IOException ignored) {
+                            f.put("mtime", 0L);
+                        }
+                        files.add(f);
+                    });
+        } catch (Exception e) {
+            log.warn("Glob fallback failed for {}: {}", searchPath, e.getMessage());
+        }
+        return files;
     }
 }
