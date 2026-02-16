@@ -168,6 +168,11 @@ public class EditTool implements Tool {
                     }
                 }
 
+                if (filePath.getParent() != null) {
+                    Files.createDirectories(filePath.getParent());
+                }
+                Files.writeString(filePath, contentNew, StandardCharsets.UTF_8);
+
                 // Use PendingChangesManager
                 String workspaceRoot = ToolPathResolver.resolveWorkspaceRoot(projectContext, ctx);
                 String relativePath = ToolPathResolver.safeRelativePath(workspaceRoot, filePath);
@@ -191,6 +196,7 @@ public class EditTool implements Tool {
                 metadata.put("filepath", filePath.toString());
                 metadata.put("pending_change_id", change.id);
                 metadata.put("pending_change", change); // Include full object for UI
+                metadata.put("workspace_applied", true);
 
                 // Fetch diagnostics (LSP)
                 try {
@@ -217,7 +223,7 @@ public class EditTool implements Tool {
                 return Result.builder()
                         .title(filePath.getFileName().toString())
                         .metadata(metadata)
-                        .output("Edit staged successfully. Please review and commit the changes in the 'Pending Changes' view.")
+                        .output("File updated in workspace: " + relativePath)
                         .build();
 
             } catch (Exception e) {

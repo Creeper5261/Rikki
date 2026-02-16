@@ -110,8 +110,18 @@ public class SessionProcessor {
                 // Update assistant message with tokens and cost
                 if (usage != null) {
                     MessageV2.TokenUsage tokenUsage = assistantMessage.getTokens();
-                    if (usage.containsKey("prompt_tokens")) tokenUsage.setInput((Integer) usage.get("prompt_tokens"));
-                    if (usage.containsKey("completion_tokens")) tokenUsage.setOutput((Integer) usage.get("completion_tokens"));
+                    if (tokenUsage == null) {
+                        tokenUsage = MessageV2.TokenUsage.builder()
+                                .input(0)
+                                .output(0)
+                                .reasoning(0)
+                                .cache(new MessageV2.CacheUsage())
+                                .build();
+                        assistantMessage.setTokens(tokenUsage);
+                    }
+                    if (usage.containsKey("prompt_tokens")) tokenUsage.setInput(asInt(usage.get("prompt_tokens")));
+                    if (usage.containsKey("completion_tokens")) tokenUsage.setOutput(asInt(usage.get("completion_tokens")));
+                    if (usage.containsKey("reasoning_tokens")) tokenUsage.setReasoning(asInt(usage.get("reasoning_tokens")));
                 }
                 
                 MessageV2.StepFinishPart part = new MessageV2.StepFinishPart();
@@ -626,6 +636,7 @@ public class SessionProcessor {
                             .agent(assistantMessage.getAgent())
                             .callID(callId)
                             .messages(sessionService.getMessages(sessionID))
+                            .extra(buildToolContextExtra())
                             .metadataConsumer((title, meta) -> {
                                 MessageV2.ToolPart tp = toolcalls.get(callId);
                                 if (tp != null) {
@@ -741,6 +752,22 @@ public class SessionProcessor {
         });
     }
 
+    private Map<String, Object> buildToolContextExtra() {
+        Map<String, Object> extra = new HashMap<>();
+        sessionService.get(sessionID).ifPresent(session -> {
+            if (session.getDirectory() != null && !session.getDirectory().isBlank()) {
+                extra.put("workspaceRoot", session.getDirectory());
+            }
+            if (session.getWorkspaceName() != null && !session.getWorkspaceName().isBlank()) {
+                extra.put("workspaceName", session.getWorkspaceName());
+            }
+            if (session.getIdeContext() != null && !session.getIdeContext().isEmpty()) {
+                extra.put("ideContext", new HashMap<>(session.getIdeContext()));
+            }
+        });
+        return extra;
+    }
+
     private void checkDoomLoop(String toolName, Map<String, Object> input) {
         List<PromptPart> parts = assistantMessage.getParts();
         if (parts.size() < DOOM_LOOP_THRESHOLD) return;
@@ -761,10 +788,25 @@ public class SessionProcessor {
         if (usage == null) return false;
         // Convert usage map to MessageV2.TokenUsage if needed
         MessageV2.TokenUsage tokenUsage = new MessageV2.TokenUsage();
-        if (usage.containsKey("prompt_tokens")) tokenUsage.setInput((Integer) usage.get("prompt_tokens"));
-        if (usage.containsKey("completion_tokens")) tokenUsage.setOutput((Integer) usage.get("completion_tokens"));
+        if (usage.containsKey("prompt_tokens")) tokenUsage.setInput(asInt(usage.get("prompt_tokens")));
+        if (usage.containsKey("completion_tokens")) tokenUsage.setOutput(asInt(usage.get("completion_tokens")));
+        if (usage.containsKey("reasoning_tokens")) tokenUsage.setReasoning(asInt(usage.get("reasoning_tokens")));
         
         return compactionService.isOverflow(tokenUsage, model);
+    }
+
+    private int asInt(Object value) {
+        if (value == null) {
+            return 0;
+        }
+        if (value instanceof Number) {
+            return Math.max(0, ((Number) value).intValue());
+        }
+        try {
+            return Math.max(0, Integer.parseInt(String.valueOf(value).trim()));
+        } catch (Exception ignored) {
+            return 0;
+        }
     }
 
     private String validateToolInput(Tool tool, Map<String, Object> input) {

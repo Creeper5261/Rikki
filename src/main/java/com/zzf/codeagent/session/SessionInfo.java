@@ -24,6 +24,8 @@ public class SessionInfo {
     private ShareInfo share;
     private String title;
     private String agent;
+    private String workspaceName;
+    private Map<String, Object> ideContext;
     private String version;
     private SessionTime time;
     private Map<String, Object> permission; // Complex permission object

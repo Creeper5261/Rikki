@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
@@ -72,11 +73,16 @@ public class WriteTool implements Tool {
                 if (Files.exists(filePath)) {
                     changeType = "EDIT"; // Technically overwrite, but mapped to EDIT type for UI
                     try {
-                        oldContent = Files.readString(filePath);
+                        oldContent = Files.readString(filePath, StandardCharsets.UTF_8);
                     } catch (Exception e) {
                         log.warn("Could not read old content for {}", filePath);
                     }
                 }
+
+                if (filePath.getParent() != null) {
+                    Files.createDirectories(filePath.getParent());
+                }
+                Files.writeString(filePath, content, StandardCharsets.UTF_8);
 
                 // Create Pending Change
                 PendingChangesManager.PendingChange change = new PendingChangesManager.PendingChange(
@@ -98,6 +104,7 @@ public class WriteTool implements Tool {
                 metadata.put("filepath", filePath.toString());
                 metadata.put("pending_change_id", change.id);
                 metadata.put("pending_change", change);
+                metadata.put("workspace_applied", true);
 
                 // Record Snapshot (Simplified)
                 SnapshotService.FileDiff filediff = SnapshotService.FileDiff.builder()
@@ -113,7 +120,7 @@ public class WriteTool implements Tool {
                 return Result.builder()
                         .title(filePath.getFileName().toString())
                         .metadata(metadata)
-                        .output("File write staged. Please review and commit via Pending Changes.")
+                        .output("File written to workspace: " + relativePath)
                         .build();
 
             } catch (Exception e) {

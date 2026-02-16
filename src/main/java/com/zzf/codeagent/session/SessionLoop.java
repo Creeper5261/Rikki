@@ -24,6 +24,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -39,6 +41,12 @@ public class SessionLoop {
     private static final int MAX_TOOL_DESCRIPTION_FOR_FUNCTION = 1024;
     private static final long TOOL_WAIT_TIMEOUT_MS = Long.getLong("codeagent.toolWaitTimeoutMs", 30L * 60L * 1000L);
     private static final long TOOL_WAIT_POLL_MS = Long.getLong("codeagent.toolWaitPollMs", 150L);
+    private static final boolean AUTO_BUILD_VALIDATION_ENABLED =
+            Boolean.parseBoolean(System.getProperty("codeagent.autoBuildValidation.enabled", "true"));
+    private static final int AUTO_BUILD_VALIDATION_MAX_ROUNDS =
+            Integer.getInteger("codeagent.autoBuildValidation.maxRounds", 3);
+    private static final int MAX_LOOP_STEPS =
+            Integer.getInteger("codeagent.session.maxLoopSteps", 120);
 
     private final SessionService sessionService;
     private final AgentService agentService;
@@ -57,8 +65,13 @@ public class SessionLoop {
 
     @Async
     public void start(String sessionID, String userInput) {
+        start(sessionID, userInput, List.of());
+    }
+
+    @Async
+    public void start(String sessionID, String userInput, List<String> additionalSystemInstructions) {
         log.info("Starting session loop for session: {}", sessionID);
-        loop(sessionID, userInput).exceptionally(e -> {
+        loop(sessionID, userInput, additionalSystemInstructions).exceptionally(e -> {
             log.error("Loop failed", e);
             return null;
         });
@@ -68,6 +81,15 @@ public class SessionLoop {
      * ReAct Loop 閺嶇绺鹃柅鏄忕帆 (鐎靛綊缍?OpenCode prompt.ts loop)
      */
     public CompletableFuture<MessageV2.WithParts> loop(String sessionID, String userInput) {
+        return loop(sessionID, userInput, List.of());
+    }
+
+    public CompletableFuture<MessageV2.WithParts> loop(
+            String sessionID,
+            String userInput,
+            List<String> additionalSystemInstructions
+    ) {
+        final List<String> requestScopedSystemInstructions = normalizeSystemInstructions(additionalSystemInstructions);
         return CompletableFuture.supplyAsync(() -> {
             try {
                 // 1. Get/Create Session & User Message
@@ -105,7 +127,13 @@ public class SessionLoop {
                 }
 
                 int step = 0;
+                Set<String> autoValidatedMessageIds = new HashSet<>();
+                int autoValidationRounds = 0;
                 while (true) {
+                    if (step >= MAX_LOOP_STEPS) {
+                        log.warn("Loop stopped after reaching max steps {} for session {}", MAX_LOOP_STEPS, sessionID);
+                        break;
+                    }
                     sessionStatus.set(sessionID, SessionStatus.Info.builder().type("busy").build());
                     log.info("Loop step: {}, sessionID: {}", step, sessionID);
                     
@@ -258,6 +286,7 @@ public class SessionLoop {
                     instructions.addAll(systemPrompt.environment(model, session.getDirectory()));
                     instructions.addAll(systemPrompt.provider(model));
                     instructions.addAll(instructionPrompt.system().join());
+                    instructions.addAll(requestScopedSystemInstructions);
 
                     LLMService.StreamInput streamInput = LLMService.StreamInput.builder()
                             .sessionID(sessionID)
@@ -288,6 +317,17 @@ public class SessionLoop {
                                 });
                         
                         if (!hasActiveToolCalls) {
+                            boolean autoValidationTriggered = maybeRunAutoBuildValidation(
+                                    session,
+                                    assistantInfo,
+                                    updatedMsg,
+                                    autoValidatedMessageIds,
+                                    autoValidationRounds
+                            );
+                            if (autoValidationTriggered) {
+                                autoValidationRounds++;
+                                continue;
+                            }
                             break;
                         }
                     }
@@ -310,6 +350,420 @@ public class SessionLoop {
         });
     }
 
+    private boolean maybeRunAutoBuildValidation(
+            SessionInfo session,
+            MessageV2.Assistant assistantInfo,
+            MessageV2.WithParts updatedMsg,
+            Set<String> autoValidatedMessageIds,
+            int autoValidationRounds
+    ) {
+        if (!AUTO_BUILD_VALIDATION_ENABLED) {
+            return false;
+        }
+        if (autoValidationRounds >= AUTO_BUILD_VALIDATION_MAX_ROUNDS) {
+            return false;
+        }
+        if (session == null || assistantInfo == null || assistantInfo.getId() == null) {
+            return false;
+        }
+
+        String assistantMessageID = assistantInfo.getId();
+        if (assistantMessageID.isBlank() || autoValidatedMessageIds.contains(assistantMessageID)) {
+            return false;
+        }
+
+        MessageV2.WithParts message = updatedMsg != null ? updatedMsg : sessionService.getMessage(assistantMessageID);
+        if (message == null) {
+            return false;
+        }
+        if (!hasCompletedCodeModification(message)) {
+            return false;
+        }
+        if (hasBuildValidationToolCall(message)) {
+            return false;
+        }
+
+        String command = resolveAutoBuildValidationCommand(session);
+        if (command == null || command.isBlank()) {
+            return false;
+        }
+
+        autoValidatedMessageIds.add(assistantMessageID);
+        markAssistantMessageFinishAsToolCalls(message);
+        runAutoBuildValidationToolCall(session, assistantInfo, command);
+        return true;
+    }
+
+    private boolean hasCompletedCodeModification(MessageV2.WithParts message) {
+        if (message == null || message.getParts() == null || message.getParts().isEmpty()) {
+            return false;
+        }
+        for (PromptPart part : message.getParts()) {
+            if (!(part instanceof MessageV2.ToolPart)) {
+                continue;
+            }
+            MessageV2.ToolPart toolPart = (MessageV2.ToolPart) part;
+            if (toolPart.getState() == null) {
+                continue;
+            }
+            if (!"completed".equalsIgnoreCase(toolPart.getState().getStatus())) {
+                continue;
+            }
+            String toolName = toolPart.getTool() == null ? "" : toolPart.getTool().trim().toLowerCase(Locale.ROOT);
+            if ("write".equals(toolName) || "edit".equals(toolName) || "delete".equals(toolName)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasBuildValidationToolCall(MessageV2.WithParts message) {
+        if (message == null || message.getParts() == null || message.getParts().isEmpty()) {
+            return false;
+        }
+        for (PromptPart part : message.getParts()) {
+            if (!(part instanceof MessageV2.ToolPart)) {
+                continue;
+            }
+            MessageV2.ToolPart toolPart = (MessageV2.ToolPart) part;
+            String toolName = toolPart.getTool() == null ? "" : toolPart.getTool().trim().toLowerCase(Locale.ROOT);
+            if (!"bash".equals(toolName)) {
+                continue;
+            }
+            String command = extractBashCommand(toolPart);
+            if (looksLikeBuildValidationCommand(command)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String extractBashCommand(MessageV2.ToolPart toolPart) {
+        if (toolPart == null) {
+            return "";
+        }
+        Object argsCommand = null;
+        if (toolPart.getArgs() != null) {
+            argsCommand = toolPart.getArgs().get("command");
+        }
+        if (argsCommand instanceof String && !((String) argsCommand).isBlank()) {
+            return (String) argsCommand;
+        }
+        if (toolPart.getState() != null && toolPart.getState().getInput() != null) {
+            Object inputCommand = toolPart.getState().getInput().get("command");
+            if (inputCommand instanceof String && !((String) inputCommand).isBlank()) {
+                return (String) inputCommand;
+            }
+        }
+        return "";
+    }
+
+    private boolean looksLikeBuildValidationCommand(String command) {
+        if (command == null || command.isBlank()) {
+            return false;
+        }
+        String normalized = command.toLowerCase(Locale.ROOT);
+        boolean hasBuildTool = normalized.contains("gradle")
+                || normalized.contains("gradlew")
+                || normalized.contains("mvn")
+                || normalized.contains("mvnw");
+        boolean hasBuildTask = normalized.contains("compilejava")
+                || normalized.contains("build")
+                || normalized.contains("assemble")
+                || normalized.contains("check")
+                || normalized.contains("test")
+                || normalized.contains("compile")
+                || normalized.contains("classes");
+        return hasBuildTool && hasBuildTask;
+    }
+
+    private String resolveAutoBuildValidationCommand(SessionInfo session) {
+        if (session == null) {
+            return "";
+        }
+        Path root = parseWorkspacePath(session.getDirectory());
+        if (root == null) {
+            return "";
+        }
+
+        Path gradlewBat = root.resolve("gradlew.bat");
+        Path gradlew = root.resolve("gradlew");
+        Path mvnwCmd = root.resolve("mvnw.cmd");
+        Path mvnw = root.resolve("mvnw");
+        Path pom = root.resolve("pom.xml");
+        Path gradle = root.resolve("build.gradle");
+        Path gradleKts = root.resolve("build.gradle.kts");
+        Path settingsGradle = root.resolve("settings.gradle");
+        Path settingsGradleKts = root.resolve("settings.gradle.kts");
+
+        boolean hasGradleProject = Files.exists(gradlewBat)
+                || Files.exists(gradlew)
+                || Files.exists(gradle)
+                || Files.exists(gradleKts)
+                || Files.exists(settingsGradle)
+                || Files.exists(settingsGradleKts);
+        boolean hasMavenProject = Files.exists(mvnwCmd)
+                || Files.exists(mvnw)
+                || Files.exists(pom);
+
+        boolean ideHasGradle = readIdeBoolean(session, "hasGradlewBat")
+                || readIdeBoolean(session, "hasGradlew")
+                || readIdeBoolean(session, "hasBuildGradle")
+                || readIdeBoolean(session, "hasBuildGradleKts")
+                || readIdeBoolean(session, "hasSettingsGradle")
+                || readIdeBoolean(session, "hasSettingsGradleKts");
+        boolean ideHasMaven = readIdeBoolean(session, "hasPomXml")
+                || readIdeBoolean(session, "hasMvnwCmd")
+                || readIdeBoolean(session, "hasMvnw");
+
+        hasGradleProject = hasGradleProject || ideHasGradle;
+        hasMavenProject = hasMavenProject || ideHasMaven;
+
+        boolean windows = System.getProperty("os.name", "")
+                .toLowerCase(Locale.ROOT)
+                .contains("win");
+
+        if (hasMavenProject && !hasGradleProject) {
+            if (windows && Files.exists(mvnwCmd)) {
+                return ".\\mvnw.cmd -q -DskipTests compile";
+            }
+            if (Files.exists(mvnw)) {
+                return "./mvnw -q -DskipTests compile";
+            }
+            if (Files.exists(pom)) {
+                return "mvn -q -DskipTests compile";
+            }
+        }
+
+        if (hasGradleProject) {
+            if (windows && Files.exists(gradlewBat)) {
+                return ".\\gradlew.bat classes --no-daemon";
+            }
+            if (Files.exists(gradlew)) {
+                return "./gradlew classes --no-daemon";
+            }
+            if (Files.exists(gradle) || Files.exists(gradleKts)) {
+                return "gradle classes --no-daemon";
+            }
+        }
+
+        if (hasMavenProject) {
+            if (windows && Files.exists(mvnwCmd)) {
+                return ".\\mvnw.cmd -q -DskipTests compile";
+            }
+            if (Files.exists(mvnw)) {
+                return "./mvnw -q -DskipTests compile";
+            }
+            if (Files.exists(pom)) {
+                return "mvn -q -DskipTests compile";
+            }
+        }
+        return "";
+    }
+
+    private boolean readIdeBoolean(SessionInfo session, String key) {
+        if (session == null || key == null || key.isBlank()) {
+            return false;
+        }
+        Map<String, Object> ide = session.getIdeContext();
+        if (ide == null || ide.isEmpty()) {
+            return false;
+        }
+        Object value = ide.get(key);
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        if (value instanceof String) {
+            return Boolean.parseBoolean(((String) value).trim());
+        }
+        return false;
+    }
+
+    private Path parseWorkspacePath(String workspaceRoot) {
+        if (workspaceRoot == null || workspaceRoot.isBlank()) {
+            return null;
+        }
+        try {
+            return Path.of(workspaceRoot).toAbsolutePath().normalize();
+        } catch (Exception e) {
+            log.warn("Invalid workspace path for auto build validation: {}", workspaceRoot);
+            return null;
+        }
+    }
+
+    private void markAssistantMessageFinishAsToolCalls(MessageV2.WithParts message) {
+        if (message == null || message.getInfo() == null) {
+            return;
+        }
+        MessageV2.MessageInfo info = message.getInfo();
+        info.setFinish(true);
+        info.setFinishReason("tool-calls");
+        if (info.getTime() == null) {
+            info.setTime(MessageV2.MessageTime.builder().build());
+        }
+        if (info.getTime().getEnd() == null) {
+            info.getTime().setEnd(System.currentTimeMillis());
+        }
+        sessionService.updateMessage(message);
+    }
+
+    private void runAutoBuildValidationToolCall(SessionInfo session, MessageV2.Assistant assistantInfo, String command) {
+        Tool ideBuildTool = toolRegistry.get("ide_build").orElse(null);
+        Tool bashTool = toolRegistry.get("bash").orElse(null);
+        if (session == null || assistantInfo == null) {
+            return;
+        }
+        boolean ideBridgeAvailable = false;
+        if (session.getIdeContext() != null && !session.getIdeContext().isEmpty()) {
+            Object ideBridgeUrl = session.getIdeContext().get("ideBridgeUrl");
+            ideBridgeAvailable = ideBridgeUrl instanceof String && !((String) ideBridgeUrl).isBlank();
+        }
+        boolean useIdeBuild = ideBuildTool != null && ideBridgeAvailable;
+        if (!useIdeBuild && (command == null || command.isBlank())) {
+            return;
+        }
+
+        String callID = Identifier.random("call");
+        String messageID = assistantInfo.getId();
+        String sessionID = session.getId();
+        String selectedToolName = useIdeBuild ? "ide_build" : "bash";
+        Tool selectedTool = useIdeBuild ? ideBuildTool : bashTool;
+
+        Map<String, Object> input = new HashMap<>();
+        if (useIdeBuild) {
+            input.put("mode", "make");
+            input.put("timeoutMs", 300000);
+            input.put("description", "Auto validate project build via IDE compiler");
+        } else {
+            input.put("description", "Auto validate project build");
+            input.put("command", command);
+            input.put("workdir", session.getDirectory());
+        }
+
+        MessageV2.ToolPart toolPart = new MessageV2.ToolPart();
+        toolPart.setId(Identifier.ascending("part"));
+        toolPart.setType("tool");
+        toolPart.setSessionID(sessionID);
+        toolPart.setMessageID(messageID);
+        toolPart.setTool(selectedToolName);
+        toolPart.setCallID(callID);
+        toolPart.setArgs(new HashMap<>(input));
+
+        MessageV2.ToolState state = new MessageV2.ToolState();
+        state.setStatus("running");
+        state.setInput(new HashMap<>(input));
+        MessageV2.ToolState.TimeInfo timeInfo = new MessageV2.ToolState.TimeInfo();
+        timeInfo.setStart(System.currentTimeMillis());
+        state.setTime(timeInfo);
+        toolPart.setState(state);
+        sessionService.updatePart(toolPart);
+
+        if (selectedTool == null) {
+            state.setStatus("error");
+            state.setError(selectedToolName + " tool unavailable for auto build validation.");
+            state.getTime().setEnd(System.currentTimeMillis());
+            sessionService.updatePart(toolPart);
+            return;
+        }
+
+        Map<String, Object> extraContext = new HashMap<>();
+        extraContext.put("workspaceRoot", firstNonBlank(session.getDirectory()));
+        extraContext.put("bypassAgentCheck", true);
+        if (session.getWorkspaceName() != null && !session.getWorkspaceName().isBlank()) {
+            extraContext.put("workspaceName", session.getWorkspaceName());
+        }
+        if (session.getIdeContext() != null && !session.getIdeContext().isEmpty()) {
+            extraContext.put("ideContext", new HashMap<>(session.getIdeContext()));
+        }
+
+        Tool.Context ctx = Tool.Context.builder()
+                .sessionID(sessionID)
+                .messageID(messageID)
+                .agent(assistantInfo.getAgent())
+                .callID(callID)
+                .messages(sessionService.getMessages(sessionID))
+                .extra(extraContext)
+                .metadataConsumer((title, metadata) -> {
+                    MessageV2.WithParts message = sessionService.getMessage(messageID);
+                    MessageV2.ToolPart current = toolPart;
+                    if (message != null && message.getParts() != null) {
+                        current = message.getParts()
+                                .stream()
+                                .filter(p -> p instanceof MessageV2.ToolPart)
+                                .map(p -> (MessageV2.ToolPart) p)
+                                .filter(p -> callID.equals(p.getCallID()))
+                                .findFirst()
+                                .orElse(toolPart);
+                    }
+                    if (current.getState() != null) {
+                        current.getState().setTitle(title);
+                        current.getState().setMetadata(metadata);
+                        sessionService.updatePart(current);
+                    }
+                })
+                .permissionAsker(req -> CompletableFuture.completedFuture(null))
+                .build();
+
+        try {
+            Tool.Result result = selectedTool.execute(objectMapper.valueToTree(input), ctx).join();
+            state.setStatus("completed");
+            state.setTitle(result != null ? result.getTitle() : "Auto build validation");
+            state.setOutput(result != null ? result.getOutput() : "");
+            if (result != null && result.getMetadata() != null) {
+                state.setMetadata(result.getMetadata());
+            }
+        } catch (Exception e) {
+            Throwable cause = unwrap(e);
+            state.setStatus("error");
+            state.setError(cause.getMessage() == null ? cause.toString() : cause.getMessage());
+            state.setOutput(state.getError());
+        } finally {
+            if (state.getTime() == null) {
+                state.setTime(new MessageV2.ToolState.TimeInfo());
+            }
+            state.getTime().setEnd(System.currentTimeMillis());
+            sessionService.updatePart(toolPart);
+        }
+    }
+
+    private Throwable unwrap(Throwable error) {
+        Throwable current = error;
+        while (current != null && current.getCause() != null
+                && (current instanceof java.util.concurrent.CompletionException
+                || current instanceof java.util.concurrent.ExecutionException
+                || current instanceof RuntimeException)) {
+            if (current.getCause() == current) {
+                break;
+            }
+            current = current.getCause();
+        }
+        return current == null ? error : current;
+    }
+
+    private String firstNonBlank(String value) {
+        return value == null ? "" : value;
+    }
+
+    private List<String> normalizeSystemInstructions(List<String> instructions) {
+        if (instructions == null || instructions.isEmpty()) {
+            return List.of();
+        }
+        List<String> normalized = new ArrayList<>();
+        for (String instruction : instructions) {
+            if (instruction == null) {
+                continue;
+            }
+            String trimmed = instruction.trim();
+            if (!trimmed.isBlank()) {
+                normalized.add(trimmed);
+            }
+        }
+        if (normalized.isEmpty()) {
+            return List.of();
+        }
+        return Collections.unmodifiableList(normalized);
+    }
+
     private void waitForRunningTools(String sessionID, String messageID, String workspaceRoot) {
         long startedAt = System.currentTimeMillis();
         long deadline = startedAt + Math.max(TOOL_WAIT_TIMEOUT_MS, 5_000L);
@@ -326,9 +780,20 @@ public class SessionLoop {
                         return "running".equalsIgnoreCase(status) || "pending".equalsIgnoreCase(status);
                     });
             boolean hasPendingCommands = PendingCommandsManager.getInstance()
-                    .hasPendingForScope(workspaceRoot, sessionID);
+                    .hasPendingForSession(sessionID);
             boolean hasPendingDeletes = PendingChangesManager.getInstance()
-                    .hasPendingDeleteForScope(workspaceRoot, sessionID);
+                    .hasPendingDeleteForSession(sessionID);
+
+            if (hasPendingCommands || hasPendingDeletes) {
+                sessionStatus.set(sessionID, SessionStatus.Info.builder()
+                        .type("waiting_approval")
+                        .message("Awaiting your approval...")
+                        .build());
+            } else if (hasRunningTools) {
+                sessionStatus.set(sessionID, SessionStatus.Info.builder()
+                        .type("busy")
+                        .build());
+            }
 
             if (!hasRunningTools && !hasPendingCommands && !hasPendingDeletes) {
                 return;
@@ -408,6 +873,22 @@ public class SessionLoop {
 
                 @Override
                 public CompletableFuture<Result> execute(JsonNode args, Context context) {
+                    Map<String, Object> mergedExtra = new HashMap<>();
+                    if (context != null && context.getExtra() != null) {
+                        mergedExtra.putAll(context.getExtra());
+                    }
+                    mergedExtra.put("model", model);
+                    mergedExtra.put("bypassAgentCheck", bypassAgentCheck);
+                    if (session.getDirectory() != null && !session.getDirectory().isBlank()) {
+                        mergedExtra.put("workspaceRoot", session.getDirectory());
+                    }
+                    if (session.getWorkspaceName() != null && !session.getWorkspaceName().isBlank()) {
+                        mergedExtra.put("workspaceName", session.getWorkspaceName());
+                    }
+                    if (session.getIdeContext() != null && !session.getIdeContext().isEmpty()) {
+                        mergedExtra.putIfAbsent("ideContext", new HashMap<>(session.getIdeContext()));
+                    }
+
                     // Create Context for this execution
                     Context ctx = Context.builder()
                             .sessionID(session.getId())
@@ -415,11 +896,7 @@ public class SessionLoop {
                             .agent(agent.getName())
                             .callID(context != null ? context.getCallID() : Identifier.random("call"))
                             .messages(history)
-                            .extra(new HashMap<>(Map.of(
-                                    "model", model,
-                                    "bypassAgentCheck", bypassAgentCheck,
-                                    "workspaceRoot", session.getDirectory() == null ? "" : session.getDirectory()
-                            )))
+                            .extra(mergedExtra)
                             .metadataConsumer((title, metadata) -> {
                                 MessageV2.ToolPart part = processor.partFromToolCall(context != null ? context.getCallID() : Identifier.random("call"));
                                 if (part != null && "running".equals(part.getState().getStatus())) {
@@ -429,7 +906,9 @@ public class SessionLoop {
                                 }
                             })
                             .permissionAsker(req -> {
-                                // Simplified permission check
+                                if (context != null) {
+                                    return context.ask(req);
+                                }
                                 log.info("Requesting permission: {} for session: {}", req, session.getId());
                                 return CompletableFuture.completedFuture(null);
                             })
@@ -490,13 +969,28 @@ public class SessionLoop {
         Tool taskTool = toolRegistry.get("task").orElse(null);
         if (taskTool != null) {
             // Create Context for TaskTool
+            Map<String, Object> subtaskExtra = new HashMap<>();
+            subtaskExtra.put("bypassAgentCheck", true);
+            if (sessionID != null && !sessionID.isBlank()) {
+                sessionService.get(sessionID).ifPresent(info -> {
+                    if (info.getDirectory() != null && !info.getDirectory().isBlank()) {
+                        subtaskExtra.put("workspaceRoot", info.getDirectory());
+                    }
+                    if (info.getWorkspaceName() != null && !info.getWorkspaceName().isBlank()) {
+                        subtaskExtra.put("workspaceName", info.getWorkspaceName());
+                    }
+                    if (info.getIdeContext() != null && !info.getIdeContext().isEmpty()) {
+                        subtaskExtra.put("ideContext", new HashMap<>(info.getIdeContext()));
+                    }
+                });
+            }
             Tool.Context ctx = Tool.Context.builder()
                     .sessionID(sessionID)
                     .messageID(assistantMsg.getId())
                     .agent(assistantMsg.getAgent())
                     .callID(callID)
                     .messages(history)
-                    .extra(Map.of("bypassAgentCheck", true))
+                    .extra(subtaskExtra)
                     .metadataConsumer((title, meta) -> {
                         toolPart.getState().setTitle(title);
                         toolPart.getState().setMetadata(meta);

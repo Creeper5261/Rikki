@@ -30,6 +30,11 @@ class BashToolRiskTest {
     }
 
     @Test
+    void shouldStagePlainRmForApproval(@TempDir Path tempDir) {
+        assertPendingApprovalFor(tempDir, "Delete one file", "rm src/Main.java");
+    }
+
+    @Test
     void shouldStagePowershellRecursiveDeleteForApproval(@TempDir Path tempDir) {
         assertPendingApprovalFor(tempDir, "Delete tree by powershell", "powershell -Command \"Remove-Item -Recurse -Force src\"");
     }
@@ -37,6 +42,11 @@ class BashToolRiskTest {
     @Test
     void shouldStageDestructiveGitCleanupForApproval(@TempDir Path tempDir) {
         assertPendingApprovalFor(tempDir, "Force cleanup git workspace", "git clean -fdx");
+    }
+
+    @Test
+    void shouldStageMoveCommandForApproval(@TempDir Path tempDir) {
+        assertPendingApprovalFor(tempDir, "Rename file", "mv src/Main.java src/App.java");
     }
 
     private void assertPendingApprovalFor(Path tempDir, String description, String command) {

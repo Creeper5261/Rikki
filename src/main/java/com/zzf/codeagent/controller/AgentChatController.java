@@ -1,9 +1,11 @@
 package com.zzf.codeagent.controller;
 
 import com.zzf.codeagent.bus.AgentBus;
+import com.zzf.codeagent.id.Identifier;
 import com.zzf.codeagent.session.SessionInfo;
 import com.zzf.codeagent.session.SessionLoop;
 import com.zzf.codeagent.session.SessionService;
+import com.zzf.codeagent.session.model.MessageV2;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -43,7 +45,11 @@ public class AgentChatController {
         private String goal; // Alias for message, sent by plugin
         private String parentID;
         private String workspaceRoot;
+        private String workspaceName;
         private String agent;
+        private String ideContextContent;
+        private String ideContextPath;
+        private Map<String, Object> ideContext;
         private Map<String, Object> settings;
         private List<String> history;
 
@@ -81,6 +87,14 @@ public class AgentChatController {
         if (request.getAgent() != null && !request.getAgent().isEmpty()) {
             final String requestedAgent = request.getAgent();
             sessionService.update(sessionID, s -> s.setAgent(requestedAgent));
+        }
+        if (request.getWorkspaceName() != null && !request.getWorkspaceName().isEmpty()) {
+            final String requestedWorkspaceName = request.getWorkspaceName();
+            sessionService.update(sessionID, s -> s.setWorkspaceName(requestedWorkspaceName));
+        }
+        Map<String, Object> sanitizedIdeContext = sanitizeIdeContext(request.getIdeContext());
+        if (!sanitizedIdeContext.isEmpty()) {
+            sessionService.update(sessionID, s -> s.setIdeContext(sanitizedIdeContext));
         }
 
         final String finalSessionID = sessionID;
@@ -286,10 +300,155 @@ public class AgentChatController {
             }
         }));
 
-        // Start the loop
-        sessionLoop.start(finalSessionID, request.getEffectiveMessage());
+        hydrateSessionHistoryIfNeeded(finalSessionID, request);
+
+        // Start the loop with IDE context (if present)
+        sessionLoop.start(
+                finalSessionID,
+                request.getEffectiveMessage(),
+                buildAdditionalSystemInstructions(request, sanitizedIdeContext)
+        );
 
         return emitter;
+    }
+
+    private List<String> buildAdditionalSystemInstructions(
+            ChatRequest request,
+            Map<String, Object> sanitizedIdeContext
+    ) {
+        if (request == null || sanitizedIdeContext == null || sanitizedIdeContext.isEmpty()) {
+            return List.of();
+        }
+
+        List<String> instructions = new ArrayList<>();
+        instructions.add("IDE environment context is available via tool `ide_context`. Fetch it only when needed.");
+        Object bridgeUrlObj = sanitizedIdeContext.get("ideBridgeUrl");
+        if (bridgeUrlObj instanceof String && !((String) bridgeUrlObj).isBlank()) {
+            instructions.add("IDE bridge is available. For compile/build/test/run, prefer `ide_build`, `ide_test`, and `ide_run` before shell `bash`.");
+            instructions.add("Use shell `bash` for filesystem/inspection commands, or as fallback if IDE tools are unavailable.");
+        }
+        return instructions;
+    }
+
+    private void hydrateSessionHistoryIfNeeded(String sessionID, ChatRequest request) {
+        if (sessionID == null || sessionID.isBlank() || request == null) {
+            return;
+        }
+        List<String> history = request.getHistory();
+        if (history == null || history.isEmpty()) {
+            return;
+        }
+        if (!sessionService.getMessages(sessionID).isEmpty()) {
+            return;
+        }
+        List<HistoryMessageSeed> seeds = parseHistorySeeds(history, request.getEffectiveMessage());
+        if (seeds.isEmpty()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        int seeded = 0;
+        for (HistoryMessageSeed seed : seeds) {
+            if (seed == null || seed.text == null || seed.text.isBlank()) {
+                continue;
+            }
+            MessageV2.MessageInfo info = new MessageV2.MessageInfo();
+            info.setId(Identifier.ascending("message"));
+            info.setSessionID(sessionID);
+            info.setRole(seed.role);
+            info.setCreated(now + seeded);
+            info.setFinish("assistant".equals(seed.role));
+            if ("assistant".equals(seed.role)) {
+                info.setFinishReason("history");
+            }
+            info.setTokens(emptyTokenUsage());
+
+            MessageV2.TextPart textPart = new MessageV2.TextPart();
+            textPart.setId(Identifier.ascending("part"));
+            textPart.setType("text");
+            textPart.setText(seed.text);
+            textPart.setMessageID(info.getId());
+            textPart.setSessionID(sessionID);
+
+            sessionService.addMessage(sessionID, new MessageV2.WithParts(info, new ArrayList<>(List.of(textPart))));
+            seeded++;
+        }
+        if (seeded > 0) {
+            log.info("Hydrated {} history messages for session {}", seeded, sessionID);
+        }
+    }
+
+    private List<HistoryMessageSeed> parseHistorySeeds(List<String> historyLines, String currentUserMessage) {
+        if (historyLines == null || historyLines.isEmpty()) {
+            return List.of();
+        }
+        List<HistoryMessageSeed> seeds = new ArrayList<>();
+        for (String raw : historyLines) {
+            if (raw == null || raw.isBlank()) {
+                continue;
+            }
+            String line = raw.trim();
+            String lower = line.toLowerCase(Locale.ROOT);
+            if (lower.startsWith("you:") || lower.startsWith("user:") || lower.startsWith("?:")) {
+                String text = stripPrefix(line);
+                if (!text.isBlank()) {
+                    seeds.add(new HistoryMessageSeed("user", text));
+                }
+                continue;
+            }
+            if (lower.startsWith("agent:") || lower.startsWith("assistant:")) {
+                String text = stripPrefix(line);
+                if (!text.isBlank()) {
+                    seeds.add(new HistoryMessageSeed("assistant", text));
+                }
+            }
+        }
+        if (seeds.isEmpty()) {
+            return seeds;
+        }
+        if (currentUserMessage != null && !currentUserMessage.isBlank()) {
+            HistoryMessageSeed last = seeds.get(seeds.size() - 1);
+            if ("user".equals(last.role) && normalizeHistoryText(last.text).equals(normalizeHistoryText(currentUserMessage))) {
+                seeds.remove(seeds.size() - 1);
+            }
+        }
+        return seeds;
+    }
+
+    private MessageV2.TokenUsage emptyTokenUsage() {
+        return MessageV2.TokenUsage.builder()
+                .input(0)
+                .output(0)
+                .reasoning(0)
+                .cache(MessageV2.CacheUsage.builder().read(0).write(0).build())
+                .build();
+    }
+
+    private String stripPrefix(String line) {
+        if (line == null) {
+            return "";
+        }
+        int idx = line.indexOf(':');
+        if (idx < 0 || idx + 1 >= line.length()) {
+            return line.trim();
+        }
+        return line.substring(idx + 1).trim();
+    }
+
+    private String normalizeHistoryText(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.trim().replace("\r\n", "\n").replace('\r', '\n');
+    }
+
+    private static final class HistoryMessageSeed {
+        final String role;
+        final String text;
+
+        private HistoryMessageSeed(String role, String text) {
+            this.role = role;
+            this.text = text;
+        }
     }
 
     private void sendSse(SseEmitter emitter, String eventName, Object data) {
@@ -367,6 +526,64 @@ public class AgentChatController {
         });
         return sanitized;
     }
+
+    private String firstNonBlank(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private Map<String, Object> sanitizeIdeContext(Map<String, Object> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> sanitized = new HashMap<>();
+        for (Map.Entry<String, Object> entry : raw.entrySet()) {
+            String key = firstNonBlank(entry.getKey());
+            if (key.isBlank()) {
+                continue;
+            }
+            Object value = entry.getValue();
+            if (value == null) {
+                continue;
+            }
+            if (value instanceof String) {
+                String text = ((String) value).trim();
+                if (!text.isBlank()) {
+                    if (text.length() > 4000) {
+                        text = text.substring(0, 4000) + "...";
+                    }
+                    sanitized.put(key, text);
+                }
+                continue;
+            }
+            if (value instanceof Number || value instanceof Boolean) {
+                sanitized.put(key, value);
+                continue;
+            }
+            if (value instanceof List<?> list) {
+                List<Object> limited = new ArrayList<>();
+                int maxItems = Math.min(list.size(), 32);
+                for (int i = 0; i < maxItems; i++) {
+                    Object item = list.get(i);
+                    if (item == null) {
+                        continue;
+                    }
+                    if (item instanceof String) {
+                        String text = ((String) item).trim();
+                        if (!text.isBlank()) {
+                            limited.add(text.length() > 1000 ? text.substring(0, 1000) + "..." : text);
+                        }
+                    } else if (item instanceof Number || item instanceof Boolean) {
+                        limited.add(item);
+                    }
+                }
+                if (!limited.isEmpty()) {
+                    sanitized.put(key, limited);
+                }
+            }
+        }
+        return sanitized;
+    }
+
 }
 
 

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PendingChangesManagerTest {
@@ -64,5 +65,26 @@ class PendingChangesManagerTest {
         manager.addChange(second);
 
         assertEquals(1, manager.getChanges().size());
+    }
+
+    @Test
+    void shouldMatchBySessionWhenWorkspaceFormatDiffers() {
+        PendingChangesManager.PendingChange change = new PendingChangesManager.PendingChange(
+                "id_3",
+                "src/App.java",
+                "DELETE",
+                "old",
+                null,
+                null,
+                System.currentTimeMillis(),
+                "D:\\plugin_dev\\code-agent",
+                "session_scope_only"
+        );
+        manager.addChange(change);
+
+        PendingChangesManager.PendingChange resolved = manager
+                .getPendingChange("src/App.java", "Z:\\wrong\\workspace", "session_scope_only")
+                .orElse(null);
+        assertNotNull(resolved);
     }
 }

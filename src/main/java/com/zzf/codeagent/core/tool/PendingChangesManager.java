@@ -155,6 +155,15 @@ public class PendingChangesManager {
                 .anyMatch(c -> scopeMatches(c, workspaceRoot, sessionId));
     }
 
+    public boolean hasPendingDeleteForSession(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return false;
+        }
+        return changes.stream()
+                .filter(c -> "DELETE".equalsIgnoreCase(c.type))
+                .anyMatch(c -> sessionId.equals(c.sessionId));
+    }
+
     public void clear() {
         changes.clear();
     }
@@ -350,17 +359,13 @@ public class PendingChangesManager {
 
     private boolean scopeMatches(PendingChange change, String workspaceRoot, String sessionId) {
         if (change == null) return false;
+        if (sessionId != null && !sessionId.isEmpty()) {
+            return sessionId.equals(change.sessionId);
+        }
         if (workspaceRoot != null && !workspaceRoot.isEmpty()) {
             String expected = normalizeWorkspaceRoot(workspaceRoot);
             String actual = normalizeWorkspaceRoot(change.workspaceRoot);
-            if (!actual.equals(expected)) {
-                return false;
-            }
-        }
-        if (sessionId != null && !sessionId.isEmpty()) {
-            if (change.sessionId == null || !change.sessionId.equals(sessionId)) {
-                return false;
-            }
+            return actual.equals(expected);
         }
         return true;
     }

@@ -41,15 +41,28 @@ public class ContextCompactionService {
      * 检测是否溢出 (Check if context overflow)
      */
     public boolean isOverflow(MessageV2.TokenUsage tokens, ModelInfo model) {
+        if (model == null) {
+            return false;
+        }
         ConfigInfo config = configManager.getConfig();
-        if (config.getCompaction() != null && Boolean.FALSE.equals(config.getCompaction().getAuto())) {
+        if (config != null && config.getCompaction() != null && Boolean.FALSE.equals(config.getCompaction().getAuto())) {
             return false;
         }
 
         int context = model.getLimit() != null ? model.getLimit().getContext() : 0;
-        if (context == 0) return false;
+        if (context <= 0) return false;
 
-        int count = tokens.getInput() + (tokens.getCache() != null ? tokens.getCache().getRead() : 0) + tokens.getOutput();
+        int input = 0;
+        int cacheRead = 0;
+        int output = 0;
+        if (tokens != null) {
+            input = Math.max(0, tokens.getInput());
+            output = Math.max(0, tokens.getOutput());
+            if (tokens.getCache() != null) {
+                cacheRead = Math.max(0, tokens.getCache().getRead());
+            }
+        }
+        int count = input + cacheRead + output;
         
         int modelOutputLimit = model.getLimit() != null ? model.getLimit().getOutput() : 0;
         int usableOutput = Math.min(modelOutputLimit, OUTPUT_TOKEN_MAX);
@@ -57,7 +70,7 @@ public class ContextCompactionService {
 
         // OpenCode logic: count > usable
         // usable = input_limit OR (context - output_limit)
-        int usable = context - usableOutput;
+        int usable = Math.max(0, context - usableOutput);
         
         return count > usable;
     }

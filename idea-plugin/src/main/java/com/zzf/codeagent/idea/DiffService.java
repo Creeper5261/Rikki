@@ -401,7 +401,7 @@ public class DiffService {
         if (override != null && !override.isBlank()) {
             return override;
         }
-        String base = System.getProperty("codeagent.endpoint", "http://localhost:8080/api/agent/chat");
+        String base = System.getProperty("codeagent.endpoint", "http://localhost:18080/api/agent/chat");
         if (base.endsWith("/chat/stream")) {
             base = base.substring(0, base.length() - "/stream".length());
         }
