@@ -53,21 +53,21 @@ public class StorageService {
     private void runMigrations() {
         List<Migration> migrations = new ArrayList<>();
         
-        // Migration 1: Aligned with opencode storage.ts MIGRATIONS[0]
-        // Migrating from old project structure to new one
+        
+        
         migrations.add(dir -> {
             Path legacyProjectDir = dir.getParent().resolve("project");
             if (!Files.exists(legacyProjectDir) || !Files.isDirectory(legacyProjectDir)) {
                 return;
             }
             
-            // Note: This is a complex migration in opencode. 
-            // In Java, we implement the structure to handle it.
+            
+            
             log.info("Found legacy project directory, starting migration...");
-            // ... migration logic here if needed for specific legacy data
+            
         });
 
-        // Track current version in storage
+        
         List<String> versionKey = List.of("meta", "version");
         Integer currentVersion = read(versionKey, Integer.class);
         if (currentVersion == null) currentVersion = 0;

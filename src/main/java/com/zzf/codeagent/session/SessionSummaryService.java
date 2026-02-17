@@ -44,7 +44,7 @@ public class SessionSummaryService {
             int additionsSum = 0;
             int deletionsSum = 0;
             
-            // Assume diffs are a list of maps for now, to be replaced with Snapshot.FileDiff later
+            
             for (Object d : diffs) {
                 if (d instanceof Map) {
                     Map<String, Object> map = (Map<String, Object>) d;
@@ -64,7 +64,7 @@ public class SessionSummaryService {
                         .build());
             });
 
-            // Storage.write(["session_diff", sessionID], diffs) - Implement later
+            
             agentBus.publish("session.diff", Map.of(
                 "sessionID", sessionID,
                 "diff", diffs
@@ -93,7 +93,7 @@ public class SessionSummaryService {
             msgWithParts.getInfo().getSummaryInfo().setDiffs(new ArrayList<>(diffs));
             sessionService.updateMessage(msgWithParts.getInfo());
 
-            // Title generation
+            
             if (msgWithParts.getInfo().getSummaryInfo().getTitle() == null) {
                 return generateTitle(msgWithParts);
             }
@@ -124,7 +124,7 @@ public class SessionSummaryService {
         }
 
         if (from != null && to != null) {
-            // return snapshotService.diffFull(from, to);
+            
             return CompletableFuture.completedFuture(new ArrayList<>());
         }
         return CompletableFuture.completedFuture(new ArrayList<>());

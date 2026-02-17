@@ -50,7 +50,7 @@ public class ModelInfo {
         private boolean toolcall;
         private IOConfig input;
         private IOConfig output;
-        private Object interleaved; // Boolean or Map with field
+        private Object interleaved; 
     }
 
     @Data

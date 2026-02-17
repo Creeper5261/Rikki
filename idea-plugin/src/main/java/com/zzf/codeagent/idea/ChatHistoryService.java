@@ -36,7 +36,7 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         }
     }
 
-    // Legacy support: redirect to current session
+    
     public synchronized List<String> getLines() {
         ChatSession current = getCurrentSession();
         return current != null ? new ArrayList<>(current.messages) : new ArrayList<>();
@@ -51,7 +51,7 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         }
         current.messages.add(line);
 
-        // Auto-update title if it's the first user message
+        
         if (current.messages.size() == 1 && isUserLine(line)) {
             String title = stripUserPrefix(line);
             if (title.length() > 20) title = title.substring(0, 20) + "...";
@@ -126,7 +126,7 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         session.id = UUID.randomUUID().toString();
         session.title = title;
         session.createdAt = System.currentTimeMillis();
-        state.sessions.add(0, session); // Add to top
+        state.sessions.add(0, session); 
         state.currentSessionId = session.id;
         persistToDisk();
         return session;
@@ -156,7 +156,7 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
 
         String finalId = state.currentSessionId;
         return state.sessions.stream().filter(s -> s.id.equals(finalId)).findFirst().orElseGet(() -> {
-            // Fallback if ID not found
+            
             if (!state.sessions.isEmpty()) {
                 state.currentSessionId = state.sessions.get(0).id;
                 return state.sessions.get(0);
@@ -653,7 +653,7 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
 
         public String currentSessionId;
 
-        // Legacy field
+        
         @XCollection(style = XCollection.Style.v2)
         public List<String> lines = new ArrayList<>();
     }

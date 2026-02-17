@@ -29,7 +29,7 @@ public class ToolRegistry {
     }
 
     public List<Tool> getTools(String modelID, AgentInfo agent) {
-        // Simplified: return all for now. OpenCode filters based on permissions/capabilities.
+        
         return new ArrayList<>(tools.values());
     }
 

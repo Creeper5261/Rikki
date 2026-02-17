@@ -28,7 +28,7 @@ public class SessionInfo {
     private Map<String, Object> ideContext;
     private String version;
     private SessionTime time;
-    private Map<String, Object> permission; // Complex permission object
+    private Map<String, Object> permission; 
     private SessionRevert revert;
 
     @Data
@@ -39,7 +39,7 @@ public class SessionInfo {
         private int additions;
         private int deletions;
         private int files;
-        // diffs omitted for now
+        
     }
 
     @Data

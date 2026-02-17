@@ -18,7 +18,7 @@ class PendingCommandsManagerTest {
     }
 
     @Test
-    void shouldMatchBySessionEvenIfWorkspaceDiffers() {
+    void shouldRequireWorkspaceAndSessionScopeToMatch() {
         PendingCommandsManager.PendingCommand command = new PendingCommandsManager.PendingCommand(
                 "cmd-1",
                 "rm src/Main.java",
@@ -40,7 +40,8 @@ class PendingCommandsManagerTest {
         manager.add(command);
 
         assertTrue(manager.hasPendingForScope("Z:\\wrong\\workspace", "session-1"));
-        assertTrue(manager.scopeMatches(command, "Z:\\wrong\\workspace", "session-1"));
+        assertFalse(manager.scopeMatches(command, "Z:\\wrong\\workspace", "session-1"));
+        assertTrue(manager.scopeMatches(command, "D:\\plugin_dev\\code-agent", "session-1"));
     }
 
     @Test

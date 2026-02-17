@@ -23,7 +23,7 @@ public class SessionStatus {
     @Data
     @Builder
     public static class Info {
-        private String type; // idle, retry, busy
+        private String type; 
         private Integer attempt;
         private String message;
         private Long next;
@@ -52,7 +52,7 @@ public class SessionStatus {
                 .build());
 
         if ("idle".equals(status.getType())) {
-            // deprecated
+            
             agentBus.publish(IDLE_EVENT, Map.of("sessionID", sessionID));
             state.remove(sessionID);
             return;

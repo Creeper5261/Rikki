@@ -35,7 +35,7 @@ public class ContextCompactionService {
     public static final int PRUNE_MINIMUM = 20_000;
     public static final int PRUNE_PROTECT = 40_000;
     private static final List<String> PRUNE_PROTECTED_TOOLS = List.of("skill");
-    private static final int OUTPUT_TOKEN_MAX = 4096; // 假设值，对齐 SessionPrompt.OUTPUT_TOKEN_MAX
+    private static final int OUTPUT_TOKEN_MAX = 4096; 
 
     /**
      * 检测是否溢出 (Check if context overflow)
@@ -68,8 +68,8 @@ public class ContextCompactionService {
         int usableOutput = Math.min(modelOutputLimit, OUTPUT_TOKEN_MAX);
         if (usableOutput == 0) usableOutput = OUTPUT_TOKEN_MAX;
 
-        // OpenCode logic: count > usable
-        // usable = input_limit OR (context - output_limit)
+        
+        
         int usable = Math.max(0, context - usableOutput);
         
         return count > usable;
@@ -92,21 +92,21 @@ public class ContextCompactionService {
         List<MessageV2.ToolPart> toPrune = new ArrayList<>();
         int turns = 0;
 
-        // Iterate backwards through messages
+        
         for (int i = msgs.size() - 1; i >= 0; i--) {
             MessageV2.WithParts msg = msgs.get(i);
             
             if ("user".equals(msg.getInfo().getRole())) {
                 turns++;
             }
-            if (turns < 2) continue; // Keep recent turns
+            if (turns < 2) continue; 
 
-            // If it's a summary message, stop pruning further back
+            
             if ("assistant".equals(msg.getInfo().getRole()) && Boolean.TRUE.equals(msg.getInfo().getSummary())) {
                 break;
             }
 
-            // Iterate backwards through parts
+            
             for (int j = msg.getParts().size() - 1; j >= 0; j--) {
                 PromptPart part = msg.getParts().get(j);
                 
@@ -115,12 +115,12 @@ public class ContextCompactionService {
                     if (toolPart.getState() != null && "completed".equals(toolPart.getState().getStatus())) {
                         if (PRUNE_PROTECTED_TOOLS.contains(toolPart.getTool())) continue;
                         
-                        // Check if already compacted
+                        
                         if (toolPart.getState().getMetadata() != null && toolPart.getState().getMetadata().containsKey("compacted")) {
-                            break; // Stop going back if we hit already compacted
+                            break; 
                         }
 
-                        // Estimate tokens (simplified: 1 char = 0.25 token approx)
+                        
                         String output = toolPart.getState().getOutput();
                         int estimate = output != null ? output.length() / 4 : 0;
                         
@@ -164,7 +164,7 @@ public class ContextCompactionService {
                         .findFirst()
                         .orElseThrow();
 
-                // 1. Get Compaction Agent & Model
+                
                 AgentInfo agent = agentService.get("compaction").orElse(null);
                 ModelInfo model;
                 if (agent != null && agent.getModel() != null) {
@@ -175,7 +175,7 @@ public class ContextCompactionService {
 
                 if (model == null) model = providerManager.getDefaultModel();
 
-                // 2. Create Summary Assistant Message
+                
                 MessageV2.MessageInfo assistantInfo = new MessageV2.MessageInfo();
                 assistantInfo.setId(UUID.randomUUID().toString());
                 assistantInfo.setSessionID(sessionID);
@@ -193,13 +193,13 @@ public class ContextCompactionService {
                 MessageV2.WithParts assistantMsg = new MessageV2.WithParts(assistantInfo, parts);
                 sessionService.addMessage(sessionID, assistantMsg);
 
-                // 3. Prepare Compaction Prompt
+                
                 String defaultPrompt = "Provide a detailed prompt for continuing our conversation above. Focus on information that would be helpful for continuing the conversation, including what we did, what we're doing, which files we're working on, and what we're going to do next considering new session will not have access to our conversation.";
                 
-                // 4. Call LLM for Summary
+                
                 List<MessageV2.WithParts> inputMessages = new ArrayList<>(messages);
                 
-                // Add the compaction prompt as a user message
+                
                 MessageV2.MessageInfo promptMsgInfo = new MessageV2.MessageInfo();
                 promptMsgInfo.setRole("user");
                 MessageV2.TextPart promptPart = new MessageV2.TextPart();
@@ -231,7 +231,7 @@ public class ContextCompactionService {
                 parts.add(summaryPart);
                 sessionService.updateMessage(assistantMsg);
 
-                // 5. If Auto, append "Continue..." user message
+                
                 if (auto) {
                     MessageV2.MessageInfo continueInfo = new MessageV2.MessageInfo();
                     continueInfo.setId(UUID.randomUUID().toString());

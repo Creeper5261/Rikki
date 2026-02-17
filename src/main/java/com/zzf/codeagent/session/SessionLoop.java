@@ -141,19 +141,19 @@ public class SessionLoop {
         CompletableFuture<MessageV2.WithParts> loopFuture = CompletableFuture.supplyAsync(() -> {
             runHandle.loopThread.set(Thread.currentThread());
             try {
-                // 1. Get/Create Session & User Message
+                
                 SessionInfo session = sessionService.get(sessionID)
                         .orElseThrow(() -> new IllegalArgumentException("Session not found: " + sessionID));
 
                 if (userInput != null && !userInput.isEmpty()) {
-                    // Add User Message
+                    
                     MessageV2.MessageInfo userInfo = new MessageV2.MessageInfo();
                     userInfo.setId(Identifier.ascending("message"));
                     userInfo.setSessionID(sessionID);
                     userInfo.setRole("user");
                     userInfo.setCreated(System.currentTimeMillis());
                     
-                    // Aligned with OpenCode: Resolve agent from session if missing
+                    
                     String agentName = session.getAgent();
                     if (agentName == null || agentName.isEmpty()) {
                         agentName = agentService.defaultAgent().map(AgentInfo::getName).orElse("build");
@@ -193,7 +193,7 @@ public class SessionLoop {
                     List<MessageV2.WithParts> history = sessionService.getFilteredMessages(sessionID);
                     log.info("History size for session {}: {}", sessionID, history.size());
                     
-                    // Identify last messages and pending tasks
+                    
                     MessageV2.WithParts lastUserMsg = null;
                     MessageV2.WithParts lastAssistantMsg = null;
                     MessageV2.WithParts lastFinishedMsg = null;
@@ -211,7 +211,7 @@ public class SessionLoop {
                             lastFinishedMsg = m;
                         }
 
-                        // Collect pending tasks if not finished
+                        
                         if (lastFinishedMsg == null) {
                             for (PromptPart p : m.getParts()) {
                                 if (p instanceof MessageV2.CompactionPart || p instanceof MessageV2.SubtaskPart) {
@@ -229,7 +229,7 @@ public class SessionLoop {
                         throw new RuntimeException("No user message found");
                     }
 
-                    // Check if we should exit loop
+                    
                     if (lastAssistantMsg != null && Boolean.TRUE.equals(lastAssistantMsg.getInfo().getFinish())) {
                         String finish = lastAssistantMsg.getInfo().getFinishReason();
                         boolean hasActiveToolCalls = lastAssistantMsg.getParts().stream()
@@ -241,7 +241,7 @@ public class SessionLoop {
                                     return "pending".equalsIgnoreCase(status) || "running".equalsIgnoreCase(status);
                                 });
                         
-                        // Fix for Issue 3: Don't exit if message only contains reasoning
+                        
                         boolean hasContent = lastAssistantMsg.getParts().stream()
                                 .anyMatch(p -> p instanceof MessageV2.TextPart || p instanceof MessageV2.ToolPart);
 
@@ -253,14 +253,14 @@ public class SessionLoop {
                                 break;
                             } else {
                                 log.info("Assistant finished but produced no content (only reasoning?), continuing loop. Finish reason: {}", finish);
-                                // Fallthrough to continue
+                                
                             }
                         }
                     }
 
                     step++;
                     
-                    // Get Model
+                    
                     ModelInfo model = null;
                     if (lastUserMsg.getInfo().getModelID() != null) {
                         model = providerManager.getModel(lastUserMsg.getInfo().getProviderID(), lastUserMsg.getInfo().getModelID()).orElse(null);
@@ -274,7 +274,7 @@ public class SessionLoop {
                         throw new RuntimeException("Failed to resolve model for session: " + sessionID);
                     }
 
-                    // Process pending tasks (Subtask or Compaction)
+                    
                     if (!pendingTasks.isEmpty()) {
                         PromptPart task = pendingTasks.get(pendingTasks.size() - 1);
                         if (task instanceof MessageV2.SubtaskPart) {
@@ -288,7 +288,7 @@ public class SessionLoop {
                         }
                     }
 
-                    // Context overflow check
+                    
                     if (lastFinishedMsg != null && !Boolean.TRUE.equals(lastFinishedMsg.getInfo().getSummary())) {
                         if (compactionService.isOverflow(lastFinishedMsg.getInfo().getTokens(), model)) {
                             log.info("Context overflow detected, triggering compaction");
@@ -297,20 +297,20 @@ public class SessionLoop {
                         }
                     }
 
-                    // Normal processing
+                    
                     AgentInfo agent = agentService.get(lastUserMsg.getInfo().getAgent()).orElse(agentService.defaultAgent().orElseThrow());
                     
                     log.info("Starting interaction loop step: {}, session: {}, model: {}", step, sessionID, model.getId());
                     log.info("Processing message history: {} messages total", history.size());
                     log.info("Current agent: {}", agent.getName());
                     
-                    // Reminders
+                    
                     history = reminderService.insertReminders(history, agent, session);
                     if (step > 1 && lastAssistantMsg != null) {
                         reminderService.wrapMidLoopUserMessages(history, lastAssistantMsg.getInfo().getId());
                     }
 
-                    // Create Processor
+                    
                     MessageV2.Assistant assistantInfo = MessageV2.Assistant.builder()
                             .id(Identifier.ascending("message"))
                             .parentID(lastUserMsg.getInfo().getId())
@@ -329,13 +329,13 @@ public class SessionLoop {
                     SessionProcessor processor = processorFactory.create(assistantInfo, sessionID, model);
                     runHandle.processor.set(processor);
                     
-                    // Resolve Tools
+                    
                     boolean bypassAgentCheck = lastUserMsg.getParts().stream()
                             .anyMatch(p -> p instanceof MessageV2.AgentPart);
                             
                     Map<String, Tool> tools = resolveTools(agent, model, session, history, processor, bypassAgentCheck);
                     
-                    // LLM Stream Input
+                    
                     List<String> instructions = new ArrayList<>();
                     instructions.addAll(systemPrompt.environment(model, session.getDirectory()));
                     instructions.addAll(systemPrompt.provider(model));
@@ -359,7 +359,7 @@ public class SessionLoop {
                         break;
                     }
                     
-                    // Wait for any running tools to complete
+                    
                     waitForRunningTools(sessionID, assistantInfo.getId(), session.getDirectory(), runHandle);
                     if (isRunCancelled(runHandle)) {
                         log.info("Session {} loop cancelled while waiting tools at step {}", sessionID, step);
@@ -367,8 +367,8 @@ public class SessionLoop {
                     }
 
                     if ("stop".equals(nextAction)) {
-                        // Double check if we really should stop (e.g. if we have tool calls)
-                        // If we have tool calls, we should continue to let the agent see the results
+                        
+                        
                         MessageV2.WithParts updatedMsg = sessionService.getMessage(assistantInfo.getId());
                         boolean hasActiveToolCalls = updatedMsg != null && updatedMsg.getParts().stream()
                                 .filter(p -> p instanceof MessageV2.ToolPart)
@@ -415,7 +415,7 @@ public class SessionLoop {
                 activeRuns.remove(sessionID, runHandle);
             }
             
-            // Return last assistant message
+            
             return sessionService.getFilteredMessages(sessionID).stream()
                     .filter(m -> "assistant".equals(m.getInfo().getRole()))
                     .reduce((first, second) -> second)
@@ -1005,11 +1005,11 @@ public class SessionLoop {
     private Map<String, Tool> resolveTools(AgentInfo agent, ModelInfo model, SessionInfo session, List<MessageV2.WithParts> history, SessionProcessor processor, boolean bypassAgentCheck) {
         Map<String, Tool> tools = new HashMap<>();
         
-        // 1. Get tools from registry
+        
         List<Tool> availableTools = toolRegistry.getTools(model.getId(), agent);
         
         for (Tool tool : availableTools) {
-            // Wrap tool to inject context (Align with prompt.ts resolveTools)
+            
             Tool wrappedTool = new Tool() {
                 @Override
                 public String getId() { return tool.getId(); }
@@ -1036,7 +1036,7 @@ public class SessionLoop {
                         mergedExtra.putIfAbsent("ideContext", new HashMap<>(session.getIdeContext()));
                     }
 
-                    // Create Context for this execution
+                    
                     Context ctx = Context.builder()
                             .sessionID(session.getId())
                             .messageID(processor.getMessage().getId())
@@ -1073,7 +1073,7 @@ public class SessionLoop {
     private void executeSubtask(MessageV2.SubtaskPart task, String sessionID, MessageV2.WithParts lastUserMsg, List<MessageV2.WithParts> history, ModelInfo model) {
         log.info("Executing subtask: {}", task.getDescription());
         
-        // Create Assistant Message for subtask
+        
         MessageV2.Assistant assistantMsg = MessageV2.Assistant.builder()
                 .id(Identifier.ascending("message"))
                 .parentID(lastUserMsg.getInfo().getId())
@@ -1089,7 +1089,7 @@ public class SessionLoop {
         
         sessionService.addMessage(sessionID, new MessageV2.WithParts(assistantMsg.toInfo(), new ArrayList<>()));
         
-        // Create Tool Part for the subtask execution (e.g. TaskTool)
+        
         String callID = Identifier.random("call");
         MessageV2.ToolPart toolPart = new MessageV2.ToolPart();
         toolPart.setId(Identifier.ascending("part"));
@@ -1112,10 +1112,10 @@ public class SessionLoop {
         
         sessionService.updatePart(toolPart);
         
-        // Execute the subtask
+        
         Tool taskTool = toolRegistry.get("task").orElse(null);
         if (taskTool != null) {
-            // Create Context for TaskTool
+            
             Map<String, Object> subtaskExtra = new HashMap<>();
             subtaskExtra.put("bypassAgentCheck", true);
             if (sessionID != null && !sessionID.isBlank()) {

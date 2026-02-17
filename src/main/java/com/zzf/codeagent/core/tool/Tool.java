@@ -30,9 +30,9 @@ public interface Tool {
         private List<MessageV2.WithParts> messages;
         private Map<String, Object> extra;
         
-        // 用于更新元数据
+        
         private MetadataConsumer metadataConsumer;
-        // 用于权限请求
+        
         private PermissionAsker permissionAsker;
 
         public void metadata(String title, Map<String, Object> metadata) {
@@ -80,6 +80,6 @@ public interface Tool {
     CompletableFuture<Result> execute(JsonNode args, Context ctx);
 
     default void cancel(String sessionID, String callID) {
-        // Optional cancellation hook for long-running tools.
+        
     }
 }

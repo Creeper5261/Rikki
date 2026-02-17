@@ -22,7 +22,7 @@ public class SessionService {
 
     private final AgentBus agentBus;
 
-    // In-memory storage for now (replacing OpenCode Storage)
+    
     private final Map<String, SessionInfo> sessions = new ConcurrentHashMap<>();
     private final Map<String, List<MessageV2.WithParts>> sessionMessages = new ConcurrentHashMap<>();
 
@@ -31,11 +31,11 @@ public class SessionService {
     }
 
     public SessionInfo createNext(String parentID, String title, String directory) {
-        String id = UUID.randomUUID().toString(); // Should be ULID-like
+        String id = UUID.randomUUID().toString(); 
         SessionInfo session = SessionInfo.builder()
                 .id(id)
                 .title(title != null ? title : (parentID != null ? "Child session - " : "New session - ") + new Date())
-                .directory(directory != null ? directory : System.getProperty("user.dir")) // Instance.directory
+                .directory(directory != null ? directory : System.getProperty("user.dir")) 
                 .time(SessionInfo.SessionTime.builder()
                         .created(System.currentTimeMillis())
                         .updated(System.currentTimeMillis())
@@ -51,19 +51,19 @@ public class SessionService {
     }
 
     public SessionInfo fork(String sessionID, String messageID) {
-        // Create new session
+        
         SessionInfo newSession = createNext(null, null, null);
         
-        // Clone messages up to messageID
+        
         List<MessageV2.WithParts> msgs = getMessages(sessionID);
-        Map<String, String> idMap = new HashMap<>(); // oldID -> newID
+        Map<String, String> idMap = new HashMap<>(); 
 
         for (MessageV2.WithParts msg : msgs) {
             if (messageID != null && msg.getInfo().getId().compareTo(messageID) >= 0) {
-                // Assuming messageID comparison works lexicographically (ULID) or we check equality
-                // If messageID is provided, break if we passed it? 
-                // OpenCode: if (input.messageID && msg.info.id >= input.messageID) break
-                // If IDs are chronological. UUIDs are not. Assuming chronological for now.
+                
+                
+                
+                
                 if (msg.getInfo().getId().equals(messageID)) break; 
             }
 
@@ -71,7 +71,7 @@ public class SessionService {
             idMap.put(msg.getInfo().getId(), newMsgID);
 
             MessageV2.MessageInfo newInfo = new MessageV2.MessageInfo();
-            // Copy fields
+            
             newInfo.setId(newMsgID);
             newInfo.setSessionID(newSession.getId());
             newInfo.setRole(msg.getInfo().getRole());
@@ -85,17 +85,10 @@ public class SessionService {
 
             List<PromptPart> newParts = new ArrayList<>();
             for (PromptPart part : msg.getParts()) {
-                // Clone part (simplified)
-                // Ideally deep copy. For now just re-assigning might be dangerous if mutable.
-                // Creating new instance:
-                // We need to know exact type.
-                // For now, assuming parts are immutable or we don't modify them deeply here.
-                // But updatePart modifies parts.
-                // We should clone. Skipping deep clone for brevity, TODO.
-                part.setSessionID(newSession.getId());
-                part.setMessageID(newMsgID);
-                part.setId(UUID.randomUUID().toString());
-                newParts.add(part); 
+                PromptPart copied = clonePartForFork(part, newSession.getId(), newMsgID);
+                if (copied != null) {
+                    newParts.add(copied);
+                }
             }
 
             addMessage(newSession.getId(), new MessageV2.WithParts(newInfo, newParts));
@@ -123,13 +116,13 @@ public class SessionService {
     public void remove(String sessionID) {
         SessionInfo session = sessions.remove(sessionID);
         if (session != null) {
-            // Remove children
+            
             List<SessionInfo> children = children(sessionID);
             for (SessionInfo child : children) {
                 remove(child.getId());
             }
             
-            // Remove messages
+            
             sessionMessages.remove(sessionID);
             
             agentBus.publish("session.deleted", session);
@@ -146,7 +139,7 @@ public class SessionService {
         return new ArrayList<>(sessions.values());
     }
 
-    // Message Management
+    
     
     public List<MessageV2.WithParts> getMessages(String sessionID) {
         List<MessageV2.WithParts> msgs = sessionMessages.get(sessionID);
@@ -168,7 +161,7 @@ public class SessionService {
         for (int i = all.size() - 1; i >= 0; i--) {
             MessageV2.WithParts msg = all.get(i);
             result.add(0, msg);
-            // OpenCode filterCompacted logic: stop when hitting a summary message
+            
             if ("assistant".equals(msg.getInfo().getRole()) && Boolean.TRUE.equals(msg.getInfo().getSummary())) {
                 break;
             }
@@ -181,7 +174,7 @@ public class SessionService {
         synchronized (msgs) {
             msgs.add(message);
         }
-        agentBus.publish("message.created", message); // Assuming event
+        agentBus.publish("message.created", message); 
     }
 
     public void updateMessage(MessageV2.MessageInfo info) {
@@ -232,7 +225,7 @@ public class SessionService {
             synchronized (msgs) {
             for (MessageV2.WithParts msg : msgs) {
                 if (msg.getInfo().getId().equals(part.getMessageID())) {
-                    // Find and replace or add part
+                    
                     boolean found = false;
                     for (int i = 0; i < msg.getParts().size(); i++) {
                         if (msg.getParts().get(i).getId().equals(part.getId())) {
@@ -274,7 +267,162 @@ public class SessionService {
     }
     
     public List<Object> diff(String sessionID) {
-        // TODO: Implement diff retrieval from storage
+        
         return Collections.emptyList();
+    }
+
+    private PromptPart clonePartForFork(PromptPart source, String sessionId, String messageId) {
+        if (source == null) {
+            return null;
+        }
+        PromptPart target;
+        if (source instanceof MessageV2.TextPart text) {
+            MessageV2.TextPart copy = new MessageV2.TextPart();
+            copy.setText(text.getText());
+            copy.setDelta(text.getDelta());
+            copy.setSynthetic(text.getSynthetic());
+            copy.setIgnored(text.getIgnored());
+            copy.setTime(copyPartTime(text.getTime()));
+            target = copy;
+        } else if (source instanceof MessageV2.ReasoningPart reasoning) {
+            MessageV2.ReasoningPart copy = new MessageV2.ReasoningPart();
+            copy.setText(reasoning.getText());
+            copy.setDelta(reasoning.getDelta());
+            copy.setTime(copyPartTime(reasoning.getTime()));
+            copy.setCollapsed(reasoning.getCollapsed());
+            target = copy;
+        } else if (source instanceof MessageV2.FilePart file) {
+            MessageV2.FilePart copy = new MessageV2.FilePart();
+            copy.setMime(file.getMime());
+            copy.setFilename(file.getFilename());
+            copy.setUrl(file.getUrl());
+            copy.setContent(file.getContent());
+            target = copy;
+        } else if (source instanceof MessageV2.CompactionPart compaction) {
+            MessageV2.CompactionPart copy = new MessageV2.CompactionPart();
+            copy.setAuto(compaction.isAuto());
+            copy.setSummary(compaction.getSummary());
+            target = copy;
+        } else if (source instanceof MessageV2.SubtaskPart subtask) {
+            MessageV2.SubtaskPart copy = new MessageV2.SubtaskPart();
+            copy.setPrompt(subtask.getPrompt());
+            copy.setDescription(subtask.getDescription());
+            copy.setAgent(subtask.getAgent());
+            target = copy;
+        } else if (source instanceof MessageV2.ToolPart tool) {
+            MessageV2.ToolPart copy = new MessageV2.ToolPart();
+            copy.setCallID(tool.getCallID());
+            copy.setTool(tool.getTool());
+            copy.setArgs(copyMap(tool.getArgs()));
+            copy.setState(copyToolState(tool.getState()));
+            target = copy;
+        } else if (source instanceof MessageV2.StepStartPart stepStart) {
+            MessageV2.StepStartPart copy = new MessageV2.StepStartPart();
+            copy.setSnapshot(stepStart.getSnapshot());
+            target = copy;
+        } else if (source instanceof MessageV2.StepFinishPart stepFinish) {
+            MessageV2.StepFinishPart copy = new MessageV2.StepFinishPart();
+            copy.setReason(stepFinish.getReason());
+            copy.setSnapshot(stepFinish.getSnapshot());
+            copy.setTokens(copyTokenUsage(stepFinish.getTokens()));
+            copy.setCost(stepFinish.getCost());
+            target = copy;
+        } else if (source instanceof MessageV2.AgentPart agentPart) {
+            MessageV2.AgentPart copy = new MessageV2.AgentPart();
+            copy.setName(agentPart.getName());
+            target = copy;
+        } else {
+            return null;
+        }
+
+        target.setId(UUID.randomUUID().toString());
+        target.setType(source.getType());
+        target.setSessionID(sessionId);
+        target.setMessageID(messageId);
+        target.setMetadata(copyMap(source.getMetadata()));
+        return target;
+    }
+
+    private MessageV2.PartTime copyPartTime(MessageV2.PartTime source) {
+        if (source == null) {
+            return null;
+        }
+        MessageV2.PartTime copy = new MessageV2.PartTime();
+        copy.setStart(source.getStart());
+        copy.setEnd(source.getEnd());
+        copy.setCompacted(source.getCompacted());
+        return copy;
+    }
+
+    private MessageV2.ToolState copyToolState(MessageV2.ToolState source) {
+        if (source == null) {
+            return null;
+        }
+        MessageV2.ToolState copy = new MessageV2.ToolState();
+        copy.setStatus(source.getStatus());
+        copy.setInput(copyMap(source.getInput()));
+        copy.setOutput(source.getOutput());
+        copy.setTitle(source.getTitle());
+        copy.setError(source.getError());
+        copy.setMetadata(copyMap(source.getMetadata()));
+        if (source.getTime() != null) {
+            MessageV2.ToolState.TimeInfo timeCopy = new MessageV2.ToolState.TimeInfo();
+            timeCopy.setStart(source.getTime().getStart());
+            timeCopy.setEnd(source.getTime().getEnd());
+            timeCopy.setCompacted(source.getTime().getCompacted());
+            copy.setTime(timeCopy);
+        }
+        return copy;
+    }
+
+    private MessageV2.TokenUsage copyTokenUsage(MessageV2.TokenUsage source) {
+        if (source == null) {
+            return null;
+        }
+        MessageV2.TokenUsage copy = new MessageV2.TokenUsage();
+        copy.setInput(source.getInput());
+        copy.setOutput(source.getOutput());
+        copy.setReasoning(source.getReasoning());
+        if (source.getCache() != null) {
+            MessageV2.CacheUsage cacheCopy = new MessageV2.CacheUsage();
+            cacheCopy.setRead(source.getCache().getRead());
+            cacheCopy.setWrite(source.getCache().getWrite());
+            copy.setCache(cacheCopy);
+        }
+        return copy;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> copyMap(Map<String, Object> source) {
+        if (source == null) {
+            return null;
+        }
+        Map<String, Object> copied = new HashMap<>();
+        for (Map.Entry<String, Object> entry : source.entrySet()) {
+            copied.put(entry.getKey(), deepCopyValue(entry.getValue()));
+        }
+        return copied;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Object deepCopyValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> copy = new HashMap<>();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                copy.put(String.valueOf(entry.getKey()), deepCopyValue(entry.getValue()));
+            }
+            return copy;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> copy = new ArrayList<>();
+            for (Object item : list) {
+                copy.add(deepCopyValue(item));
+            }
+            return copy;
+        }
+        return value;
     }
 }

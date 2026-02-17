@@ -16,7 +16,7 @@ public class MessageV2 {
     @AllArgsConstructor
     public static class TextPart extends PromptPart {
         private String text;
-        private String delta; // Incremental text for streaming
+        private String delta; 
         private Boolean synthetic;
         private Boolean ignored;
         private PartTime time;
@@ -26,9 +26,9 @@ public class MessageV2 {
     @EqualsAndHashCode(callSuper = true)
     public static class ReasoningPart extends PromptPart {
         private String text;
-        private String delta; // Incremental text for streaming
+        private String delta; 
         private PartTime time;
-        private Boolean collapsed; // 控制 Thought 展开/折叠状态
+        private Boolean collapsed; 
     }
 
     @Data
@@ -47,7 +47,7 @@ public class MessageV2 {
         private String mime;
         private String filename;
         private String url;
-        private String content; // 注入后的内容
+        private String content; 
     }
 
     @Data
@@ -97,7 +97,7 @@ public class MessageV2 {
 
     @Data
     public static class ToolState {
-        private String status; // pending, running, completed, error
+        private String status; 
         private Map<String, Object> input;
         private String output;
         private String title;
@@ -120,7 +120,7 @@ public class MessageV2 {
     public static class Assistant {
         private String id;
         private String sessionID;
-        private String role; // assistant
+        private String role; 
         private Long created;
         private String modelID;
         private String providerID;
@@ -175,13 +175,13 @@ public class MessageV2 {
     public static class MessageInfo {
         private String id;
         private String sessionID;
-        private String role; // user, assistant, system
+        private String role; 
         private Long created;
         private String modelID;
         private String providerID;
         private String agent;
         private String parentID;
-        private String mode; // compaction, etc.
+        private String mode; 
         private Boolean summary;
         private TokenUsage tokens;
         private MessageTime time;
@@ -190,7 +190,7 @@ public class MessageV2 {
         private ErrorInfo error;
         private Boolean finish;
         private String finishReason;
-        private User user; // For role='user'
+        private User user; 
     }
 
     @Data
@@ -208,7 +208,7 @@ public class MessageV2 {
     @AllArgsConstructor
     public static class MessageSummary {
         private String title;
-        private List<Object> diffs; // Snapshot.FileDiff
+        private List<Object> diffs; 
     }
 
     @Data

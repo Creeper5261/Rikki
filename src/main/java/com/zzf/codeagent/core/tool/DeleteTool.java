@@ -60,7 +60,7 @@ public class DeleteTool implements Tool {
 
                 String contentOld = Files.readString(filePath);
                 
-                // Use PendingChangesManager
+                
                 String workspaceRoot = ToolPathResolver.resolveWorkspaceRoot(projectContext, ctx);
                 String relativePath = ToolPathResolver.safeRelativePath(workspaceRoot, filePath);
                 
@@ -69,7 +69,7 @@ public class DeleteTool implements Tool {
                         relativePath,
                         "DELETE",
                         contentOld,
-                        null, // newContent is null for DELETE
+                        null, 
                         null, 
                         System.currentTimeMillis(),
                         workspaceRoot,

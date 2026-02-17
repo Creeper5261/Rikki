@@ -22,6 +22,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -67,7 +68,7 @@ public class LLMService {
         private AgentInfo agent;
         private com.zzf.codeagent.provider.ModelInfo model;
         private List<MessageV2.WithParts> messages;
-        private Map<String, Object> tools; // Tool definitions
+        private Map<String, Object> tools; 
         private List<String> systemInstructions;
         private Boolean small;
     }
@@ -96,7 +97,7 @@ public class LLMService {
 
     public CompletableFuture<Void> stream(StreamInput input, StreamCallback callback, BooleanSupplier cancelRequested) {
         BooleanSupplier cancellation = cancelRequested != null ? cancelRequested : () -> false;
-        // 1. Resolve Model
+        
         ModelInfo model = input.model;
         if (model == null && input.agent != null && input.agent.getModel() != null) {
             AgentInfo.AgentModel agentModel = input.agent.getModel();
@@ -106,15 +107,15 @@ public class LLMService {
         String providerID = model != null ? model.getProviderID() : (input.agent != null && input.agent.getModel() != null ? input.agent.getModel().getProviderID() : "openai");
         String modelID = model != null ? model.getId() : (input.agent != null && input.agent.getModel() != null ? input.agent.getModel().getModelID() : "gpt-4o");
 
-        // 2. Resolve Tools (Align with OpenCode resolveTools)
+        
         Map<String, Object> activeTools = resolveTools(input);
 
-        // 3. Prepare Request
+        
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("model", modelID);
         requestBody.put("stream", true);
 
-        // Model Parameters (Align with LLM.ts)
+        
         Double temperature = null;
         Double topP = null;
         Integer topK = null;
@@ -145,7 +146,7 @@ public class LLMService {
             if (!providerOpts.isEmpty()) {
                 requestBody.put("provider_options", providerOpts);
             }
-            // Some options might still need to go to the root for specific providers
+            
             requestBody.putAll(options);
         }
 
@@ -155,7 +156,7 @@ public class LLMService {
         }
         requestBody.put("messages", messages);
         
-        // LiteLLM compatibility
+        
         boolean isLiteLLMProxy = providerID.toLowerCase().contains("litellm");
         if (isLiteLLMProxy && activeTools.isEmpty() && hasToolCalls(input.messages)) {
             activeTools.put("_noop", createNoopTool());
@@ -165,7 +166,7 @@ public class LLMService {
             requestBody.put("tools", convertToOpenAITools(activeTools));
         }
 
-        // 4. Get API Config
+        
         String baseUrl = "https://api.openai.com/v1";
         String apiKey = System.getenv("OPENAI_API_KEY");
         if (apiKey == null || apiKey.isEmpty()) {
@@ -183,7 +184,7 @@ public class LLMService {
             }
         }
         
-        // Fallback for DeepSeek if still default or missing
+        
         if (providerID.equalsIgnoreCase("deepseek")) {
             if (apiKey == null || apiKey.isEmpty() || apiKey.startsWith("${")) {
                 apiKey = deepseekApiKey;
@@ -195,7 +196,17 @@ public class LLMService {
 
         try {
             String jsonBody = objectMapper.writeValueAsString(requestBody);
-            log.info("LLM Request to {}: {}", baseUrl, jsonBody);
+            String requestHash = shortHash(jsonBody);
+            log.info(
+                    "LLM Request provider={} model={} endpoint={} messages={} tools={} bodyBytes={} requestHash={}",
+                    providerID,
+                    modelID,
+                    baseUrl,
+                    messages == null ? 0 : messages.size(),
+                    activeTools == null ? 0 : activeTools.size(),
+                    jsonBody.getBytes(StandardCharsets.UTF_8).length,
+                    requestHash
+            );
             
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(baseUrl + "/chat/completions"))
@@ -224,10 +235,10 @@ public class LLMService {
                             } catch (Exception e) {
                                 log.warn("Failed to read LLM error response body", e);
                             }
-                            log.error("LLM Request failed with status: {}. Response body: {}. Request body: {}",
+                            log.error("LLM Request failed status={} requestHash={} responseBody={}",
                                     response.statusCode(),
-                                    truncateForLog(errorBody, MAX_ERROR_BODY_LENGTH),
-                                    truncateForLog(jsonBody, MAX_ERROR_BODY_LENGTH));
+                                    requestHash,
+                                    truncateForLog(errorBody, MAX_ERROR_BODY_LENGTH));
                             callback.onError(new RuntimeException("LLM Error: " + response.statusCode() + " - " + truncateForLog(errorBody, 300)));
                             return;
                         }
@@ -377,7 +388,7 @@ public class LLMService {
 
     private Map<String, Object> resolveTools(StreamInput input) {
         Map<String, Object> result = new HashMap<>(input.tools != null ? input.tools : Map.of());
-        // Permission check could go here, for now just filter based on user preference
+        
         if (input.user != null && input.user.getTools() != null) {
             result.keySet().removeIf(toolName -> input.user.getTools().get(toolName) == Boolean.FALSE);
         }
@@ -491,6 +502,23 @@ public class LLMService {
         return text.substring(0, Math.max(0, maxLength - 3)) + "...";
     }
 
+    private String shortHash(String text) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(text.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < Math.min(hash.length, 8); i++) {
+                sb.append(String.format("%02x", hash[i]));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(text.hashCode());
+        }
+    }
+
     private List<Map<String, Object>> convertMessages(List<MessageV2.WithParts> messages, List<String> systemInstructions) {
         List<Map<String, Object>> result = new ArrayList<>();
 
@@ -584,5 +612,4 @@ public class LLMService {
     }
 
 }
-
 

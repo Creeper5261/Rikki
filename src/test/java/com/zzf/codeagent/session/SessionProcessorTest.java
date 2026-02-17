@@ -70,7 +70,7 @@ class SessionProcessorTest {
                 .time(new MessageV2.MessageTime())
                 .build();
 
-        // Setup EditTool
+        
         when(projectContext.getDirectory()).thenReturn(tempDir.toString());
         EditTool editTool = new EditTool(projectContext, objectMapper, snapshotService, resourceLoader);
         tools.put("edit", editTool);
@@ -90,8 +90,8 @@ class SessionProcessorTest {
 
     @Test
     void testCorrectToolCallParsingAndExecution() throws Exception {
-        // Simulate LLM streaming output: <edit filePath="test.txt" newString="Hello World" oldString=""></edit>
-        // We need to mock LLMService.stream to trigger callbacks on the processor
+        
+        
         
         doAnswer(invocation -> {
             LLMService.StreamInput input = invocation.getArgument(0);
@@ -100,7 +100,7 @@ class SessionProcessorTest {
             callback.onStart();
             callback.onTextStart("part_1", new HashMap<>());
             
-            // Stream the tool call split into chunks to test robustness
+            
             String chunk1 = "Sure, I will create the file.\n<ed";
             String chunk2 = "it filePath=\"test.txt\" \n";
             String chunk3 = "newString=\"Hello World\" oldString=\"\">\n";
@@ -113,16 +113,16 @@ class SessionProcessorTest {
             
             callback.onTextEnd(new HashMap<>());
             callback.onComplete("stop");
-            return null;
-        }).when(llmService).stream(any(), any());
+            return CompletableFuture.completedFuture(null);
+        }).when(llmService).stream(any(), any(), any());
 
-        // Execute
+        
         CompletableFuture<String> future = processor.process(LLMService.StreamInput.builder().build(), tools);
         String result = future.get(5, TimeUnit.SECONDS);
 
         assertEquals("stop", result);
 
-        // Verify Tool Call was detected
+        
         List<MessageV2.ToolPart> toolParts = new ArrayList<>();
         for (Object part : assistantMessage.getParts()) {
             if (part instanceof MessageV2.ToolPart) {
@@ -140,25 +140,25 @@ class SessionProcessorTest {
         }
         assertEquals("completed", toolPart.getState().getStatus());
         
-        // Verify File Creation
+        
         Path filePath = tempDir.resolve("test.txt");
-        // Wait a bit for async execution (though Future.get should cover it if logic is correct)
-        // In SessionProcessor, tool execution is async but we wait for it? 
-        // No, SessionProcessor.process returns when stream ends. Tools might still be running.
-        // But in our mock, onComplete is called.
-        // Wait for file
+        
+        
+        
+        
+        
         int retries = 10;
         while (!Files.exists(filePath) && retries-- > 0) {
             Thread.sleep(100);
         }
         
-        // PendingChangesManager check
+        
         PendingChangesManager.PendingChange change = PendingChangesManager.getInstance().getPendingChange("test.txt", tempDir.toString(), "session_1").orElse(null);
         assertNotNull(change, "Pending change should exist");
         assertEquals("CREATE", change.type);
         assertEquals("Hello World", change.newContent);
         
-        // Verify Metadata
+        
         Map<String, Object> metadata = toolPart.getState().getMetadata();
         assertNotNull(metadata);
         assertTrue(metadata.containsKey("pending_change"));
@@ -176,16 +176,16 @@ class SessionProcessorTest {
             
             callback.onTextEnd(new HashMap<>());
             callback.onComplete("stop");
-            return null;
-        }).when(llmService).stream(any(), any());
+            return CompletableFuture.completedFuture(null);
+        }).when(llmService).stream(any(), any(), any());
 
         processor.process(LLMService.StreamInput.builder().build(), tools).get(5, TimeUnit.SECONDS);
 
-        // Verify NO Tool Call
+        
         boolean hasTool = assistantMessage.getParts().stream().anyMatch(p -> p instanceof MessageV2.ToolPart);
         assertFalse(hasTool, "Should not interpret code block as tool");
         
-        // Verify Text Content
+        
         MessageV2.TextPart textPart = (MessageV2.TextPart) assistantMessage.getParts().get(0);
         assertTrue(textPart.getText().contains("```java"));
     }

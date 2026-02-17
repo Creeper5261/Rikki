@@ -103,7 +103,7 @@ public class SessionProcessor {
             private Map<String, MessageV2.ReasoningPart> reasoningMap = new HashMap<>();
             private String snapshot;
 
-            // XML Parsing Fields
+            
             private StringBuilder xmlBuffer = new StringBuilder();
             private boolean inXmlTool = false;
             private boolean inThought = false;
@@ -126,13 +126,13 @@ public class SessionProcessor {
                 if (cancelRequested.get()) {
                     return;
                 }
-                // snapshot = snapshotService.track();
+                
                 MessageV2.StepStartPart part = new MessageV2.StepStartPart();
                 part.setId(Identifier.ascending("part"));
                 part.setMessageID(assistantMessage.getId());
                 part.setSessionID(sessionID);
                 part.setType("step-start");
-                // part.setSnapshot(snapshot);
+                
                 sessionService.updatePart(part);
             }
 
@@ -144,7 +144,7 @@ public class SessionProcessor {
                 assistantMessage.setFinish(true);
                 assistantMessage.setFinishReason(normalizeFinishReason(finishReason));
                 
-                // Update assistant message with tokens and cost
+                
                 if (usage != null) {
                     MessageV2.TokenUsage tokenUsage = assistantMessage.getTokens();
                     if (tokenUsage == null) {
@@ -167,13 +167,13 @@ public class SessionProcessor {
                 part.setSessionID(sessionID);
                 part.setType("step-finish");
                 part.setReason(normalizeFinishReason(finishReason));
-                // part.setSnapshot(snapshotService.track());
+                
                 part.setTokens(assistantMessage.getTokens());
                 part.setCost(assistantMessage.getCost());
                 
                 sessionService.updatePart(part);
 
-                // Context overflow check
+                
                 if (isOverflow(usage)) {
                     needsCompaction.set(true);
                 }
@@ -204,20 +204,20 @@ public class SessionProcessor {
                     return;
                 }
                 
-                // Append to buffer for XML parsing
+                
                 xmlBuffer.append(text);
                 
-                // Process buffer
+                
                 processXmlBuffer(metadata);
             }
             
             private void processXmlBuffer(Map<String, Object> metadata) {
                 String content = xmlBuffer.toString();
                 
-                // 1. Handle Thought Tags
+                
                 if (!inXmlTool && !providerReasoningObserved) {
                     if (!inThought) {
-                        // More robust thought tag detection (handles <thought>, <think>, <thinking> or <thought ...>)
+                        
                         java.util.regex.Matcher tm = java.util.regex.Pattern.compile("<(thought|think|thinking)([\\s>])").matcher(content);
                         if (tm.find()) {
                             int thoughtStart = tm.start();
@@ -225,10 +225,10 @@ public class SessionProcessor {
                                 if (thoughtStart > 0) {
                                     handleOriginalTextDelta(content.substring(0, thoughtStart), metadata);
                                 }
-                                currentText = null; // Close text part to ensure correct UI ordering
+                                currentText = null; 
                                 inThought = true;
                                 
-                                // Initialize Reasoning Part
+                                
                                 currentReasoning = new MessageV2.ReasoningPart();
                                 currentReasoning.setId(Identifier.ascending("part"));
                                 currentReasoning.setMessageID(assistantMessage.getId());
@@ -247,15 +247,15 @@ public class SessionProcessor {
                                     processXmlBuffer(metadata);
                                     return;
                                 } else {
-                                    // Tag not closed yet, wait for more data
+                                    
                                     xmlBuffer.delete(0, thoughtStart);
-                                    inThought = false; // Revert, wait for more data
+                                    inThought = false; 
                                     return;
                                 }
                             }
                         }
                     } else {
-                        // Check for closing tags: </thought>, </think> or </thinking>
+                        
                         int thoughtEnd = -1;
                         int thoughtTagLen = 0;
                         
@@ -263,7 +263,7 @@ public class SessionProcessor {
                         int end2 = content.indexOf("</think>");
                         int end3 = content.indexOf("</thinking>");
                         
-                        // Find the earliest closing tag
+                        
                         if (end1 != -1) {
                             thoughtEnd = end1;
                             thoughtTagLen = 10;
@@ -286,7 +286,7 @@ public class SessionProcessor {
                             processXmlBuffer(metadata);
                             return;
                         } else {
-                            // Still in thought, consume all but keep buffer clear
+                            
                             int safeLen = content.length() - 10;
                             if (safeLen > 0) {
                                 handleReasoningDelta(content.substring(0, safeLen), metadata);
@@ -298,27 +298,27 @@ public class SessionProcessor {
                 }
 
                 if (!inXmlTool && !inThought) {
-                    // Dynamic Tool Detection
-                    // Match <tool_name> or <tool_name ...>
+                    
+                    
                     java.util.regex.Matcher m = java.util.regex.Pattern.compile("<([a-zA-Z0-9_]+)[\\s>]").matcher(content);
                     if (m.find()) {
                         String potentialToolName = m.group(1);
-                        boolean isWriteAlias = false; // "write".equals(potentialToolName) && tools != null && !tools.containsKey("write") && tools.containsKey("edit");
+                        boolean isWriteAlias = false; 
                         
-                        // Check if it is a valid tool
+                        
                         if (tools != null && (tools.containsKey(potentialToolName) || isWriteAlias)) {
                             int start = m.start();
                             int tagClose = content.indexOf('>', start);
                             if (tagClose != -1) {
                                 if (start > 0) handleOriginalTextDelta(content.substring(0, start), metadata);
                                 
-                                currentText = null; // Close text part
+                                currentText = null; 
                                 inXmlTool = true;
                                 currentXmlToolName = potentialToolName;
                                 currentXmlToolId = "xml_" + System.currentTimeMillis();
                                 onToolInputStart(currentXmlToolName, currentXmlToolId);
                                 
-                                // Extract and parse attributes
+                                
                                 String tagContent = content.substring(start + 1, tagClose);
                                 Map<String, String> attributes = parseAttributes(tagContent);
                                 if (!attributes.isEmpty()) {
@@ -333,8 +333,8 @@ public class SessionProcessor {
                                 processXmlBuffer(metadata);
                                 return;
                             } else {
-                                // Valid tool matched but tag not closed yet.
-                                // Flush prefix and wait for more data.
+                                
+                                
                                 if (start > 0) {
                                     handleOriginalTextDelta(content.substring(0, start), metadata);
                                     xmlBuffer.delete(0, start);
@@ -351,14 +351,14 @@ public class SessionProcessor {
                     } else if (lastOpen > 0) {
                         handleOriginalTextDelta(content.substring(0, lastOpen), metadata);
                         xmlBuffer.delete(0, lastOpen);
-                    } else { // lastOpen == 0
-                        // Fix for hanging on non-tool tags (e.g. <think>, <br>)
+                    } else { 
+                        
                         if (content.indexOf('>') != -1 || content.indexOf('\n') != -1 || content.length() > 50) {
                             handleOriginalTextDelta(content, metadata);
                             xmlBuffer.setLength(0);
                         }
                     }
-                } else if (inXmlTool) { // Explicit check
+                } else if (inXmlTool) { 
                     String closing = "</" + currentXmlToolName + ">";
                     int idx = content.indexOf(closing);
                     if (idx != -1) {
@@ -369,7 +369,7 @@ public class SessionProcessor {
                         if (part != null) {
                             finalInput.putAll(part.getState().getInput());
                             
-                            // Map xml_content to tool-specific fields
+                            
                             String xmlContent = (String) finalInput.get("xml_content");
                             if (xmlContent != null) {
                                 if ("bash".equals(currentXmlToolName)) {
@@ -456,13 +456,13 @@ public class SessionProcessor {
                     onTextStart(Identifier.ascending("part"), metadata);
                 }
                 
-                // Markdown Fix: Wrap XML tags in code blocks if they are not part of tool execution
-                // This prevents them from being hidden by markdown parsers
+                
+                
                 String processedText = text;
-                // Simple heuristic: if text looks like a tag start but we are not in tool mode,
-                // and we are here, it means it wasn't matched as a valid tool.
-                // But replacing < with &lt; might break code blocks that user actually wants.
-                // So we do nothing for now, but in future this is where we'd inject UI components.
+                
+                
+                
+                
                 
                 currentText.setText(currentText.getText() + processedText);
                 
@@ -494,7 +494,7 @@ public class SessionProcessor {
                 if (cancelRequested.get()) {
                     return;
                 }
-                // Flush remaining buffer
+                
                 if (xmlBuffer.length() > 0) {
                     if (inXmlTool) {
                         updateToolInput(currentXmlToolId, xmlBuffer.toString());
@@ -503,7 +503,7 @@ public class SessionProcessor {
                     }
                 }
                 
-                // Force close unclosed tool
+                
                 if (inXmlTool) {
                     log.warn("Tool {} was not closed properly. Forcing close.", currentXmlToolName);
                     Map<String, Object> finalInput = new HashMap<>();
@@ -529,7 +529,7 @@ public class SessionProcessor {
                     currentText.getTime().setEnd(System.currentTimeMillis());
                     if (metadata != null) currentText.setMetadata(metadata);
                     
-                    // Create a final copy without delta
+                    
                     MessageV2.TextPart update = new MessageV2.TextPart();
                     update.setId(currentText.getId());
                     update.setMessageID(currentText.getMessageID());
@@ -559,7 +559,7 @@ public class SessionProcessor {
                 part.setSessionID(sessionID);
                 part.setType("reasoning");
                 part.setText("");
-                part.setCollapsed(false); // 杈撳嚭鏃跺睍寮€
+                part.setCollapsed(false); 
                 part.setTime(MessageV2.PartTime.builder().start(System.currentTimeMillis()).build());
                 part.setMetadata(metadata);
                 
@@ -581,14 +581,14 @@ public class SessionProcessor {
                 }
                 part.setText(part.getText() + text);
                 
-                // Create a copy for the update to ensure delta is preserved
+                
                 MessageV2.ReasoningPart update = new MessageV2.ReasoningPart();
                 update.setId(part.getId());
                 update.setMessageID(part.getMessageID());
                 update.setSessionID(part.getSessionID());
                 update.setType(part.getType());
                 update.setText(part.getText());
-                update.setDelta(text); // Pass the current delta
+                update.setDelta(text); 
                 update.setTime(part.getTime());
                 update.setCollapsed(part.getCollapsed());
                 update.setMetadata(metadata != null ? metadata : part.getMetadata());
@@ -611,7 +611,7 @@ public class SessionProcessor {
                     }
                     if (metadata != null) part.setMetadata(metadata);
                     
-                    // Create a final copy without delta
+                    
                     MessageV2.ReasoningPart update = new MessageV2.ReasoningPart();
                     update.setId(part.getId());
                     update.setMessageID(part.getMessageID());
@@ -669,7 +669,7 @@ public class SessionProcessor {
                 }
                 
                 part.setTool(name);
-                part.setArgs(safeInput); // Set args so they are available
+                part.setArgs(safeInput); 
                 part.getState().setStatus("running");
                 part.getState().setInput(new HashMap<>(safeInput));
                 part.getState().setTime(new MessageV2.ToolState.TimeInfo());
@@ -678,10 +678,10 @@ public class SessionProcessor {
                 
                 sessionService.updatePart(part);
                 
-                // Doom loop detection
+                
                 checkDoomLoop(name, safeInput);
 
-                // Execute tool
+                
                 Tool tool = tools.get(name);
                 if (tool != null) {
                     String validationError = validateToolInput(tool, safeInput);
@@ -707,7 +707,7 @@ public class SessionProcessor {
                                 }
                             })
                             .permissionAsker(req -> {
-                                // Simplified: auto-approve
+                                
                                 return CompletableFuture.completedFuture(null);
                             })
                             .build();
@@ -717,7 +717,7 @@ public class SessionProcessor {
                     runningToolExecutions.put(callId, execution);
                     runningExecutionTools.put(callId, tool);
                     
-                    // Add timeout (aligned with opencode's intent, although opencode uses AbortSignal)
+                    
                     execution.orTimeout(60, TimeUnit.SECONDS)
                         .thenAccept(res -> {
                             runningToolExecutions.remove(callId);
@@ -951,13 +951,13 @@ public class SessionProcessor {
                 
         if (count >= DOOM_LOOP_THRESHOLD) {
             log.warn("Doom loop detected for tool: {} with input: {}", toolName, input);
-            // In a real implementation, we might throw an exception or mark the session as failed
+            
         }
     }
 
     private boolean isOverflow(Map<String, Object> usage) {
         if (usage == null) return false;
-        // Convert usage map to MessageV2.TokenUsage if needed
+        
         MessageV2.TokenUsage tokenUsage = new MessageV2.TokenUsage();
         if (usage.containsKey("prompt_tokens")) tokenUsage.setInput(asInt(usage.get("prompt_tokens")));
         if (usage.containsKey("completion_tokens")) tokenUsage.setOutput(asInt(usage.get("completion_tokens")));

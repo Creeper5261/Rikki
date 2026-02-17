@@ -82,7 +82,7 @@ public class CodeSearchTool implements Tool {
         String query = args.get("query").asText();
         int tokensNum = args.has("tokensNum") ? args.get("tokensNum").asInt() : DEFAULT_TOKENS_NUM;
 
-        // 1. Permission Check (aligned with opencode ctx.ask)
+        
         Map<String, Object> permissionRequest = new HashMap<>();
         permissionRequest.put("permission", "codesearch");
         permissionRequest.put("patterns", new String[]{query});
@@ -93,7 +93,7 @@ public class CodeSearchTool implements Tool {
         permissionRequest.put("metadata", metadata);
 
         return ctx.ask(permissionRequest).thenCompose(v -> {
-            // 2. Prepare MCP Request
+            
             ObjectNode requestBody = objectMapper.createObjectNode();
             requestBody.put("jsonrpc", "2.0");
             requestBody.put("id", 1);
@@ -119,7 +119,7 @@ public class CodeSearchTool implements Tool {
                             }
 
                             String responseBody = response.body();
-                            // Parse SSE response (simplified for Java version)
+                            
                             String[] lines = responseBody.split("\n");
                             for (String line : lines) {
                                 if (line.startsWith("data: ")) {

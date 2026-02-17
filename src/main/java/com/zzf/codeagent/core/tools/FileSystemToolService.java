@@ -10,6 +10,6 @@ public class FileSystemToolService {
     public FileSystemToolService(Path root) {}
 
     public void setFileChangeListener(Consumer<Path> listener) {
-        // Compatibility shell
+        
     }
 }

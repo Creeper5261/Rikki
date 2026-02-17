@@ -86,7 +86,7 @@ public class WebSearchTool implements Tool {
         String searchType = args.has("type") ? args.get("type").asText() : "auto";
         Integer contextMaxCharacters = args.has("contextMaxCharacters") ? args.get("contextMaxCharacters").asInt() : null;
 
-        // 1. Permission Check
+        
         Map<String, Object> permissionRequest = new HashMap<>();
         permissionRequest.put("permission", "websearch");
         permissionRequest.put("patterns", new String[]{query});
@@ -100,7 +100,7 @@ public class WebSearchTool implements Tool {
         permissionRequest.put("metadata", metadata);
 
         return ctx.ask(permissionRequest).thenCompose(v -> {
-            // 2. Prepare MCP Request
+            
             ObjectNode requestBody = objectMapper.createObjectNode();
             requestBody.put("jsonrpc", "2.0");
             requestBody.put("id", 1);

@@ -55,7 +55,7 @@ public class ShellService {
     public ExecuteResult execute(String command, String gitDir, String workTree) {
         try {
             ProcessBuilder pb = new ProcessBuilder("cmd.exe", "/c", command);
-            // On non-windows, we might want to use sh
+            
             if (!System.getProperty("os.name").toLowerCase().contains("win")) {
                  pb = new ProcessBuilder("/bin/sh", "-c", command);
             }
@@ -111,24 +111,24 @@ public class ShellService {
     private String fallback() {
         boolean isWin = System.getProperty("os.name").toLowerCase().contains("win");
         if (isWin) {
-            // 1. Try to find git and deduce bash
+            
             String gitPath = which("git");
             if (gitPath != null) {
-                // Handle cases where git is in cmd/ or bin/
+                
                 Path gitParent = Paths.get(gitPath).getParent();
-                // If git is in cmd/, parent is Git/cmd, parent.parent is Git. Resolve bin/bash.exe
+                
                 Path bashPath = gitParent.getParent().resolve("bin").resolve("bash.exe");
                 if (bashPath.toFile().exists()) {
                     return bashPath.toString();
                 }
-                // If git is in bin/, parent is Git/bin. Resolve bash.exe directly
+                
                 bashPath = gitParent.resolve("bash.exe");
                 if (bashPath.toFile().exists()) {
                     return bashPath.toString();
                 }
             }
             
-            // 2. Try standard locations
+            
             String[] commonPaths = {
                 "C:\\Program Files\\Git\\bin\\bash.exe",
                 "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
@@ -140,7 +140,7 @@ public class ShellService {
                 }
             }
             
-            // 3. Try finding bash directly
+            
             String bashPath = which("bash");
             if (bashPath != null && new File(bashPath).exists()) {
                 return bashPath;
@@ -171,7 +171,7 @@ public class ShellService {
                 }
             }
         } catch (Exception e) {
-            // ignore
+            
         }
         return null;
     }

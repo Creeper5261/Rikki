@@ -56,7 +56,7 @@ public class ConfigInfo {
     @Data
     public static class AgentConfig {
         private String name;
-        private String mode; // primary, subagent
+        private String mode; 
         private String model;
     }
 }

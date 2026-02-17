@@ -133,8 +133,8 @@ public class ProviderTransform {
     }
 
     public static List<Map<String, Object>> message(List<Map<String, Object>> msgs, ModelInfo model, Map<String, Object> options) {
-        // Simple implementation of normalization
-        // In a real scenario, this would handle Anthropic empty messages, Mistral tool call ID formatting, etc.
+        
+        
         return msgs;
     }
 

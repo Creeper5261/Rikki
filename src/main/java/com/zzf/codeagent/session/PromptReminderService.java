@@ -28,8 +28,8 @@ public class PromptReminderService {
 
         if (userMessage == null) return messages;
 
-        // 对齐 OpenCode 逻辑：在特定条件下向用户消息中注入系统提示词
-        // 这里可以根据 Flag 或 Agent 配置进行扩展
+        
+        
         
         return messages;
     }

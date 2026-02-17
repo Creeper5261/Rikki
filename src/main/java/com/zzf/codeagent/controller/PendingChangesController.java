@@ -9,7 +9,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -28,9 +27,10 @@ public class PendingChangesController {
 
     @Data
     public static class PendingChangeRequest {
-        private String traceId; // sessionId
+        private String traceId; 
         private String workspaceRoot;
         private String path;
+        private String changeId;
         private boolean reject;
     }
 
@@ -41,19 +41,34 @@ public class PendingChangesController {
             String path = request.getPath();
             String workspaceRoot = request.getWorkspaceRoot();
             String sessionId = request.getTraceId();
+            String changeId = request.getChangeId();
             boolean reject = request.isReject();
 
-            Optional<PendingChangesManager.PendingChange> changeOpt = 
-                PendingChangesManager.getInstance().getPendingChange(path, workspaceRoot, sessionId);
-
-            if (changeOpt.isEmpty()) {
-                // Try finding by path only if session/root doesn't match exactly (fallback)
-                changeOpt = PendingChangesManager.getInstance().getPendingChange(path);
+            Optional<PendingChangesManager.PendingChange> changeOpt;
+            if (changeId != null && !changeId.isBlank()) {
+                changeOpt = PendingChangesManager.getInstance().getById(changeId)
+                        .filter(change -> requestScopeMatchesChange(change, workspaceRoot, sessionId));
+            } else {
+                if ((sessionId == null || sessionId.isBlank()) && (workspaceRoot == null || workspaceRoot.isBlank())) {
+                    response.put("status", "error");
+                    response.put("error", "sessionId or workspaceRoot is required");
+                    return response;
+                }
+                if (path == null || path.isBlank()) {
+                    response.put("status", "error");
+                    response.put("error", "path is required when changeId is not provided");
+                    return response;
+                }
+                changeOpt = PendingChangesManager.getInstance().getPendingChange(path, workspaceRoot, sessionId);
             }
 
             if (changeOpt.isEmpty()) {
                 response.put("status", "error");
-                response.put("error", "Pending change not found for path: " + path);
+                if (changeId != null && !changeId.isBlank()) {
+                    response.put("error", "Pending change not found for id: " + changeId);
+                } else {
+                    response.put("error", "Pending change not found for scoped path: " + path);
+                }
                 return response;
             }
 
@@ -65,8 +80,7 @@ public class PendingChangesController {
                 return response;
             }
 
-            // Apply Change
-            applyChangeToDisk(change, workspaceRoot);
+            applyChangeToDisk(change);
             
             PendingChangesManager.getInstance().removeChange(change.id);
             response.put("status", "applied");
@@ -79,19 +93,27 @@ public class PendingChangesController {
         return response;
     }
 
-    private void applyChangeToDisk(PendingChangesManager.PendingChange change, String requestedWorkspaceRoot) throws IOException {
+    private void applyChangeToDisk(PendingChangesManager.PendingChange change) throws IOException {
         String type = change.type;
-        String workspaceRoot = (requestedWorkspaceRoot != null && !requestedWorkspaceRoot.isBlank())
-                ? requestedWorkspaceRoot
-                : change.workspaceRoot;
+        String workspaceRoot = change.workspaceRoot;
         String relativePath = change.path;
+        if (workspaceRoot == null || workspaceRoot.isBlank()) {
+            throw new IllegalArgumentException("Pending change workspaceRoot is required.");
+        }
+        if (relativePath == null || relativePath.isBlank()) {
+            throw new IllegalArgumentException("Pending change path is required.");
+        }
+        Path workspacePath = normalizePath(workspaceRoot).toAbsolutePath().normalize();
         
-        Path targetPath = resolveTargetPath(workspaceRoot, relativePath);
+        Path targetPath = resolveTargetPath(workspacePath, relativePath);
+        if (!targetPath.startsWith(workspacePath)) {
+            throw new IllegalArgumentException("Target path escapes workspace root: " + targetPath);
+        }
         
         if ("DELETE".equalsIgnoreCase(type)) {
             Files.deleteIfExists(targetPath);
         } else {
-            // EDIT or CREATE
+            
             if (targetPath.getParent() != null) {
                 Files.createDirectories(targetPath.getParent());
             }
@@ -100,21 +122,18 @@ public class PendingChangesController {
             if (content != null) {
                 Files.writeString(targetPath, content, StandardCharsets.UTF_8);
             } else if ("CREATE".equalsIgnoreCase(type)) {
-                // Create empty file if content is null
+                
                 Files.createFile(targetPath);
             }
         }
     }
 
-    private Path resolveTargetPath(String workspaceRoot, String path) {
+    private Path resolveTargetPath(Path workspaceRoot, String path) {
         Path parsed = normalizePath(path);
         if (parsed.isAbsolute()) {
-            return parsed.normalize();
+            return parsed.toAbsolutePath().normalize();
         }
-        String base = (workspaceRoot == null || workspaceRoot.isBlank())
-                ? System.getProperty("user.dir")
-                : workspaceRoot;
-        return normalizePath(base).resolve(parsed).normalize();
+        return workspaceRoot.resolve(parsed).normalize();
     }
 
     private Path normalizePath(String rawPath) {
@@ -130,5 +149,39 @@ public class PendingChangesController {
             normalized = drive + ":" + normalized.substring(2);
         }
         return Paths.get(normalized);
+    }
+
+    private String normalizeComparablePath(String rawPath) {
+        if (rawPath == null || rawPath.isBlank()) {
+            return "";
+        }
+        Path normalized = normalizePath(rawPath).toAbsolutePath().normalize();
+        String text = normalized.toString().replace('\\', '/');
+        if (System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("win")) {
+            text = text.toLowerCase(Locale.ROOT);
+        }
+        return text;
+    }
+
+    private boolean requestScopeMatchesChange(
+            PendingChangesManager.PendingChange change,
+            String requestedWorkspaceRoot,
+            String requestedSessionId
+    ) {
+        if (change == null) {
+            return false;
+        }
+        if (requestedSessionId == null || requestedSessionId.isBlank()) {
+            return false;
+        }
+        if (change.sessionId == null || !requestedSessionId.equals(change.sessionId)) {
+            return false;
+        }
+        if (requestedWorkspaceRoot != null && !requestedWorkspaceRoot.isBlank()) {
+            String expected = normalizeComparablePath(requestedWorkspaceRoot);
+            String actual = normalizeComparablePath(change.workspaceRoot);
+            return expected.equals(actual);
+        }
+        return true;
     }
 }

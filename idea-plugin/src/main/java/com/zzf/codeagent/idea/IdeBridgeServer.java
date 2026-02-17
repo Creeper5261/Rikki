@@ -147,7 +147,7 @@ public final class IdeBridgeServer implements Disposable {
                 try {
                     server.stop(0);
                 } catch (Exception ignored) {
-                    // no-op
+                    
                 }
                 server = null;
             }

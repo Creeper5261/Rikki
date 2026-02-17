@@ -54,7 +54,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -93,20 +92,29 @@ final class ChatPanel {
     private static final ExecutorService IDE_CONTEXT_EXECUTOR = Executors.newCachedThreadPool(r -> new Thread(r, "rikki-ide-context"));
     
     private final JSplitPane splitPane;
-    private final JPanel leftPanel; // Session List
-    private final JPanel rightPanel; // Chat Area
+    private final JPanel leftPanel; 
+    private final JPanel rightPanel; 
     private final JPanel conversationList;
     private final JBScrollPane scrollPane;
     private final JBTextArea input;
     private final JButton send;
+    private final ChatInputController inputController;
     private final JLabel status;
     private final JLabel chatTitleLabel;
     private final JButton jumpToBottomButton;
+    private final ConversationScrollController scrollController;
     private final ThinkingStatusPanel thinkingStatusPanel;
     private final HttpClient http;
+    private final ChatStopClient stopClient;
     private final Project project;
     private final String workspaceRoot;
     private final String workspaceName;
+    private final WorkspacePathResolver workspacePathResolver;
+    private final ChatSseAdapter sseAdapter;
+    private final MessageStateStore<AgentMessageUI> assistantUiStateStore;
+    private final ToolEventStateMachine toolEventStateMachine;
+    private final ChatToolMetaExtractor toolMetaExtractor;
+    private final ToolActivityRenderer toolActivityRenderer;
     private String currentSessionId;
     private final ChatHistoryService history;
     private final IdeBridgeServer ideBridgeServer;
@@ -115,7 +123,7 @@ final class ChatPanel {
     private EventStream eventStream;
     private final DiffService diffService;
     private final boolean pendingWorkflowEnabled;
-    // private JPanel pendingChangesPanel; // Removed in favor of popup
+    
     private JPanel pendingChangesList;
     private JButton commitAllButton;
     private JButton pendingChangesToggle;
@@ -127,23 +135,20 @@ final class ChatPanel {
     private volatile boolean awaitingUserApproval;
     private volatile String runtimeBusyMessage = "Ready";
     private volatile String approvalBusyMessage = "Awaiting your approval...";
-    private volatile boolean followStreamingOutput = true;
-    private volatile boolean suppressScrollTracking;
-    private volatile long lastManualScrollAtMs;
 
     ChatPanel(Project project) {
         this.project = project;
         this.pendingWorkflowEnabled = false;
         
-        // --- Left Panel (Sessions) ---
+        
         this.leftPanel = new JPanel(new BorderLayout());
         this.leftPanel.setBorder(JBUI.Borders.empty(5));
         this.leftPanel.setMinimumSize(new Dimension(150, 0));
         
-        // --- Right Panel (Chat) ---
+        
         this.rightPanel = new JPanel(new BorderLayout(8, 8));
         
-        // Conversation Area
+        
         this.conversationList = new JPanel();
         this.conversationList.setLayout(new BoxLayout(this.conversationList, BoxLayout.Y_AXIS));
         this.conversationList.setBorder(JBUI.Borders.empty(10));
@@ -157,12 +162,27 @@ final class ChatPanel {
         this.scrollPane.getVerticalScrollBar().setUnitIncrement(JBUI.scale(18));
         
         this.input = new JBTextArea(4, 10);
-        this.send = createRoundSendButton();
+        this.send = ChatInputController.createRoundSendButton();
+        this.inputController = new ChatInputController(
+                this.input,
+                this.send,
+                () -> runtimeBusy,
+                () -> awaitingUserApproval,
+                this::requestStopCurrentRun,
+                this::sendMessage
+        );
         this.status = new JLabel("Ready");
         this.chatTitleLabel = new JLabel("New Chat");
         this.jumpToBottomButton = createJumpToBottomButton();
+        this.scrollController = new ConversationScrollController(
+                project,
+                this.scrollPane,
+                this.jumpToBottomButton,
+                AUTO_SCROLL_BOTTOM_THRESHOLD_PX,
+                MANUAL_SCROLL_WINDOW_MS
+        );
         this.jumpToBottomButton.addActionListener(e -> {
-            followStreamingOutput = true;
+            scrollController.enableFollow();
             scrollToBottom();
         });
         JLayeredPane chatCenterPanel = new JLayeredPane() {
@@ -182,6 +202,8 @@ final class ChatPanel {
         chatCenterPanel.add(this.jumpToBottomButton, JLayeredPane.PALETTE_LAYER);
         this.jumpToBottomButton.setVisible(false);
         this.http = HttpClient.newBuilder().connectTimeout(CONNECT_TIMEOUT).build();
+        String streamEndpoint = System.getProperty("codeagent.endpoint", DEFAULT_AGENT_ENDPOINT + "/stream");
+        this.stopClient = new ChatStopClient(this.http, this.mapper, streamEndpoint, DEFAULT_AGENT_ENDPOINT + "/stop");
         this.diffService = new DiffService(project, http, mapper);
         
         this.workspaceRoot = resolveWorkspaceRoot(project);
@@ -194,6 +216,16 @@ final class ChatPanel {
             this.eventStream = new EventStream(mapper, "ui-session", this.workspaceRoot);
         }
         this.workspaceName = resolveWorkspaceName(workspaceRoot);
+        this.workspacePathResolver = new WorkspacePathResolver(this.workspaceRoot);
+        this.sseAdapter = new ChatSseAdapter();
+        this.assistantUiStateStore = new MessageStateStore<>(
+                PENDING_ASSISTANT_KEY,
+                this::createPendingAssistantUi,
+                this::createAssistantUiForMessageId
+        );
+        this.toolEventStateMachine = new ToolEventStateMachine();
+        this.toolMetaExtractor = new ChatToolMetaExtractor();
+        this.toolActivityRenderer = new ToolActivityRenderer();
         this.history = project.getService(ChatHistoryService.class);
         this.ideBridgeServer = project.getService(IdeBridgeServer.class);
         if (this.ideBridgeServer != null) {
@@ -285,11 +317,11 @@ final class ChatPanel {
         rightPanel.add(chatCenterPanel, BorderLayout.CENTER);
         rightPanel.add(bottom, BorderLayout.SOUTH);
         
-        // Split Pane
+        
         this.splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel);
         this.splitPane.setDividerSize(5);
         this.splitPane.setDividerLocation(200);
-        this.leftPanel.setVisible(false); // Hidden by default
+        this.leftPanel.setVisible(false); 
 
         toggleSessions.addActionListener(e -> {
             boolean visible = leftPanel.isVisible();
@@ -301,14 +333,8 @@ final class ChatPanel {
             splitPane.setDividerLocation(visible ? 0 : 200);
         });
 
-        send.addActionListener(e -> {
-            if (runtimeBusy || awaitingUserApproval) {
-                requestStopCurrentRun();
-                return;
-            }
-            onSend();
-        });
-        updateSendButtonMode(false);
+        inputController.bindActions();
+        inputController.updateSendButtonMode(false);
         installConversationScrollBehavior();
         
         initSessionList();
@@ -320,7 +346,7 @@ final class ChatPanel {
         return splitPane;
     }
 
-    // --- Session Management ---
+    
     
     private void initSessionList() {
         refreshSessionList();
@@ -635,57 +661,6 @@ final class ChatPanel {
         return button;
     }
 
-    private JButton createRoundSendButton() {
-        JButton button = new JButton("\u2191") {
-            @Override
-            protected void paintComponent(Graphics g) {
-                Graphics2D g2 = (Graphics2D) g.create();
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                int size = Math.min(getWidth(), getHeight()) - 1;
-                int x = (getWidth() - size) / 2;
-                int y = (getHeight() - size) / 2;
-                boolean stopMode = Boolean.TRUE.equals(getClientProperty("mode.stop"));
-                Color fill = stopMode
-                        ? new JBColor(new Color(0xF0D4D4), new Color(0x6A3434))
-                        : new JBColor(new Color(0xD9DEE6), new Color(0xD7DCE4));
-                Color border = stopMode
-                        ? new JBColor(new Color(0xD6A3A3), new Color(0x9A4A4A))
-                        : new JBColor(new Color(0xC7D0DD), new Color(0xAAB4C1));
-                g2.setColor(fill);
-                g2.fillOval(x, y, size, size);
-                g2.setColor(border);
-                g2.drawOval(x, y, size, size);
-                g2.dispose();
-                super.paintComponent(g);
-            }
-        };
-        button.setPreferredSize(new Dimension(38, 38));
-        button.setMinimumSize(new Dimension(38, 38));
-        button.setMaximumSize(new Dimension(38, 38));
-        button.setHorizontalAlignment(SwingConstants.CENTER);
-        button.setVerticalAlignment(SwingConstants.CENTER);
-        button.setBorderPainted(false);
-        button.setContentAreaFilled(false);
-        button.setOpaque(false);
-        button.setFocusable(false);
-        button.setMargin(JBUI.emptyInsets());
-        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        button.setForeground(new JBColor(new Color(0x20252E), new Color(0x20252E)));
-        button.setFont(button.getFont().deriveFont(Font.BOLD, 16f));
-        button.setToolTipText("Send");
-        return button;
-    }
-
-    private void updateSendButtonMode(boolean stopMode) {
-        send.putClientProperty("mode.stop", stopMode);
-        send.setText(stopMode ? "\u25A0" : "\u2191");
-        send.setToolTipText(stopMode ? "Stop generation" : "Send");
-        send.setForeground(stopMode
-                ? new JBColor(new Color(0x7A1E1E), new Color(0xF5DCDC))
-                : new JBColor(new Color(0x20252E), new Color(0x20252E)));
-        send.repaint();
-    }
-
     private void requestStopCurrentRun() {
         if (!(runtimeBusy || awaitingUserApproval)) {
             return;
@@ -697,43 +672,14 @@ final class ChatPanel {
         if (sessionId.isBlank()) {
             return;
         }
-        updateSendButtonMode(true);
+        inputController.updateSendButtonMode(true);
         setBusy(true, "Stopping...");
         new Thread(() -> {
-            try {
-                ObjectNode reqNode = mapper.createObjectNode();
-                reqNode.put("sessionID", sessionId);
-                reqNode.put("reason", "Stopped by user");
-                String endpoint = resolveStopEndpoint();
-                HttpRequest req = HttpRequest.newBuilder(URI.create(endpoint))
-                        .timeout(Duration.ofSeconds(20))
-                        .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(reqNode), StandardCharsets.UTF_8))
-                        .build();
-                http.send(req, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            } catch (Exception e) {
-                logger.warn("chat.stop_failed", e);
+            boolean ok = stopClient.requestStop(sessionId, "Stopped by user");
+            if (!ok) {
                 setBusy(false, "Ready");
             }
         }, "rikki-stop-request").start();
-    }
-
-    private String resolveStopEndpoint() {
-        String endpointUrl = System.getProperty("codeagent.endpoint", DEFAULT_AGENT_ENDPOINT + "/stream");
-        String normalized = endpointUrl == null ? "" : endpointUrl.trim();
-        if (normalized.isBlank()) {
-            return DEFAULT_AGENT_ENDPOINT + "/stop";
-        }
-        if (normalized.endsWith("/stream")) {
-            return normalized.substring(0, normalized.length() - "/stream".length()) + "/stop";
-        }
-        if (normalized.endsWith("/chat")) {
-            return normalized + "/stop";
-        }
-        if (normalized.endsWith("/")) {
-            return normalized + "stop";
-        }
-        return normalized + "/stop";
     }
 
     private String formatSessionAge(long createdAt) {
@@ -755,35 +701,28 @@ final class ChatPanel {
         return "now";
     }
 
-    // --- Chat Logic ---
-
-    private void onSend() {
-        String text = input.getText();
-        if (text == null || text.trim().isEmpty()) return;
-        input.setText("");
-        sendMessage(text);
-    }
+    
 
     private void sendMessage(String text) {
         if (text == null || text.trim().isEmpty()) return;
-        followStreamingOutput = true;
+        scrollController.enableFollow();
         ChatHistoryService.ChatSession session = history.getCurrentSession();
         if (session != null && session.backendSessionId != null && !session.backendSessionId.isEmpty()) {
             currentSessionId = session.backendSessionId;
         }
         
-        // 1. Add User Message
+        
         addMessage(true, text, null, false);
         history.appendLine("You: " + text.trim());
         persistUserUiMessage(text.trim());
-        refreshSessionList(); // Update title if new
+        refreshSessionList(); 
         refreshChatHeaderTitle();
         
-        // 2. Add Agent Placeholder
+        
         AgentMessageUI placeholderUi = addMessage(false, null, null, true);
         placeholderUi.historyUiMessageId = createAssistantUiPlaceholder();
         
-        // 3. Call Agent Stream
+        
         callAgentStream(text.trim(), placeholderUi);
     }
     
@@ -793,8 +732,9 @@ final class ChatPanel {
         setBusy(true, "Agent is thinking...");
         
         new Thread(() -> {
-            Map<String, AgentMessageUI> assistantUiByMessageID = new LinkedHashMap<>();
-            assistantUiByMessageID.put(PENDING_ASSISTANT_KEY, initialUi);
+            ConversationStateManager<AgentMessageUI> assistantState =
+                    new ConversationStateManager<>(PENDING_ASSISTANT_KEY, assistantUiStateStore);
+            assistantState.bindPending(initialUi);
             try {
                 String sdkAlignNote = autoAlignProjectSdkIfNeeded();
                 if (!sdkAlignNote.isBlank()) {
@@ -848,26 +788,8 @@ final class ChatPanel {
                         .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
                         .build();
                 
-                final String[] currentEvent = {null};
-                final StringBuilder currentData = new StringBuilder();
-                
-                http.send(req, HttpResponse.BodyHandlers.ofLines()).body().forEach(line -> {
-                    if (line.startsWith("event:")) {
-                        currentEvent[0] = line.substring(6).trim();
-                    } else if (line.startsWith("data:")) {
-                        if (currentData.length() > 0) {
-                            currentData.append('\n');
-                        }
-                        currentData.append(line.substring(5).trim());
-                    } else if (line.isBlank()) {
-                        dispatchSseEvent(currentEvent[0], currentData.toString(), assistantUiByMessageID);
-                        currentEvent[0] = null;
-                        currentData.setLength(0);
-                    }
-                });
-                if (currentData.length() > 0) {
-                    dispatchSseEvent(currentEvent[0], currentData.toString(), assistantUiByMessageID);
-                }
+                List<String> sseLines = http.send(req, HttpResponse.BodyHandlers.ofLines()).body().toList();
+                sseAdapter.consume(sseLines, (event, data) -> dispatchSseEvent(event, data, assistantState));
                 
             } catch (Exception e) {
                 logger.warn("stream_error", e);
@@ -875,20 +797,20 @@ final class ChatPanel {
                     if (initialUi.answerPane != null) initialUi.answerPane.setText("Error: " + e.getMessage());
                 });
             } finally {
-                finalizePendingAssistantResponses(assistantUiByMessageID);
+                finalizePendingAssistantResponses(assistantState);
                 setBusy(false, "Ready");
             }
         }).start();
     }
 
-    private void dispatchSseEvent(String event, String data, Map<String, AgentMessageUI> assistantUiByMessageID) {
+    private void dispatchSseEvent(String event, String data, ConversationStateManager<AgentMessageUI> assistantState) {
         if (data == null || data.isEmpty()) {
             return;
         }
-        handleSseEvent(event, data, assistantUiByMessageID);
+        handleSseEvent(event, data, assistantState);
     }
     
-    private void handleSseEvent(String event, String data, Map<String, AgentMessageUI> assistantUiByMessageID) {
+    private void handleSseEvent(String event, String data, ConversationStateManager<AgentMessageUI> assistantState) {
         SwingUtilities.invokeLater(() -> {
             try {
                 if ("session".equals(event)) {
@@ -903,7 +825,7 @@ final class ChatPanel {
                     if (delta.isEmpty()) {
                         return;
                     }
-                    AgentMessageUI ui = resolveAssistantUi(assistantUiByMessageID, extractMessageID(node));
+                    AgentMessageUI ui = resolveAssistantUi(assistantState, extractMessageID(node));
                     ui.thinkingOpen = true;
 
                     if (ui.thoughtPanel == null && ui.messagePanel != null) {
@@ -919,7 +841,7 @@ final class ChatPanel {
                     }
                 } else if ("thought_end".equals(event)) {
                     JsonNode node = mapper.readTree(data);
-                    AgentMessageUI ui = findAssistantUi(assistantUiByMessageID, extractMessageID(node));
+                    AgentMessageUI ui = findAssistantUi(assistantState, extractMessageID(node));
                     if (ui == null) {
                         return;
                     }
@@ -932,7 +854,7 @@ final class ChatPanel {
                     if (delta.isEmpty()) {
                         return;
                     }
-                    AgentMessageUI ui = resolveAssistantUi(assistantUiByMessageID, extractMessageID(node));
+                    AgentMessageUI ui = resolveAssistantUi(assistantState, extractMessageID(node));
                     appendAssistantText(ui, delta);
                 } else if ("message_part".equals(event)) {
                     JsonNode node = mapper.readTree(data);
@@ -941,7 +863,7 @@ final class ChatPanel {
                     if (delta.isBlank() && snapshotText.isBlank()) {
                         return;
                     }
-                    AgentMessageUI ui = resolveAssistantUi(assistantUiByMessageID, extractMessageID(node));
+                    AgentMessageUI ui = resolveAssistantUi(assistantState, extractMessageID(node));
                     if (!delta.isBlank()) {
                         appendAssistantText(ui, delta);
                     } else {
@@ -954,16 +876,16 @@ final class ChatPanel {
                             JsonNode changeNode = node.get("change");
                             PendingChangesManager.PendingChange change = mapper.treeToValue(changeNode, PendingChangesManager.PendingChange.class);
                             if (change != null) {
-                                recordSessionChange(lastAssistantUi(assistantUiByMessageID), change);
+                                recordSessionChange(lastAssistantUi(assistantState), change);
                             }
                         } catch (Exception ignored) {
-                            // ignore malformed artifact payload
+                            
                         }
                     }
                 } else if ("finish".equals(event)) {
                     JsonNode node = mapper.readTree(data);
                     String messageID = extractMessageID(node);
-                    AgentMessageUI ui = resolveAssistantUi(assistantUiByMessageID, messageID);
+                    AgentMessageUI ui = resolveAssistantUi(assistantState, messageID);
                     ui.messageID = firstNonBlank(messageID, ui.messageID);
                     ui.thinkingOpen = false;
                     flushDeferredAnswer(ui);
@@ -1001,7 +923,7 @@ final class ChatPanel {
                     scrollToBottomSmart();
                     setBusy(false, "Ready");
                 } else if ("error".equals(event)) {
-                    AgentMessageUI ui = lastAssistantUi(assistantUiByMessageID);
+                    AgentMessageUI ui = lastAssistantUi(assistantState);
                     if (ui.answerPane != null) {
                         ui.answerPane.setText(ui.answerPane.getText() + "<br><span style='color:red'>Error: " + data + "</span>");
                     }
@@ -1010,11 +932,11 @@ final class ChatPanel {
                     persistAssistantUiSnapshot(ui);
                 } else if ("tool_call".equals(event) || "tool_result".equals(event)) {
                     JsonNode node = mapper.readTree(data);
-                    handleToolEvent(event, node, assistantUiByMessageID);
+                    handleToolEvent(event, node, assistantState);
                 } else if ("status".equals(event)) {
                     handleStatusEvent(data);
                 } else if ("heartbeat".equals(event)) {
-                    // Keep-alive event, no UI update required.
+                    
                 }
             } catch (Exception e) {
                 logger.warn("sse_event_parse_error event=" + event, e);
@@ -1022,53 +944,33 @@ final class ChatPanel {
         });
     }
 
-    private AgentMessageUI resolveAssistantUi(Map<String, AgentMessageUI> assistantUiByMessageID, String messageID) {
-        String normalizedID = messageID != null ? messageID.trim() : "";
-        if (!normalizedID.isEmpty()) {
-            AgentMessageUI existing = assistantUiByMessageID.get(normalizedID);
-            if (existing != null) {
-                existing.messageID = normalizedID;
-                return existing;
-            }
-            AgentMessageUI pending = assistantUiByMessageID.remove(PENDING_ASSISTANT_KEY);
-            if (pending != null) {
-                pending.messageID = normalizedID;
-                assistantUiByMessageID.put(normalizedID, pending);
-                return pending;
-            }
-            AgentMessageUI created = addMessage(false, null, null, true);
-            created.messageID = normalizedID;
-            created.historyUiMessageId = createAssistantUiPlaceholder();
-            assistantUiByMessageID.put(normalizedID, created);
-            return created;
+    private AgentMessageUI resolveAssistantUi(ConversationStateManager<AgentMessageUI> assistantState, String messageID) {
+        AgentMessageUI ui = assistantState.resolve(messageID);
+        String normalized = assistantUiStateStore.normalize(messageID);
+        if (!normalized.isBlank()) {
+            ui.messageID = normalized;
         }
+        return ui;
+    }
 
-        AgentMessageUI pending = assistantUiByMessageID.get(PENDING_ASSISTANT_KEY);
-        if (pending != null) {
-            return pending;
-        }
+    private AgentMessageUI findAssistantUi(ConversationStateManager<AgentMessageUI> assistantState, String messageID) {
+        return assistantState.find(messageID);
+    }
+
+    private AgentMessageUI lastAssistantUi(ConversationStateManager<AgentMessageUI> assistantState) {
+        return assistantState.last();
+    }
+
+    private AgentMessageUI createPendingAssistantUi() {
         AgentMessageUI created = addMessage(false, null, null, true);
         created.historyUiMessageId = createAssistantUiPlaceholder();
-        assistantUiByMessageID.put(PENDING_ASSISTANT_KEY, created);
         return created;
     }
 
-    private AgentMessageUI findAssistantUi(Map<String, AgentMessageUI> assistantUiByMessageID, String messageID) {
-        String normalizedID = messageID != null ? messageID.trim() : "";
-        if (!normalizedID.isEmpty()) {
-            return assistantUiByMessageID.get(normalizedID);
-        }
-        return assistantUiByMessageID.get(PENDING_ASSISTANT_KEY);
-    }
-
-    private AgentMessageUI lastAssistantUi(Map<String, AgentMessageUI> assistantUiByMessageID) {
-        AgentMessageUI last = null;
-        for (Map.Entry<String, AgentMessageUI> entry : assistantUiByMessageID.entrySet()) {
-            if (!PENDING_ASSISTANT_KEY.equals(entry.getKey())) {
-                last = entry.getValue();
-            }
-        }
-        return last != null ? last : resolveAssistantUi(assistantUiByMessageID, null);
+    private AgentMessageUI createAssistantUiForMessageId(String messageId) {
+        AgentMessageUI created = createPendingAssistantUi();
+        created.messageID = messageId;
+        return created;
     }
 
     private String extractMessageID(JsonNode node) {
@@ -1079,7 +981,7 @@ final class ChatPanel {
         return null;
     }
 
-    private void handleToolEvent(String event, JsonNode node, Map<String, AgentMessageUI> assistantUiByMessageID) {
+    private void handleToolEvent(String event, JsonNode node, ConversationStateManager<AgentMessageUI> assistantState) {
         String messageID = null;
         if (node != null) {
             if (node.has("messageID")) {
@@ -1089,8 +991,8 @@ final class ChatPanel {
             }
         }
         AgentMessageUI ui = (messageID == null || messageID.isBlank())
-                ? lastAssistantUi(assistantUiByMessageID)
-                : resolveAssistantUi(assistantUiByMessageID, messageID);
+                ? lastAssistantUi(assistantState)
+                : resolveAssistantUi(assistantState, messageID);
         if (ui == null) {
             return;
         }
@@ -1105,89 +1007,8 @@ final class ChatPanel {
             state.lastArgs = argsNode;
             updateReadTargetFromArgs(state, argsNode);
         }
-
-        if ("tool_call".equals(event)) {
-            if (state.startedAtMs <= 0L) {
-                state.startedAtMs = System.currentTimeMillis();
-            }
-            String intent = argsNode.path("description").asText("");
-            if (!intent.isBlank()) {
-                state.intentSummary = trimForUi(intent, 160);
-            }
-            state.inputSummary = summarizeArgs(argsNode);
-            state.commandSummary = summarizeCommand(argsNode, state.inputSummary);
-            state.inputDetails = summarizeInputDetails(argsNode);
-            String status = node.path("state").asText("");
-            if (status == null || status.isBlank()) {
-                status = "running";
-            }
-            state.status = status;
-            JsonNode metaNode = extractToolMeta(node);
-            state.workspaceApplied = state.workspaceApplied || isWorkspaceApplied(metaNode);
-            PendingCommandInfo pendingCommand = extractPendingCommand(metaNode);
-            if (pendingCommand != null) {
-                state.pendingCommand = pendingCommand;
-                state.commandDecisionRequired = !state.commandDecisionMade;
-                state.status = "awaiting_approval";
-            }
-            PendingChangesManager.PendingChange pendingChange = extractPendingChange(metaNode);
-            if (pendingChange == null) {
-                pendingChange = synthesizePendingChangeFromArgs(state.tool, argsNode);
-            }
-            if (pendingChange != null) {
-                state.pendingChange = pendingChange;
-                state.deleteDecisionRequired = isDeleteTool(state.tool)
-                        && "DELETE".equalsIgnoreCase(pendingChange.type)
-                        && !state.deleteDecisionMade;
-            }
-            state.exitCode = null;
-        } else if ("tool_result".equals(event)) {
-            String status = node.path("state").asText("completed");
-            state.status = (status == null || status.isBlank()) ? "completed" : status;
-            if (state.startedAtMs <= 0L) {
-                state.startedAtMs = System.currentTimeMillis();
-            }
-            if (state.finishedAtMs <= 0L) {
-                state.finishedAtMs = System.currentTimeMillis();
-            }
-            state.durationMs = Math.max(0L, state.finishedAtMs - state.startedAtMs);
-            state.error = node.path("error").asText("");
-            state.title = node.path("title").asText("");
-            if ((state.intentSummary == null || state.intentSummary.isBlank()) && state.title != null && !state.title.isBlank()) {
-                state.intentSummary = trimForUi(state.title, 160);
-            }
-            JsonNode metaNode = extractToolMeta(node);
-            state.workspaceApplied = state.workspaceApplied || isWorkspaceApplied(metaNode);
-            state.output = extractToolOutput(node, metaNode);
-            state.exitCode = extractExitCode(node, metaNode);
-            PendingChangesManager.PendingChange pendingChange = extractPendingChange(metaNode);
-            if (pendingChange == null) {
-                pendingChange = synthesizePendingChangeFromArgs(state.tool, state.lastArgs);
-            }
-            if (pendingChange != null) {
-                state.pendingChange = pendingChange;
-                state.deleteDecisionRequired = isDeleteTool(state.tool)
-                        && "DELETE".equalsIgnoreCase(pendingChange.type)
-                        && !state.deleteDecisionMade;
-            }
-            PendingCommandInfo pendingCommand = extractPendingCommand(metaNode);
-            if (pendingCommand != null) {
-                state.pendingCommand = pendingCommand;
-                state.commandDecisionRequired = !state.commandDecisionMade;
-                state.status = "awaiting_approval";
-                if (state.commandSummary == null || state.commandSummary.isBlank()) {
-                    state.commandSummary = trimForUi(pendingCommand.command, 180);
-                }
-                if ((state.intentSummary == null || state.intentSummary.isBlank()) && pendingCommand.description != null && !pendingCommand.description.isBlank()) {
-                    state.intentSummary = trimForUi(pendingCommand.description, 160);
-                }
-            }
-            if ("completed".equalsIgnoreCase(state.status)
-                    && state.pendingChange != null
-                    && !state.deleteDecisionRequired) {
-                applyAndRecordSessionChange(ui, state, state.pendingChange);
-            }
-        }
+        JsonNode metaNode = extractToolMeta(node);
+        toolEventStateMachine.apply(event, node, ui, state, argsNode, metaNode);
 
         ensureToolRenderType(ui, state, classifyToolRenderType(state.tool, state.lastArgs, state.pendingChange));
         refreshToolActivityUi(state);
@@ -1211,115 +1032,19 @@ final class ChatPanel {
     }
 
     private ToolActivityState resolveToolActivity(AgentMessageUI ui, String callID, String toolName) {
-        ToolActivityState existing = ui.toolActivities.get(callID);
-        if (existing != null) {
-            if (toolName != null && !toolName.isBlank()) {
-                existing.tool = toolName;
-            }
-            ensureToolRenderType(ui, existing, classifyToolRenderType(existing.tool, existing.lastArgs, existing.pendingChange));
-            return existing;
-        }
-
-        JPanel activityPanel = ensureActivityContainer(ui);
-        ToolActivityState created = new ToolActivityState();
-        created.callID = callID;
-        created.tool = toolName;
-        created.hostPanel = new JPanel();
-        created.hostPanel.setLayout(new BoxLayout(created.hostPanel, BoxLayout.Y_AXIS));
-        created.hostPanel.setOpaque(false);
-
-        ui.toolActivities.put(callID, created);
-        activityPanel.add(created.hostPanel);
-        activityPanel.add(Box.createVerticalStrut(4));
-        ensureToolRenderType(ui, created, classifyToolRenderType(toolName, null, null));
-        ui.messagePanel.revalidate();
-        ui.messagePanel.repaint();
-        return created;
+        return toolActivityRenderer.resolveToolActivity(ui, callID, toolName);
     }
 
     private void ensureToolRenderType(AgentMessageUI ui, ToolActivityState state, ToolRenderType desiredType) {
-        if (state == null) {
-            return;
-        }
-        ToolRenderType resolved = desiredType == null ? ToolRenderType.GENERIC : desiredType;
-        boolean rebuild = state.renderType != resolved || state.hostPanel == null;
-        state.renderType = resolved;
-        if (state.hostPanel == null && ui != null) {
-            JPanel activityPanel = ensureActivityContainer(ui);
-            state.hostPanel = new JPanel();
-            state.hostPanel.setLayout(new BoxLayout(state.hostPanel, BoxLayout.Y_AXIS));
-            state.hostPanel.setOpaque(false);
-            activityPanel.add(state.hostPanel);
-            activityPanel.add(Box.createVerticalStrut(4));
-            rebuild = true;
-        }
-        if (rebuild) {
-            rebuildToolHostContent(state);
-            return;
-        }
-        if ((state.renderType == ToolRenderType.GENERIC || state.renderType == ToolRenderType.TERMINAL) && state.panel == null) {
-            rebuildToolHostContent(state);
-            return;
-        }
-        if ((state.renderType == ToolRenderType.MODIFICATION || state.renderType == ToolRenderType.READ) && state.inlineRow == null) {
-            rebuildToolHostContent(state);
-            return;
-        }
-        refreshInlineDiffCard(state);
+        toolActivityRenderer.ensureToolRenderType(ui, state, desiredType);
     }
 
     private void rebuildToolHostContent(ToolActivityState state) {
-        if (state == null || state.hostPanel == null) {
-            return;
-        }
-        state.hostPanel.removeAll();
-        state.panel = null;
-        state.inlineRow = null;
-        state.inlineDiffCard = null;
-
-        if (state.renderType == ToolRenderType.GENERIC || state.renderType == ToolRenderType.TERMINAL) {
-            ActivityCommandPanel commandPanel = new ActivityCommandPanel("Ran " + (state.tool == null ? "tool" : state.tool));
-            commandPanel.setDetails("");
-            state.panel = commandPanel;
-            state.hostPanel.add(commandPanel);
-        } else {
-            String marker = state.renderType == ToolRenderType.MODIFICATION ? "[edit]" : "[read]";
-            InlineToolRowPanel row = new InlineToolRowPanel(marker);
-            state.inlineRow = row;
-            state.hostPanel.add(row);
-        }
-        refreshInlineDiffCard(state);
-        state.hostPanel.revalidate();
-        state.hostPanel.repaint();
+        toolActivityRenderer.rebuildToolHostContent(state);
     }
 
     private void refreshInlineDiffCard(ToolActivityState state) {
-        if (state == null || state.hostPanel == null) {
-            return;
-        }
-        if (state.inlineDiffCard != null) {
-            state.hostPanel.remove(state.inlineDiffCard);
-            state.inlineDiffCard = null;
-        }
-        if (state.renderType != ToolRenderType.MODIFICATION) {
-            state.hostPanel.revalidate();
-            state.hostPanel.repaint();
-            return;
-        }
-        PendingChangesManager.PendingChange change = state.pendingChange;
-        if (change == null || "DELETE".equalsIgnoreCase(change.type)) {
-            state.hostPanel.revalidate();
-            state.hostPanel.repaint();
-            return;
-        }
-        JPanel wrapper = new JPanel(new BorderLayout());
-        wrapper.setOpaque(false);
-        wrapper.setBorder(JBUI.Borders.emptyTop(4));
-        wrapper.add(createChangeRowCard(change, "Show Diff"), BorderLayout.CENTER);
-        state.inlineDiffCard = wrapper;
-        state.hostPanel.add(wrapper);
-        state.hostPanel.revalidate();
-        state.hostPanel.repaint();
+        toolActivityRenderer.refreshInlineDiffCard(state);
     }
 
     private ToolRenderType classifyToolRenderType(
@@ -1346,27 +1071,7 @@ final class ChatPanel {
     }
 
     private JPanel ensureActivityContainer(AgentMessageUI ui) {
-        if (ui.activityPanel != null) {
-            return ui.activityPanel;
-        }
-        JPanel panel = new JPanel();
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setBorder(JBUI.Borders.empty(1, 0, 1, 0));
-        panel.setOpaque(false);
-
-        int insertIndex = ui.messagePanel.getComponentCount();
-        if (ui.answerPane != null) {
-            int answerIndex = ui.messagePanel.getComponentZOrder(ui.answerPane);
-            if (answerIndex >= 0) {
-                insertIndex = Math.min(ui.messagePanel.getComponentCount(), answerIndex + 1);
-            }
-        }
-        ui.messagePanel.add(panel, insertIndex);
-        ui.messagePanel.add(Box.createVerticalStrut(2), insertIndex + 1);
-        ui.activityPanel = panel;
-        ui.messagePanel.revalidate();
-        ui.messagePanel.repaint();
-        return panel;
+        return toolActivityRenderer.ensureActivityContainer(ui);
     }
 
     private String extractToolCallID(JsonNode node) {
@@ -1400,207 +1105,286 @@ final class ChatPanel {
     }
 
     private JsonNode extractToolMeta(JsonNode node) {
-        if (node == null || node.isMissingNode()) {
-            return null;
-        }
-        JsonNode metaNode = node.get("meta");
-        if (metaNode == null || metaNode.isMissingNode() || metaNode.isNull()) {
-            metaNode = node.get("metadata");
-        }
-        if (metaNode == null || metaNode.isMissingNode() || metaNode.isNull()) {
-            return null;
-        }
-        return metaNode;
+        return toolMetaExtractor.extractToolMeta(node);
     }
 
     private PendingChangesManager.PendingChange extractPendingChange(JsonNode metaNode) {
-        if (metaNode == null || metaNode.isMissingNode() || metaNode.isNull()) {
-            return null;
-        }
-        JsonNode changeNode = metaNode.get("pending_change");
-        if (changeNode == null || changeNode.isMissingNode() || changeNode.isNull()) {
-            return null;
-        }
-        String id = firstNonBlank(
-                changeNode.path("id").asText(""),
-                java.util.UUID.randomUUID().toString()
-        );
-        String path = firstNonBlank(
-                changeNode.path("path").asText(""),
-                changeNode.path("filePath").asText("")
-        );
-        if (path.isBlank()) {
-            return null;
-        }
-        String type = firstNonBlank(changeNode.path("type").asText(""), "EDIT");
-        String oldContent = firstNonBlank(
-                changeNode.path("oldContent").asText(""),
-                changeNode.path("old_content").asText("")
-        );
-        String newContent = firstNonBlank(
-                changeNode.path("newContent").asText(""),
-                changeNode.path("new_content").asText("")
-        );
-        String preview = firstNonBlank(changeNode.path("preview").asText(""), null);
-        long ts = changeNode.path("timestamp").asLong(System.currentTimeMillis());
-        String wsRoot = firstNonBlank(
-                changeNode.path("workspaceRoot").asText(""),
-                changeNode.path("workspace_root").asText(""),
-                workspaceRoot
-        );
-        String sid = firstNonBlank(
-                changeNode.path("sessionId").asText(""),
-                changeNode.path("session_id").asText(""),
-                currentSessionId
-        );
-        return new PendingChangesManager.PendingChange(id, path, type, oldContent, newContent, preview, ts, wsRoot, sid);
+        return toolMetaExtractor.extractPendingChange(metaNode, workspaceRoot, currentSessionId);
     }
 
     private PendingChangesManager.PendingChange synthesizePendingChangeFromArgs(String toolName, JsonNode argsNode) {
-        if (!isModificationTool(toolName) || isDeleteTool(toolName) || argsNode == null || !argsNode.isObject()) {
-            return null;
-        }
-        String path = firstNonBlank(
-                argsNode.path("filePath").asText(""),
-                argsNode.path("path").asText("")
-        );
-        if (path.isBlank()) {
-            return null;
-        }
-        String newContent = firstNonBlank(
-                argsNode.path("content").asText(""),
-                argsNode.path("newContent").asText(""),
-                argsNode.path("new_content").asText("")
-        );
-        String oldContent = firstNonBlank(
-                argsNode.path("oldContent").asText(""),
-                argsNode.path("old_content").asText("")
-        );
-        String type = "EDIT";
-        if (!newContent.isBlank() && oldContent.isBlank()) {
-            type = "CREATE";
-        } else if (newContent.isBlank() && !oldContent.isBlank()) {
-            type = "DELETE";
-        }
-        return new PendingChangesManager.PendingChange(
-                java.util.UUID.randomUUID().toString(),
-                path,
-                type,
-                oldContent,
-                newContent,
-                "",
-                System.currentTimeMillis(),
+        return toolMetaExtractor.synthesizePendingChangeFromArgs(
+                toolName,
+                argsNode,
                 workspaceRoot,
-                currentSessionId
+                currentSessionId,
+                this::isModificationTool,
+                this::isDeleteTool
         );
     }
 
     private PendingCommandInfo extractPendingCommand(JsonNode metaNode) {
-        if (metaNode == null || metaNode.isMissingNode() || metaNode.isNull()) {
-            return null;
-        }
-        JsonNode cmdNode = metaNode.get("pending_command");
-        if (cmdNode == null || cmdNode.isMissingNode() || cmdNode.isNull()) {
-            return null;
-        }
-        String id = firstNonBlank(cmdNode.path("id").asText(""));
-        String command = firstNonBlank(cmdNode.path("command").asText(""));
-        if (id.isBlank() || command.isBlank()) {
-            return null;
-        }
-        PendingCommandInfo info = new PendingCommandInfo();
-        info.id = id;
-        info.command = command;
-        info.description = firstNonBlank(cmdNode.path("description").asText(""));
-        info.workdir = firstNonBlank(cmdNode.path("workdir").asText(""));
-        info.workspaceRoot = firstNonBlank(cmdNode.path("workspaceRoot").asText(""), workspaceRoot);
-        info.sessionId = firstNonBlank(cmdNode.path("sessionId").asText(""), currentSessionId);
-        info.timeoutMs = cmdNode.path("timeoutMs").asLong(60000L);
-        info.riskLevel = firstNonBlank(cmdNode.path("riskLevel").asText(""), "high");
-        info.commandFamily = firstNonBlank(cmdNode.path("commandFamily").asText(""), extractCommandFamily(info.command));
-        info.strictApproval = cmdNode.path("strictApproval").asBoolean(false);
-        info.riskCategory = firstNonBlank(cmdNode.path("riskCategory").asText(""), info.strictApproval ? "destructive" : "restricted");
-        JsonNode reasonsNode = cmdNode.path("reasons");
-        if (reasonsNode.isArray()) {
-            reasonsNode.forEach(n -> {
-                String reason = n.asText("");
-                if (!reason.isBlank()) {
-                    info.reasons.add(reason);
-                }
-            });
-        }
-        if (!info.strictApproval) {
-            String category = info.riskCategory == null ? "" : info.riskCategory.toLowerCase();
-            info.strictApproval = "destructive".equals(category) || "strict".equals(category);
-            if (!info.strictApproval && !info.reasons.isEmpty()) {
-                for (String reason : info.reasons) {
-                    String normalizedReason = reason == null ? "" : reason.toLowerCase();
-                    if (normalizedReason.contains("delete")
-                            || normalizedReason.contains("move/rename")
-                            || normalizedReason.contains("destructive")) {
-                        info.strictApproval = true;
-                        break;
-                    }
-                }
-            }
-        }
-        return info;
+        return toolMetaExtractor.extractPendingCommand(metaNode, workspaceRoot, currentSessionId);
     }
 
     private String extractMetaOutput(JsonNode metaNode) {
-        if (metaNode == null || metaNode.isMissingNode() || metaNode.isNull()) {
-            return "";
+        return toolMetaExtractor.extractMetaOutput(metaNode, this::prettyJson);
+    }
+
+    private class ToolEventStateMachine {
+        void apply(
+                String event,
+                JsonNode node,
+                AgentMessageUI ui,
+                ToolActivityState state,
+                JsonNode argsNode,
+                JsonNode metaNode
+        ) {
+            if ("tool_call".equals(event)) {
+                applyToolCall(node, state, argsNode, metaNode);
+                return;
+            }
+            if ("tool_result".equals(event)) {
+                applyToolResult(node, ui, state, argsNode, metaNode);
+            }
         }
-        JsonNode outputNode = metaNode.get("output");
-        if (outputNode != null && !outputNode.isMissingNode() && !outputNode.isNull()) {
-            if (outputNode.isTextual()) {
-                String text = outputNode.asText("");
-                if (!text.isBlank()) {
-                    return text;
+
+        private void applyToolCall(JsonNode node, ToolActivityState state, JsonNode argsNode, JsonNode metaNode) {
+            if (state.startedAtMs <= 0L) {
+                state.startedAtMs = System.currentTimeMillis();
+            }
+            String intent = argsNode.path("description").asText("");
+            if (!intent.isBlank()) {
+                state.intentSummary = trimForUi(intent, 160);
+            }
+            state.inputSummary = summarizeArgs(argsNode);
+            state.commandSummary = summarizeCommand(argsNode, state.inputSummary);
+            state.inputDetails = summarizeInputDetails(argsNode);
+            String status = node.path("state").asText("");
+            if (status == null || status.isBlank()) {
+                status = "running";
+            }
+            state.status = status;
+            state.workspaceApplied = state.workspaceApplied || isWorkspaceApplied(metaNode);
+
+            applyPendingCommand(state, extractPendingCommand(metaNode), false);
+            PendingChangesManager.PendingChange pendingChange = extractPendingChange(metaNode);
+            if (pendingChange == null) {
+                pendingChange = synthesizePendingChangeFromArgs(state.tool, argsNode);
+            }
+            applyPendingChange(state, pendingChange);
+            state.exitCode = null;
+        }
+
+        private void applyToolResult(
+                JsonNode node,
+                AgentMessageUI ui,
+                ToolActivityState state,
+                JsonNode argsNode,
+                JsonNode metaNode
+        ) {
+            String status = node.path("state").asText("completed");
+            state.status = (status == null || status.isBlank()) ? "completed" : status;
+            if (state.startedAtMs <= 0L) {
+                state.startedAtMs = System.currentTimeMillis();
+            }
+            if (state.finishedAtMs <= 0L) {
+                state.finishedAtMs = System.currentTimeMillis();
+            }
+            state.durationMs = Math.max(0L, state.finishedAtMs - state.startedAtMs);
+            state.error = node.path("error").asText("");
+            state.title = node.path("title").asText("");
+            if ((state.intentSummary == null || state.intentSummary.isBlank()) && state.title != null && !state.title.isBlank()) {
+                state.intentSummary = trimForUi(state.title, 160);
+            }
+            state.workspaceApplied = state.workspaceApplied || isWorkspaceApplied(metaNode);
+            state.output = extractToolOutput(node, metaNode);
+            state.exitCode = extractExitCode(node, metaNode);
+
+            PendingChangesManager.PendingChange pendingChange = extractPendingChange(metaNode);
+            if (pendingChange == null) {
+                JsonNode sourceArgs = (state.lastArgs != null && !state.lastArgs.isNull()) ? state.lastArgs : argsNode;
+                pendingChange = synthesizePendingChangeFromArgs(state.tool, sourceArgs);
+            }
+            applyPendingChange(state, pendingChange);
+            applyPendingCommand(state, extractPendingCommand(metaNode), true);
+
+            if ("completed".equalsIgnoreCase(state.status)
+                    && state.pendingChange != null
+                    && !state.deleteDecisionRequired) {
+                applyAndRecordSessionChange(ui, state, state.pendingChange);
+            }
+        }
+
+        private void applyPendingCommand(
+                ToolActivityState state,
+                PendingCommandInfo pendingCommand,
+                boolean fillIntentFromDescription
+        ) {
+            if (pendingCommand == null) {
+                return;
+            }
+            state.pendingCommand = pendingCommand;
+            state.commandDecisionRequired = !state.commandDecisionMade;
+            state.status = "awaiting_approval";
+            if (state.commandSummary == null || state.commandSummary.isBlank()) {
+                state.commandSummary = trimForUi(pendingCommand.command, 180);
+            }
+            if (fillIntentFromDescription
+                    && (state.intentSummary == null || state.intentSummary.isBlank())
+                    && pendingCommand.description != null
+                    && !pendingCommand.description.isBlank()) {
+                state.intentSummary = trimForUi(pendingCommand.description, 160);
+            }
+        }
+
+        private void applyPendingChange(ToolActivityState state, PendingChangesManager.PendingChange pendingChange) {
+            if (pendingChange == null) {
+                return;
+            }
+            state.pendingChange = pendingChange;
+            state.deleteDecisionRequired = isDeleteTool(state.tool)
+                    && "DELETE".equalsIgnoreCase(pendingChange.type)
+                    && !state.deleteDecisionMade;
+        }
+    }
+
+    private class ToolActivityRenderer {
+        ToolActivityState resolveToolActivity(AgentMessageUI ui, String callID, String toolName) {
+            ToolActivityState existing = ui.toolActivities.get(callID);
+            if (existing != null) {
+                if (toolName != null && !toolName.isBlank()) {
+                    existing.tool = toolName;
                 }
+                ensureToolRenderType(ui, existing, classifyToolRenderType(existing.tool, existing.lastArgs, existing.pendingChange));
+                return existing;
+            }
+
+            JPanel activityPanel = ensureActivityContainer(ui);
+            ToolActivityState created = new ToolActivityState();
+            created.callID = callID;
+            created.tool = toolName;
+            created.hostPanel = new JPanel();
+            created.hostPanel.setLayout(new BoxLayout(created.hostPanel, BoxLayout.Y_AXIS));
+            created.hostPanel.setOpaque(false);
+
+            ui.toolActivities.put(callID, created);
+            activityPanel.add(created.hostPanel);
+            activityPanel.add(Box.createVerticalStrut(4));
+            ensureToolRenderType(ui, created, classifyToolRenderType(toolName, null, null));
+            ui.messagePanel.revalidate();
+            ui.messagePanel.repaint();
+            return created;
+        }
+
+        void ensureToolRenderType(AgentMessageUI ui, ToolActivityState state, ToolRenderType desiredType) {
+            if (state == null) {
+                return;
+            }
+            ToolRenderType resolved = desiredType == null ? ToolRenderType.GENERIC : desiredType;
+            boolean rebuild = state.renderType != resolved || state.hostPanel == null;
+            state.renderType = resolved;
+            if (state.hostPanel == null && ui != null) {
+                JPanel activityPanel = ensureActivityContainer(ui);
+                state.hostPanel = new JPanel();
+                state.hostPanel.setLayout(new BoxLayout(state.hostPanel, BoxLayout.Y_AXIS));
+                state.hostPanel.setOpaque(false);
+                activityPanel.add(state.hostPanel);
+                activityPanel.add(Box.createVerticalStrut(4));
+                rebuild = true;
+            }
+            if (rebuild) {
+                rebuildToolHostContent(state);
+                return;
+            }
+            if ((state.renderType == ToolRenderType.GENERIC || state.renderType == ToolRenderType.TERMINAL) && state.panel == null) {
+                rebuildToolHostContent(state);
+                return;
+            }
+            if ((state.renderType == ToolRenderType.MODIFICATION || state.renderType == ToolRenderType.READ) && state.inlineRow == null) {
+                rebuildToolHostContent(state);
+                return;
+            }
+            refreshInlineDiffCard(state);
+        }
+
+        void rebuildToolHostContent(ToolActivityState state) {
+            if (state == null || state.hostPanel == null) {
+                return;
+            }
+            state.hostPanel.removeAll();
+            state.panel = null;
+            state.inlineRow = null;
+            state.inlineDiffCard = null;
+
+            if (state.renderType == ToolRenderType.GENERIC || state.renderType == ToolRenderType.TERMINAL) {
+                ActivityCommandPanel commandPanel = new ActivityCommandPanel("Ran " + (state.tool == null ? "tool" : state.tool));
+                commandPanel.setDetails("");
+                state.panel = commandPanel;
+                state.hostPanel.add(commandPanel);
             } else {
-                String json = prettyJson(outputNode);
-                if (!json.isBlank() && !"{}".equals(json) && !"[]".equals(json)) {
-                    return json;
+                String marker = state.renderType == ToolRenderType.MODIFICATION ? "[edit]" : "[read]";
+                InlineToolRowPanel row = new InlineToolRowPanel(marker);
+                state.inlineRow = row;
+                state.hostPanel.add(row);
+            }
+            refreshInlineDiffCard(state);
+            state.hostPanel.revalidate();
+            state.hostPanel.repaint();
+        }
+
+        void refreshInlineDiffCard(ToolActivityState state) {
+            if (state == null || state.hostPanel == null) {
+                return;
+            }
+            if (state.inlineDiffCard != null) {
+                state.hostPanel.remove(state.inlineDiffCard);
+                state.inlineDiffCard = null;
+            }
+            if (state.renderType != ToolRenderType.MODIFICATION) {
+                state.hostPanel.revalidate();
+                state.hostPanel.repaint();
+                return;
+            }
+            PendingChangesManager.PendingChange change = state.pendingChange;
+            if (change == null || "DELETE".equalsIgnoreCase(change.type)) {
+                state.hostPanel.revalidate();
+                state.hostPanel.repaint();
+                return;
+            }
+            JPanel wrapper = new JPanel(new BorderLayout());
+            wrapper.setOpaque(false);
+            wrapper.setBorder(JBUI.Borders.emptyTop(4));
+            wrapper.add(createChangeRowCard(change, "Show Diff"), BorderLayout.CENTER);
+            state.inlineDiffCard = wrapper;
+            state.hostPanel.add(wrapper);
+            state.hostPanel.revalidate();
+            state.hostPanel.repaint();
+        }
+
+        JPanel ensureActivityContainer(AgentMessageUI ui) {
+            if (ui.activityPanel != null) {
+                return ui.activityPanel;
+            }
+            JPanel panel = new JPanel();
+            panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+            panel.setBorder(JBUI.Borders.empty(1, 0, 1, 0));
+            panel.setOpaque(false);
+
+            int insertIndex = ui.messagePanel.getComponentCount();
+            if (ui.answerPane != null) {
+                int answerIndex = ui.messagePanel.getComponentZOrder(ui.answerPane);
+                if (answerIndex >= 0) {
+                    insertIndex = Math.min(ui.messagePanel.getComponentCount(), answerIndex + 1);
                 }
             }
+            ui.messagePanel.add(panel, insertIndex);
+            ui.messagePanel.add(Box.createVerticalStrut(2), insertIndex + 1);
+            ui.activityPanel = panel;
+            ui.messagePanel.revalidate();
+            ui.messagePanel.repaint();
+            return panel;
         }
-        JsonNode stdoutNode = metaNode.get("stdout");
-        if (stdoutNode != null && stdoutNode.isTextual()) {
-            String text = stdoutNode.asText("");
-            if (!text.isBlank()) {
-                return text;
-            }
-        }
-        JsonNode stderrNode = metaNode.get("stderr");
-        if (stderrNode != null && stderrNode.isTextual()) {
-            String text = stderrNode.asText("");
-            if (!text.isBlank()) {
-                return text;
-            }
-        }
-        JsonNode resultNode = metaNode.get("result");
-        if (resultNode != null && !resultNode.isMissingNode() && !resultNode.isNull()) {
-            if (resultNode.isTextual()) {
-                String text = resultNode.asText("");
-                if (!text.isBlank()) {
-                    return text;
-                }
-            } else {
-                String json = prettyJson(resultNode);
-                if (!json.isBlank() && !"{}".equals(json) && !"[]".equals(json)) {
-                    return json;
-                }
-            }
-        }
-        JsonNode contentNode = metaNode.get("content");
-        if (contentNode != null && contentNode.isTextual()) {
-            String text = contentNode.asText("");
-            if (!text.isBlank()) {
-                return text;
-            }
-        }
-        return "";
     }
 
     private String firstNonBlank(String... values) {
@@ -1653,51 +1437,6 @@ final class ChatPanel {
             }
         }
         return normalized;
-    }
-
-    private String extractCommandFamily(String command) {
-        if (command == null || command.isBlank()) {
-            return "";
-        }
-        Matcher matcher = Pattern.compile("\"([^\"]+)\"|'([^']+)'|(\\S+)").matcher(command);
-        while (matcher.find()) {
-            String token = firstNonBlank(matcher.group(1), matcher.group(2), matcher.group(3));
-            String normalized = normalizeCommandFamilyToken(token);
-            if (normalized.isBlank()) {
-                continue;
-            }
-            if ("sudo".equals(normalized)
-                    || "env".equals(normalized)
-                    || "bash".equals(normalized)
-                    || "sh".equals(normalized)
-                    || "zsh".equals(normalized)
-                    || "fish".equals(normalized)
-                    || "cmd".equals(normalized)
-                    || "powershell".equals(normalized)
-                    || "pwsh".equals(normalized)) {
-                continue;
-            }
-            if (normalized.startsWith("-")) {
-                continue;
-            }
-            return normalized;
-        }
-        return "";
-    }
-
-    private String normalizeCommandFamilyToken(String token) {
-        if (token == null || token.isBlank()) {
-            return "";
-        }
-        String normalized = token.trim().replace("\"", "").replace("'", "").toLowerCase();
-        int slash = Math.max(normalized.lastIndexOf('/'), normalized.lastIndexOf('\\'));
-        if (slash >= 0 && slash + 1 < normalized.length()) {
-            normalized = normalized.substring(slash + 1);
-        }
-        if (normalized.endsWith(".exe") || normalized.endsWith(".cmd") || normalized.endsWith(".bat")) {
-            normalized = normalized.substring(0, normalized.length() - 4);
-        }
-        return normalized.replaceAll("[^a-z0-9._-]", "");
     }
 
     private boolean isWorkspaceApplied(JsonNode metaNode) {
@@ -2487,14 +2226,7 @@ final class ChatPanel {
     }
 
     private String resolveTerminalTypeLabel(String toolName) {
-        if (toolName == null || toolName.isBlank()) {
-            return "Terminal";
-        }
-        String normalized = toolName.trim().toLowerCase();
-        if ("bash".equals(normalized) || normalized.contains("shell")) {
-            return "Bash";
-        }
-        return Character.toUpperCase(normalized.charAt(0)) + normalized.substring(1);
+        return ToolActivityFormatter.resolveTerminalTypeLabel(toolName);
     }
 
     private String resolveTerminalSummary(ToolActivityState state) {
@@ -2529,52 +2261,7 @@ final class ChatPanel {
         if (command.isBlank()) {
             return "";
         }
-        String compact = compactCommandForPreview(command);
-        return trimForUi(compact, Math.max(40, maxLen));
-    }
-
-    private String compactCommandForPreview(String command) {
-        if (command == null || command.isBlank()) {
-            return "";
-        }
-        String compact = command.replace("\r", " ").replace("\n", " ").replaceAll("\\s+", " ").trim();
-        String lower = compact.toLowerCase();
-
-        int commandIdx = lower.indexOf(" -command ");
-        if (commandIdx > 0) {
-            String tail = compact.substring(commandIdx + " -command ".length()).trim();
-            String unwrapped = unwrapSingleLayerQuotes(tail);
-            if (!unwrapped.isBlank()) {
-                compact = unwrapped;
-                lower = compact.toLowerCase();
-            }
-        }
-
-        if (lower.startsWith("bash -lc ")) {
-            String tail = compact.substring("bash -lc ".length()).trim();
-            String unwrapped = unwrapSingleLayerQuotes(tail);
-            if (!unwrapped.isBlank()) {
-                compact = unwrapped;
-            }
-        } else if (lower.startsWith("cmd.exe /c ")) {
-            compact = compact.substring("cmd.exe /c ".length()).trim();
-        }
-        return compact;
-    }
-
-    private String unwrapSingleLayerQuotes(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        String text = raw.trim();
-        if (text.length() >= 2) {
-            char first = text.charAt(0);
-            char last = text.charAt(text.length() - 1);
-            if ((first == '\'' && last == '\'') || (first == '"' && last == '"')) {
-                return text.substring(1, text.length() - 1).trim();
-            }
-        }
-        return text;
+        return ToolActivityFormatter.toCommandPreview(command, maxLen);
     }
 
     private void navigateToReadTarget(ToolActivityState state) {
@@ -2596,65 +2283,19 @@ final class ChatPanel {
     }
 
     private boolean isNavigableFileTarget(String rawPath) {
-        Path target = resolveWorkspaceFilePath(rawPath);
-        return target != null && Files.isRegularFile(target);
+        return workspacePathResolver.isNavigableFileTarget(rawPath);
     }
 
     private Path resolveWorkspaceFilePath(String rawPath) {
-        if (rawPath == null || rawPath.isBlank()) {
-            return null;
-        }
-        Path parsed = parseAnyPath(rawPath);
-        if (parsed == null) {
-            return null;
-        }
-        Path root = parseAnyPath(workspaceRoot);
-        Path absolute = parsed;
-        if (!absolute.isAbsolute()) {
-            if (root == null) {
-                return null;
-            }
-            absolute = root.resolve(parsed);
-        }
-        absolute = absolute.toAbsolutePath().normalize();
-        if (root != null) {
-            Path normalizedRoot = root.toAbsolutePath().normalize();
-            if (!isUnderWorkspaceRoot(absolute, normalizedRoot)) {
-                return null;
-            }
-        }
-        if (Files.isDirectory(absolute)) {
-            return null;
-        }
-        return absolute;
+        return workspacePathResolver.resolveWorkspaceFilePath(rawPath);
     }
 
     private Path parseAnyPath(String rawPath) {
-        if (rawPath == null || rawPath.isBlank()) {
-            return null;
-        }
-        String normalized = rawPath.trim();
-        if (normalized.matches("^/[a-zA-Z]/.*")) {
-            char drive = Character.toUpperCase(normalized.charAt(1));
-            normalized = drive + ":" + normalized.substring(2);
-        }
-        try {
-            return Path.of(normalized);
-        } catch (InvalidPathException ignored) {
-            return null;
-        }
+        return workspacePathResolver.parseAnyPath(rawPath);
     }
 
     private boolean isUnderWorkspaceRoot(Path target, Path root) {
-        if (target == null || root == null) {
-            return false;
-        }
-        if (target.startsWith(root)) {
-            return true;
-        }
-        String targetText = target.toString().replace('\\', '/').toLowerCase();
-        String rootText = root.toString().replace('\\', '/').toLowerCase();
-        return targetText.startsWith(rootText);
+        return workspacePathResolver.isUnderWorkspaceRoot(target, root);
     }
 
     private void appendPlainBlock(StringBuilder sb, String raw) {
@@ -2683,206 +2324,35 @@ final class ChatPanel {
     }
 
     private String summarizeInputDetails(JsonNode argsNode) {
-        if (argsNode == null || argsNode.isMissingNode() || argsNode.isNull()) {
-            return "";
-        }
-        if (argsNode.isTextual()) {
-            return argsNode.asText("");
-        }
-        if (!argsNode.isObject()) {
-            return trimForUi(argsNode.toString(), 600);
-        }
-        StringBuilder sb = new StringBuilder();
-        java.util.Iterator<Map.Entry<String, JsonNode>> fields = argsNode.fields();
-        int count = 0;
-        while (fields.hasNext()) {
-            Map.Entry<String, JsonNode> field = fields.next();
-            JsonNode valueNode = field.getValue();
-            String value;
-            if (valueNode == null || valueNode.isNull()) {
-                value = "null";
-            } else if (valueNode.isTextual()) {
-                value = valueNode.asText("");
-            } else if (valueNode.isNumber() || valueNode.isBoolean()) {
-                value = valueNode.asText();
-            } else if (valueNode.isArray()) {
-                value = "[array size=" + valueNode.size() + "]";
-            } else if (valueNode.isObject()) {
-                value = "{object}";
-            } else {
-                value = valueNode.toString();
-            }
-            if (sb.length() > 0) {
-                sb.append('\n');
-            }
-            sb.append(field.getKey()).append(": ").append(trimForUi(value, 260));
-            count++;
-            if (count >= 12 && fields.hasNext()) {
-                sb.append("\n... (more args omitted)");
-                break;
-            }
-        }
-        return sb.toString();
+        return ChatUiTextFormatter.summarizeInputDetails(argsNode);
     }
 
     private String summarizeArgs(JsonNode argsNode) {
-        if (argsNode == null || argsNode.isMissingNode() || argsNode.isNull()) {
-            return "";
-        }
-        if (argsNode.isObject()) {
-            String command = argsNode.path("command").asText("");
-            if (!command.isBlank()) {
-                return trimForUi(command, 140);
-            }
-            String description = argsNode.path("description").asText("");
-            if (!description.isBlank()) {
-                return trimForUi(description, 140);
-            }
-            String filePath = argsNode.path("filePath").asText(argsNode.path("path").asText(""));
-            if (!filePath.isBlank()) {
-                return trimForUi(filePath, 140);
-            }
-        }
-        if (!argsNode.isObject()) {
-            return trimForUi(argsNode.asText(""), 160);
-        }
-        StringBuilder sb = new StringBuilder();
-        int count = 0;
-        java.util.Iterator<Map.Entry<String, JsonNode>> fields = argsNode.fields();
-        while (fields.hasNext() && count < 3) {
-            Map.Entry<String, JsonNode> field = fields.next();
-            if (sb.length() > 0) {
-                sb.append(", ");
-            }
-            String value = field.getValue() == null ? "" : field.getValue().asText(field.getValue().toString());
-            sb.append(field.getKey()).append("=").append(trimForUi(value, 40));
-            count++;
-        }
-        return sb.toString();
+        return ChatUiTextFormatter.summarizeArgs(argsNode);
     }
 
     private String trimForUi(String text, int maxLen) {
-        if (text == null) {
-            return "";
-        }
-        String normalized = text.replace('\n', ' ').replace('\r', ' ').trim();
-        if (normalized.length() <= maxLen) {
-            return normalized;
-        }
-        return normalized.substring(0, Math.max(0, maxLen - 3)).trim() + "...";
+        return ChatUiTextFormatter.trimForUi(text, maxLen);
     }
 
     private String summarizeCommand(JsonNode argsNode, String fallback) {
-        if (argsNode == null || argsNode.isMissingNode() || argsNode.isNull()) {
-            return fallback == null ? "" : fallback;
-        }
-        if (argsNode.isObject()) {
-            String command = argsNode.path("command").asText(argsNode.path("cmd").asText(""));
-            if (!command.isBlank()) {
-                return trimForUi(command, 180);
-            }
-
-            String filePath = argsNode.path("filePath").asText(argsNode.path("path").asText(""));
-            String pattern = argsNode.path("pattern").asText("");
-            if (!filePath.isBlank() && !pattern.isBlank()) {
-                return trimForUi(filePath + " pattern=" + pattern, 180);
-            }
-            if (!filePath.isBlank()) {
-                return trimForUi(filePath, 180);
-            }
-
-            String query = argsNode.path("query").asText("");
-            if (!query.isBlank()) {
-                return trimForUi(query, 180);
-            }
-        }
-        if (!argsNode.isObject()) {
-            String text = argsNode.asText("");
-            if (!text.isBlank()) {
-                return trimForUi(text, 180);
-            }
-        }
-        return fallback == null ? "" : trimForUi(fallback, 180);
+        return ChatUiTextFormatter.summarizeCommand(argsNode, fallback);
     }
 
     private String extractBashCommand(JsonNode argsNode, String fallback) {
-        if (argsNode != null && argsNode.isObject()) {
-            String command = firstNonBlank(
-                    argsNode.path("command").asText(""),
-                    argsNode.path("cmd").asText("")
-            );
-            if (!command.isBlank()) {
-                return command;
-            }
-        }
-        return firstNonBlank(fallback);
+        return ChatUiTextFormatter.extractBashCommand(argsNode, fallback);
     }
 
     private Color colorForToolStatus(String status) {
-        String normalized = status == null ? "" : status.trim().toLowerCase();
-        if ("completed".equals(normalized) || "success".equals(normalized) || "ok".equals(normalized)) {
-            return new JBColor(new Color(0x1B5E20), new Color(0x81C784));
-        }
-        if ("awaiting_approval".equals(normalized) || "needs_approval".equals(normalized)) {
-            return new JBColor(new Color(0xF57F17), new Color(0xFFE082));
-        }
-        if ("rejected".equals(normalized) || "skipped".equals(normalized)) {
-            return new JBColor(new Color(0xE65100), new Color(0xFFCC80));
-        }
-        if ("error".equals(normalized) || "failed".equals(normalized) || "failure".equals(normalized)) {
-            return new JBColor(new Color(0xB71C1C), new Color(0xEF9A9A));
-        }
-        if ("running".equals(normalized) || "pending".equals(normalized) || "retry".equals(normalized)) {
-            return new JBColor(new Color(0x0D47A1), new Color(0x90CAF9));
-        }
-        return UIUtil.getContextHelpForeground();
+        return ToolStatusFormatter.colorForToolStatus(status);
     }
 
     private String normalizeToolStatusLabel(String status) {
-        if (status == null || status.isBlank()) {
-            return "";
-        }
-        String normalized = status.trim().toLowerCase();
-        switch (normalized) {
-            case "completed":
-            case "success":
-            case "ok":
-                return "done";
-            case "error":
-            case "failed":
-            case "failure":
-                return "failed";
-            case "rejected":
-            case "skipped":
-                return "rejected";
-            case "awaiting_approval":
-            case "needs_approval":
-                return "waiting approval";
-            case "pending":
-            case "running":
-            case "retry":
-                return "running";
-            default:
-                return normalized;
-        }
+        return ToolStatusFormatter.normalizeToolStatusLabel(status);
     }
 
     private String formatDuration(long durationMs) {
-        if (durationMs <= 0L) {
-            return "";
-        }
-        if (durationMs < 1000L) {
-            return durationMs + "ms";
-        }
-        long seconds = durationMs / 1000L;
-        long millisRemainder = durationMs % 1000L;
-        if (seconds < 60L) {
-            long tenths = millisRemainder / 100L;
-            return seconds + "." + tenths + "s";
-        }
-        long minutes = seconds / 60L;
-        long secondsRemainder = seconds % 60L;
-        return minutes + "m " + secondsRemainder + "s";
+        return ToolStatusFormatter.formatDuration(durationMs);
     }
 
     private void appendAssistantText(AgentMessageUI ui, String text) {
@@ -2940,13 +2410,12 @@ final class ChatPanel {
         }
     }
 
-    private void finalizePendingAssistantResponses(Map<String, AgentMessageUI> assistantUiByMessageID) {
+    private void finalizePendingAssistantResponses(ConversationStateManager<AgentMessageUI> assistantState) {
         SwingUtilities.invokeLater(() -> {
             if (project.isDisposed()) {
                 return;
             }
-            Set<AgentMessageUI> unique = new LinkedHashSet<>(assistantUiByMessageID.values());
-            for (AgentMessageUI ui : unique) {
+            for (AgentMessageUI ui : assistantState.uniqueSnapshot()) {
                 if (ui == null || ui.streamFinished) {
                     continue;
                 }
@@ -3092,8 +2561,8 @@ final class ChatPanel {
             bubble.add(textArea, BorderLayout.CENTER);
             messagePanel.add(bubble);
         } else {
-            // Agent Message
-            // 1. Thinking Process (Placeholder, will be created on event)
+            
+            
             boolean hasThought = response != null && response.thought != null && !response.thought.isEmpty();
             if (hasThought) {
                 String initialThought = response.thought;
@@ -3103,7 +2572,7 @@ final class ChatPanel {
                 ui.thoughtPanel = thoughtPanel;
             }
             
-            // 2. Main Answer
+            
             String answerText = (response != null) ? response.answer : text;
             JEditorPane content = new JEditorPane();
             content.setEditable(false);
@@ -3124,7 +2593,7 @@ final class ChatPanel {
             messagePanel.add(content);
             ui.answerPane = content;
             
-            // 3. Embedded File Changes
+            
             if (response != null && response.changes != null && !response.changes.isEmpty()) {
                 for (PendingChangesManager.PendingChange change : response.changes) {
                     applyAndRecordSessionChange(ui, null, change);
@@ -3587,11 +3056,11 @@ final class ChatPanel {
         return content.split("\\R", -1);
     }
     private void typewriterEffect(JEditorPane pane, String fullMarkdown) {
-        // ... (Keep existing implementation) ...
-        Timer timer = new Timer(10, null); // 10ms per char
+        
+        Timer timer = new Timer(10, null); 
         final int[] index = {0};
         final int length = fullMarkdown.length();
-        final int chunk = 2; // chars per tick
+        final int chunk = 2; 
         
         timer.addActionListener(e -> {
             if (project.isDisposed()) {
@@ -3638,7 +3107,7 @@ final class ChatPanel {
         scroll.setBorder(BorderFactory.createEmptyBorder());
         scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         
-        // Dynamic height estimation
+        
         int height = Math.min(400, Math.max(100, pendingChanges.size() * 50 + 50));
         scroll.setPreferredSize(new Dimension(350, height));
         
@@ -3696,20 +3165,20 @@ final class ChatPanel {
         for (PendingChangesManager.PendingChange change : pendingChanges) {
             JPanel item = new JPanel(new BorderLayout(5, 0));
             
-            // Extract filename and path
+            
             String fullPath = change.path;
             String fileName = fullPath;
             try {
                 fileName = Path.of(fullPath).getFileName().toString();
             } catch (Exception e) {
-                // fallback
+                
             }
 
             JPanel textPanel = new JPanel(new GridLayout(2, 1));
             textPanel.setOpaque(false);
             
             JLabel nameLabel = new JLabel(fileName);
-            // nameLabel.setFont(nameLabel.getFont().deriveFont(Font.BOLD)); 
+            
             
             JLabel pathLabel = new JLabel(fullPath);
             pathLabel.setForeground(JBColor.GRAY);
@@ -3731,7 +3200,7 @@ final class ChatPanel {
             undoBtn.setPreferredSize(btnSize);
             confirmBtn.setPreferredSize(btnSize);
             
-            // Minimalist button style
+            
             undoBtn.setMargin(JBUI.insets(0));
             confirmBtn.setMargin(JBUI.insets(0));
 
@@ -3762,7 +3231,7 @@ final class ChatPanel {
         pendingChangesList.revalidate();
         pendingChangesList.repaint();
         
-        // Close popup if empty
+        
         if (count == 0 && activePendingPopup != null && !activePendingPopup.isDisposed()) {
             activePendingPopup.cancel();
             activePendingPopup = null;
@@ -3862,121 +3331,18 @@ final class ChatPanel {
     }
     
     private void scrollToBottom() {
-        SwingUtilities.invokeLater(() -> {
-            if (project.isDisposed()) return;
-            JScrollBar vertical = scrollPane.getVerticalScrollBar();
-            if (!followStreamingOutput) {
-                updateJumpToBottomVisibility(vertical);
-                return;
-            }
-            suppressScrollTracking = true;
-            try {
-                vertical.setValue(vertical.getMaximum());
-            } finally {
-                suppressScrollTracking = false;
-            }
-            updateJumpToBottomVisibility(vertical);
-        });
+        scrollController.scrollToBottom();
     }
     
     private void scrollToBottomSmart() {
-        SwingUtilities.invokeLater(() -> {
-            if (project.isDisposed()) return;
-            JScrollBar vertical = scrollPane.getVerticalScrollBar();
-            if (!followStreamingOutput) {
-                updateJumpToBottomVisibility(vertical);
-                return;
-            }
-            suppressScrollTracking = true;
-            try {
-                vertical.setValue(vertical.getMaximum());
-            } finally {
-                suppressScrollTracking = false;
-            }
-            updateJumpToBottomVisibility(vertical);
-        });
+        scrollController.scrollToBottomSmart();
     }
 
     private void installConversationScrollBehavior() {
-        JScrollBar vertical = scrollPane.getVerticalScrollBar();
-        if (vertical == null) {
-            return;
-        }
-        scrollPane.addMouseWheelListener(e -> {
-            markManualScroll();
-            followStreamingOutput = false;
-            updateJumpToBottomVisibility(vertical);
-        });
-        scrollPane.getViewport().addMouseWheelListener(e -> {
-            markManualScroll();
-            followStreamingOutput = false;
-            updateJumpToBottomVisibility(vertical);
-        });
-        vertical.addMouseListener(new MouseAdapter() {
-            @Override
-            public void mousePressed(MouseEvent e) {
-                markManualScroll();
-                if (!isAtBottom(vertical)) {
-                    followStreamingOutput = false;
-                }
-                updateJumpToBottomVisibility(vertical);
-            }
-        });
-        vertical.addMouseMotionListener(new MouseAdapter() {
-            @Override
-            public void mouseDragged(MouseEvent e) {
-                markManualScroll();
-                followStreamingOutput = false;
-                updateJumpToBottomVisibility(vertical);
-            }
-        });
-        vertical.addAdjustmentListener(e -> {
-            if (project.isDisposed() || suppressScrollTracking) {
-                return;
-            }
-            if (isManualScrollRecent() || e.getValueIsAdjusting()) {
-                followStreamingOutput = false;
-            } else if (isAtBottom(vertical)) {
-                followStreamingOutput = true;
-            }
-            updateJumpToBottomVisibility(vertical);
-        });
-        updateJumpToBottomVisibility(vertical);
+        scrollController.installConversationScrollBehavior();
     }
 
-    private void markManualScroll() {
-        lastManualScrollAtMs = System.currentTimeMillis();
-    }
-
-    private boolean isManualScrollRecent() {
-        return (System.currentTimeMillis() - lastManualScrollAtMs) <= MANUAL_SCROLL_WINDOW_MS;
-    }
-
-    private int distanceToBottom(JScrollBar vertical) {
-        if (vertical == null) {
-            return 0;
-        }
-        int extent = vertical.getModel().getExtent();
-        int max = vertical.getMaximum();
-        int value = vertical.getValue();
-        return max - (value + extent);
-    }
-
-    private boolean isAtBottom(JScrollBar vertical) {
-        return distanceToBottom(vertical) <= AUTO_SCROLL_BOTTOM_THRESHOLD_PX;
-    }
-
-    private void updateJumpToBottomVisibility(JScrollBar vertical) {
-        if (jumpToBottomButton == null) {
-            return;
-        }
-        boolean show = vertical != null && !isAtBottom(vertical);
-        jumpToBottomButton.setVisible(show);
-        jumpToBottomButton.revalidate();
-        jumpToBottomButton.repaint();
-    }
-
-    // --- Settings Dialog ---
+    
     private class SettingsDialog extends DialogWrapper {
         private final ChatHistoryService.SessionSettings settings;
         private final JTextField modelField;
@@ -4017,7 +3383,7 @@ final class ChatPanel {
             try {
                 settings.temperature = Double.parseDouble(temperatureField.getText());
             } catch (NumberFormatException e) {
-                // Ignore invalid number
+                
             }
             settings.agent = agentField.getText();
             super.doOKAction();
@@ -4098,21 +3464,6 @@ final class ChatPanel {
         String uiExpandedSummary;
         String uiMeta;
         String uiDetails;
-    }
-
-    private static class PendingCommandInfo {
-        String id;
-        String command;
-        String description;
-        String workdir;
-        String workspaceRoot;
-        String sessionId;
-        long timeoutMs;
-        String riskLevel;
-        String riskCategory;
-        String commandFamily;
-        boolean strictApproval;
-        List<String> reasons = new ArrayList<>();
     }
 
     private static class PendingCommandResolutionResult {
@@ -5018,7 +4369,7 @@ final class ChatPanel {
             json.put("sessionID", currentSessionId);
         }
         
-        // Add Session Settings
+        
         ChatHistoryService.ChatSession session = history.getCurrentSession();
         if (session != null && session.settings != null) {
             ObjectNode settingsNode = json.putObject("settings");
@@ -5275,7 +4626,7 @@ final class ChatPanel {
                         moduleSdkMajors.add(major);
                     }
                 } catch (Exception ignored) {
-                    // Keep payload best-effort.
+                    
                 }
             }
 
@@ -5970,7 +5321,7 @@ final class ChatPanel {
             if (project.isDisposed()) return;
             boolean effectiveBusy = runtimeBusy || awaitingUserApproval;
             send.setEnabled(true);
-            updateSendButtonMode(effectiveBusy);
+            inputController.updateSendButtonMode(effectiveBusy);
             if (thinkingStatusPanel != null) {
                 String text = awaitingUserApproval ? "等待确认" : "正在思考";
                 thinkingStatusPanel.setVisible(effectiveBusy);
@@ -5989,7 +5340,7 @@ final class ChatPanel {
     }
     
     private void rebuildConversationFromHistory() {
-        followStreamingOutput = true;
+        scrollController.enableFollow();
         pendingApprovalKeys.clear();
         setAwaitingUserApproval(false, null);
         conversationList.removeAll();
@@ -6114,7 +5465,7 @@ final class ChatPanel {
         try { return Long.parseLong(val); } catch (Exception e) { return def; }
     }
     
-    // -- Inner Classes --
+    
     
     private class CollapsiblePanel extends JPanel {
         private final JPanel contentPanel;
@@ -6148,7 +5499,7 @@ final class ChatPanel {
             textArea.setBorder(JBUI.Borders.empty(5));
             
             if (animate) {
-                // Streaming effect for thinking
+                
                 contentPanel.setVisible(false);
                 Timer timer = new Timer(20, null);
                 final int[] index = {0};
@@ -6222,17 +5573,3 @@ final class ChatPanel {
         }
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-

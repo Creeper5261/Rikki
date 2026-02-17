@@ -35,7 +35,7 @@ public class SnapshotService {
         return Paths.get(projectContext.getDirectory(), ".code-agent", "snapshot").toString();
     }
 
-    @Scheduled(fixedRate = 3600000) // 每小时执行一次 (对齐 opencode Snapshot.init)
+    @Scheduled(fixedRate = 3600000) 
     public void cleanup() {
         if (!projectContext.isGit()) return;
         String gitDir = gitdir();
@@ -159,9 +159,9 @@ public class SnapshotService {
     }
 
     public void record(FileDiff filediff) {
-        // Aligned with opencode's intent: track manual edits for undo/redo or status display
+        
         log.info("Recording file diff for: {}", filediff.getFile());
-        // In opencode, this might be used to update a state or notify watchers
+        
     }
 
     @Data

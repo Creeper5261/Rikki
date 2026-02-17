@@ -38,8 +38,8 @@ public class PendingChangesManager {
     }
 
     public void addChange(PendingChange change) {
-        // Remove existing pending change for the same file to avoid conflicts
-        // Normalize path to ensure uniqueness (assuming relative paths)
+        
+        
         String normPath = normalizePath(change.path);
         
         PendingChange existing = null;
@@ -77,7 +77,7 @@ public class PendingChangesManager {
         
         changes.add(toAdd);
         
-        // Notify listeners
+        
         for (java.util.function.Consumer<PendingChange> listener : listeners) {
             try {
                 listener.accept(toAdd);
@@ -92,6 +92,15 @@ public class PendingChangesManager {
         String norm = normalizePath(path);
         return changes.stream()
                 .filter(c -> normalizePath(c.path).equals(norm))
+                .findFirst();
+    }
+
+    public java.util.Optional<PendingChange> getById(String id) {
+        if (id == null || id.isBlank()) {
+            return java.util.Optional.empty();
+        }
+        return changes.stream()
+                .filter(c -> id.equals(c.id))
                 .findFirst();
     }
 
@@ -188,7 +197,7 @@ public class PendingChangesManager {
         
         changes.clear();
         
-        // Load from pending_changes array
+        
         JsonNode array = rootNode.path("pending_changes");
         if (array.isArray()) {
             for (JsonNode node : array) {
@@ -209,7 +218,7 @@ public class PendingChangesManager {
             }
         }
         
-        // Fallback: load from legacy pending_diff object if array is empty
+        
         if (changes.isEmpty()) {
             JsonNode pending = rootNode.path("pending_diff");
             if (!pending.isMissingNode() && !pending.isNull()) {
@@ -282,10 +291,10 @@ public class PendingChangesManager {
             ObjectNode node = mapper.createObjectNode();
             node.put("id", c.id);
             node.put("path", c.path);
-            node.put("type", c.type); // CREATE, EDIT, DELETE
+            node.put("type", c.type); 
             node.put("old_content", c.oldContent);
             node.put("new_content", c.newContent);
-            node.put("preview", c.preview); // Visual diff or summary
+            node.put("preview", c.preview); 
             node.put("timestamp", c.timestamp);
             node.put("workspace_root", c.workspaceRoot);
             node.put("session_id", c.sessionId);
@@ -317,9 +326,9 @@ public class PendingChangesManager {
         public final String id;
         public final String path;
         public final String type;
-        public final String oldContent; // Optional, for verification
-        public final String newContent; // Content to write
-        public final String preview; // Visual diff
+        public final String oldContent; 
+        public final String newContent; 
+        public final String preview; 
         public final long timestamp;
         public final String workspaceRoot;
         public final String sessionId;

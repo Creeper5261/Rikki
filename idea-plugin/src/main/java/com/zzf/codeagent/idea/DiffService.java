@@ -177,18 +177,18 @@ public class DiffService {
         ApplicationManager.getApplication().invokeLater(() -> {
             if (project.isDisposed()) return;
             try {
-                // 1. Resolve File
+                
                 String pathStr = change.path;
                 VirtualFile virtualFile = findVirtualFile(pathStr, change.workspaceRoot);
 
-                // 2. Show Notification in Editor (do not apply until user confirms)
+                
                 if (virtualFile != null) {
                     FileEditorManager manager = FileEditorManager.getInstance(project);
-                    manager.openFile(virtualFile, true); // Focus editor
+                    manager.openFile(virtualFile, true); 
                     
                     final VirtualFile finalFile = virtualFile;
                     for (FileEditor editor : manager.getEditors(virtualFile)) {
-                        // Remove existing panel if any
+                        
                         EditorNotificationPanel existing = notificationPanels.remove(editor);
                         if (existing != null) {
                             manager.removeTopComponent(editor, existing);
@@ -197,25 +197,25 @@ public class DiffService {
                         EditorNotificationPanel panel = new EditorNotificationPanel();
                         panel.setText("Agent generated changes for " + finalFile.getName());
                         
-                        // Store reference
+                        
                         notificationPanels.put(editor, panel);
                         
-                        // Accept: Apply changes now
+                        
                         panel.createActionLabel("Accept", () -> {
                             if (project.isDisposed()) return;
                             confirmChange(change, onAccept, null);
                         });
                         
-                        // Reject: Clear notification only
+                        
                         panel.createActionLabel("Reject", () -> {
                             if (project.isDisposed()) return;
                             revertChange(change, onReject, null);
                         });
                         
-                        // Show Diff: Open the Diff Window for detailed comparison
+                        
                         panel.createActionLabel("Show Diff", () -> {
                             if (project.isDisposed()) return;
-                            // Show diff between original and proposed.
+                            
                             showDiffExplicit(change.path, change.oldContent, change.newContent);
                         });
                         

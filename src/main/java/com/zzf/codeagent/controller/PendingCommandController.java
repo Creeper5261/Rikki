@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
@@ -65,7 +66,12 @@ public class PendingCommandController {
             }
 
             PendingCommandsManager.PendingCommand pending = pendingOpt.get();
-            if (!PendingCommandsManager.getInstance().scopeMatches(pending, request.getWorkspaceRoot(), request.getTraceId())) {
+            if (request.getTraceId() == null || request.getTraceId().isBlank()) {
+                response.put("status", "error");
+                response.put("error", "traceId is required");
+                return response;
+            }
+            if (!PendingCommandsManager.getInstance().scopeMatches(pending, pending.workspaceRoot, request.getTraceId())) {
                 response.put("status", "error");
                 response.put("error", "Pending command scope mismatch.");
                 return response;
@@ -91,7 +97,7 @@ public class PendingCommandController {
 
             String decisionMode = PendingCommandsManager.normalizeDecisionMode(request.getDecisionMode());
             PendingCommandsManager.getInstance().applyApprovalDecision(pending, decisionMode);
-            CommandResult result = executePendingCommand(pending, request.getWorkspaceRoot());
+            CommandResult result = executePendingCommand(pending);
             PendingCommandsManager.getInstance().remove(commandId);
             String status = result.exitCode == 0 ? "applied" : "error";
             updatePendingToolPart(
@@ -119,15 +125,19 @@ public class PendingCommandController {
         }
     }
 
-    private CommandResult executePendingCommand(
-            PendingCommandsManager.PendingCommand pending,
-            String requestedWorkspaceRoot
-    ) throws Exception {
-        String workspaceRoot = firstNonBlank(requestedWorkspaceRoot, pending.workspaceRoot, System.getProperty("user.dir"));
+    private CommandResult executePendingCommand(PendingCommandsManager.PendingCommand pending) throws Exception {
+        String workspaceRoot = firstNonBlank(pending.workspaceRoot, System.getProperty("user.dir"));
+        Path workspacePath = normalizePath(workspaceRoot).toAbsolutePath().normalize();
         String workdirRaw = firstNonBlank(pending.workdir, workspaceRoot);
         Path workdir = normalizePath(workdirRaw).toAbsolutePath().normalize();
-        if (!workdir.toFile().exists()) {
-            workdir = normalizePath(workspaceRoot).toAbsolutePath().normalize();
+        if (!workdir.startsWith(workspacePath)) {
+            workdir = workspacePath;
+        }
+        if (!Files.exists(workdir)) {
+            workdir = workspacePath;
+        }
+        if (!Files.exists(workspacePath)) {
+            throw new IllegalArgumentException("Pending command workspace root does not exist: " + workspacePath);
         }
 
         String command = pending.command == null ? "" : pending.command;

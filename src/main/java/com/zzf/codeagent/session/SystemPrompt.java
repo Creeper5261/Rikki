@@ -46,7 +46,7 @@ public class SystemPrompt {
         } else if (modelId.contains("claude")) {
             promptFile = "anthropic.txt";
         } else {
-            // Default to anthropic_without_todo (qwen.txt in OpenCode)
+            
             promptFile = "qwen.txt";
         }
 

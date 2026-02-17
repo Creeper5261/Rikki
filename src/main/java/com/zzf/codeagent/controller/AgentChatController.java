@@ -2,7 +2,6 @@ package com.zzf.codeagent.controller;
 
 import com.zzf.codeagent.bus.AgentBus;
 import com.zzf.codeagent.id.Identifier;
-import com.zzf.codeagent.project.ProjectContext;
 import com.zzf.codeagent.session.SessionInfo;
 import com.zzf.codeagent.session.SessionLoop;
 import com.zzf.codeagent.session.SessionService;
@@ -36,16 +35,15 @@ public class AgentChatController {
     private final SessionLoop sessionLoop;
     private final SessionService sessionService;
     private final AgentBus agentBus;
-    private final ProjectContext projectContext;
     private final Map<String, SseEmitter> emitters = new ConcurrentHashMap<>();
     private final Map<String, List<Runnable>> unsubs = new ConcurrentHashMap<>();
 
     @Data
     public static class ChatRequest {
         private String sessionID;
-        private String traceId; // Backward compatible alias for sessionID
+        private String traceId; 
         private String message;
-        private String goal; // Alias for message, sent by plugin
+        private String goal; 
         private String parentID;
         private String workspaceRoot;
         private String workspaceName;
@@ -78,7 +76,7 @@ public class AgentChatController {
 
     @PostMapping("/chat/stream")
     public SseEmitter chat(@RequestBody ChatRequest request) {
-        SseEmitter emitter = new SseEmitter(60 * 60 * 1000L); // 60 min timeout
+        SseEmitter emitter = new SseEmitter(60 * 60 * 1000L); 
 
         String requestedSessionID = request.getEffectiveSessionID();
         SessionInfo session;
@@ -104,8 +102,6 @@ public class AgentChatController {
                 final String directory = normalizedWorkspaceRoot;
                 sessionService.update(sessionID, s -> s.setDirectory(directory));
             }
-            projectContext.setDirectory(normalizedWorkspaceRoot);
-            projectContext.setWorktree(normalizedWorkspaceRoot);
         }
         if (request.getAgent() != null && !request.getAgent().isEmpty()) {
             final String requestedAgent = request.getAgent();
@@ -136,13 +132,13 @@ public class AgentChatController {
         sessionData.put("reused", requestedSessionID != null && requestedSessionID.equals(finalSessionID));
         sendSse(emitter, "session", sessionData);
 
-        // Heartbeat to keep connection alive
+        
         java.util.concurrent.ScheduledExecutorService scheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor();
         java.util.concurrent.ScheduledFuture<?> heartbeat = scheduler.scheduleAtFixedRate(() -> {
             try {
                 sendSse(emitter, "heartbeat", System.currentTimeMillis());
             } catch (Exception e) {
-                // Ignore, cleanup will handle it if connection is closed
+                
             }
         }, 15, 15, java.util.concurrent.TimeUnit.SECONDS);
         sessionUnsubs.add(() -> {
@@ -150,7 +146,7 @@ public class AgentChatController {
             scheduler.shutdown();
         });
 
-        // Subscribe to Bus events and forward to SSE
+        
         sessionUnsubs.add(agentBus.subscribe("part.updated", event -> {
             Object part = event.getProperties();
 
@@ -196,7 +192,7 @@ public class AgentChatController {
             } else if (part instanceof com.zzf.codeagent.session.model.MessageV2.ToolPart) {
                 com.zzf.codeagent.session.model.MessageV2.ToolPart tp = (com.zzf.codeagent.session.model.MessageV2.ToolPart) part;
                 if (tp.getSessionID().equals(finalSessionID)) {
-                    // Tool handling
+                    
                     Map<String, Object> payload = new HashMap<>();
                     payload.put("id", tp.getId());
                     payload.put("partID", tp.getId());
@@ -240,7 +236,7 @@ public class AgentChatController {
                                 }
                             }
                         } else {
-                            // Truncate args to prevent UI lag (Issue 4)
+                            
                             Map<String, Object> safeArgs = new HashMap<>();
                             if (tp.getArgs() != null) {
                                 tp.getArgs().forEach((key, val) -> {
@@ -278,7 +274,7 @@ public class AgentChatController {
                 com.zzf.codeagent.session.model.MessageV2.WithParts msg = (com.zzf.codeagent.session.model.MessageV2.WithParts) props;
                 if (finalSessionID.equals(msg.getInfo().getSessionID()) && "assistant".equals(msg.getInfo().getRole())) {
                     if (shouldEmitFinish(msg, emittedFinishMessageIDs)) {
-                        // Extract answer and thought from parts for plugin compatibility
+                        
                         String answer = msg.getParts().stream()
                                 .filter(p -> p instanceof com.zzf.codeagent.session.model.MessageV2.TextPart)
                                 .map(p -> ((com.zzf.codeagent.session.model.MessageV2.TextPart) p).getText())
@@ -298,7 +294,7 @@ public class AgentChatController {
                         finishData.put("sessionID", msg.getInfo().getSessionID());
                         finishData.put("messageID", msg.getInfo().getId());
                         
-                        // Add metadata for changes if present
+                        
                         if (msg.getInfo().getSummaryInfo() != null) {
                             Map<String, Object> meta = new java.util.HashMap<>();
                             meta.put("pendingChanges", msg.getInfo().getSummaryInfo().getDiffs());
@@ -325,7 +321,7 @@ public class AgentChatController {
 
         hydrateSessionHistoryIfNeeded(finalSessionID, request);
 
-        // Start the loop with IDE context (if present)
+        
         sessionLoop.start(
                 finalSessionID,
                 request.getEffectiveMessage(),
@@ -362,7 +358,7 @@ public class AgentChatController {
                 sendSse(emitter, "status", status);
                 emitter.complete();
             } catch (Exception ignored) {
-                // ignore emitter completion failures
+                
             }
         }
         return response;
@@ -644,5 +640,4 @@ public class AgentChatController {
     }
 
 }
-
 

@@ -83,7 +83,7 @@ public class TaskTool implements Tool {
         String existingSessionId = args.has("session_id") ? args.get("session_id").asText() : null;
 
         return CompletableFuture.supplyAsync(() -> {
-            // 1. Permission Check (Simplified)
+            
             Map<String, Object> permissionRequest = new HashMap<>();
             permissionRequest.put("permission", "task");
             permissionRequest.put("patterns", new String[]{subagentType});
@@ -98,11 +98,11 @@ public class TaskTool implements Tool {
                 throw new RuntimeException("Permission denied for subtask", e);
             }
 
-            // 2. Resolve Agent
+            
             AgentInfo agent = agentService.get(subagentType)
                     .orElseThrow(() -> new RuntimeException("Unknown agent type: " + subagentType));
 
-            // 3. Get or Create Session
+            
             String parentDirectory = sessionService.get(ctx.getSessionID())
                     .map(SessionInfo::getDirectory)
                     .orElse(null);
@@ -115,30 +115,30 @@ public class TaskTool implements Tool {
                 session = sessionService.create(ctx.getSessionID(), description + " (@" + agent.getName() + " subagent)", parentDirectory);
             }
 
-            // 4. Update Context Metadata
+            
             Map<String, Object> meta = new HashMap<>();
             meta.put("sessionId", session.getId());
             ctx.metadata(description, meta);
 
-            // 5. In a real ReAct loop, we would trigger a new loop for the child session.
-            // For now, we simulate the subtask part by adding a SubtaskPart to the child session
-            // which will be picked up by SessionLoop.
+            
+            
+            
             
             MessageV2.SubtaskPart subtaskPart = new MessageV2.SubtaskPart();
             subtaskPart.setId(Identifier.ascending("part"));
             subtaskPart.setSessionID(session.getId());
-            subtaskPart.setMessageID(Identifier.ascending("message")); // This is a bit simplified
+            subtaskPart.setMessageID(Identifier.ascending("message")); 
             subtaskPart.setType("subtask");
             subtaskPart.setPrompt(prompt);
             subtaskPart.setDescription(description);
             subtaskPart.setAgent(agent.getName());
             
-            // In OpenCode, TaskTool actually runs SessionPrompt.prompt() and waits for result.
-            // Here, we'll just return the session info and let the Loop handle it if possible,
-            // or we could use SessionLoop directly here (but that might cause circular dependency).
             
-            // For now, let's return a result that indicates the task has started.
-            // The actual execution will be handled by the SessionLoop picking up the child session.
+            
+            
+            
+            
+            
             
             String output = "Task delegated to @" + agent.getName() + ".\n\n<task_metadata>\nsession_id: " + session.getId() + "\n</task_metadata>";
 

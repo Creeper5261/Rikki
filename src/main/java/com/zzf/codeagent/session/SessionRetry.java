@@ -16,7 +16,7 @@ public class SessionRetry {
     public static final long RETRY_MAX_DELAY_NO_HEADERS = 30000;
 
     public static long getDelay(int attempt, Throwable error) {
-        // Simplified retry logic
+        
         return (long) Math.min(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_NO_HEADERS);
     }
 

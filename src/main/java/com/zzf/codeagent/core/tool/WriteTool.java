@@ -66,12 +66,12 @@ public class WriteTool implements Tool {
                 String workspaceRoot = ToolPathResolver.resolveWorkspaceRoot(projectContext, ctx);
                 String relativePath = ToolPathResolver.safeRelativePath(workspaceRoot, filePath);
                 
-                // Determine change type and old content
+                
                 String changeType = "CREATE";
                 String oldContent = "";
                 
                 if (Files.exists(filePath)) {
-                    changeType = "EDIT"; // Technically overwrite, but mapped to EDIT type for UI
+                    changeType = "EDIT"; 
                     try {
                         oldContent = Files.readString(filePath, StandardCharsets.UTF_8);
                     } catch (Exception e) {
@@ -84,7 +84,7 @@ public class WriteTool implements Tool {
                 }
                 Files.writeString(filePath, content, StandardCharsets.UTF_8);
 
-                // Create Pending Change
+                
                 PendingChangesManager.PendingChange change = new PendingChangesManager.PendingChange(
                         UUID.randomUUID().toString(),
                         relativePath,
@@ -99,14 +99,14 @@ public class WriteTool implements Tool {
                 
                 PendingChangesManager.getInstance().addChange(change);
 
-                // Build Metadata
+                
                 Map<String, Object> metadata = new HashMap<>();
                 metadata.put("filepath", filePath.toString());
                 metadata.put("pending_change_id", change.id);
                 metadata.put("pending_change", change);
                 metadata.put("workspace_applied", true);
 
-                // Record Snapshot (Simplified)
+                
                 SnapshotService.FileDiff filediff = SnapshotService.FileDiff.builder()
                         .file(filePath.toString())
                         .before(oldContent)

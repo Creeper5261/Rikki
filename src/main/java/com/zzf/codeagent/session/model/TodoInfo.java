@@ -15,6 +15,6 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 public class TodoInfo {
     private String id;
     private String content;
-    private String status; // pending, in_progress, completed, cancelled
-    private String priority; // high, medium, low
+    private String status; 
+    private String priority; 
 }

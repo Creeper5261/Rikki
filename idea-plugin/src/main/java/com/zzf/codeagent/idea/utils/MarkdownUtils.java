@@ -14,15 +14,15 @@ public class MarkdownUtils {
             .build();
     private static final HtmlRenderer renderer = HtmlRenderer.builder()
             .extensions(Arrays.asList(TablesExtension.create()))
-            .escapeHtml(false) // Allow raw HTML for our auto-links
+            .escapeHtml(false) 
             .build();
 
     public static String renderToHtml(String markdown) {
         if (markdown == null) return "";
         
-        // Auto-link file references [File.java] -> <a href="File.java">File.java</a>
-        // Regex matches [path/to/file.ext] but not following ( so not [text](link)
-        // And not preceded by ! so not ![image]
+        
+        
+        
         String processed = markdown.replaceAll("(?<!!)\\[([a-zA-Z0-9_./-]+\\.(java|xml|yml|yaml|json|md|txt|properties|kt|gradle|sh|bat|cmd|sql|ts|js|css|html))\\](?!\\()", "<a href=\"$1\">$0</a>");
         
         org.commonmark.node.Node document = parser.parse(processed);

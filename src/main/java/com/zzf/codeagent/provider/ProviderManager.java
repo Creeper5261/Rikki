@@ -57,7 +57,7 @@ public class ProviderManager {
                 return getModel(parts[0], parts[1]).orElseGet(this::getHardcodedDefault);
             }
             
-            // Handle single string model name (e.g. "DEEPSEEK" or "deepseek-chat")
+            
             if (defaultModelPath != null) {
                 String modelName = defaultModelPath.toLowerCase();
                 if (modelName.contains("deepseek")) {

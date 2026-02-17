@@ -69,7 +69,7 @@ public class FilesystemUtil {
                 }
             }
         } catch (IOException e) {
-            // ignore
+            
         }
         return result;
     }

@@ -55,7 +55,7 @@ public class ReadTool implements Tool {
         } catch (IOException e) {
             log.error("Failed to load read tool description", e);
         }
-        return "Reads a file from the local filesystem."; // Fallback
+        return "Reads a file from the local filesystem."; 
     }
 
     @Override
@@ -83,7 +83,7 @@ public class ReadTool implements Tool {
                 Path filePath = ToolPathResolver.resolvePath(projectContext, ctx, filePathStr);
 
                 if (!Files.exists(filePath)) {
-                    // 尝试搜索类似文件名建议
+                    
                     File dir = filePath.getParent().toFile();
                     String base = filePath.getFileName().toString().toLowerCase();
                     File[] entries = dir.listFiles();
@@ -153,7 +153,7 @@ public class ReadTool implements Tool {
                 metadata.put("truncated", truncated);
                 metadata.put("preview", raw.stream().limit(20).collect(Collectors.joining("\n")));
 
-                // Add structured file_view for UI
+                
                 Map<String, Object> fileView = new HashMap<>();
                 fileView.put("filePath", filePath.toString());
                 fileView.put("content", raw.stream().collect(Collectors.joining("\n")));

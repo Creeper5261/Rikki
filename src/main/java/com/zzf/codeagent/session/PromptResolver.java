@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
 @Service
 public class PromptResolver {
 
-    // 匹配 @path/to/file 或 @~/path/to/file
+    
     private static final Pattern FILE_REF_PATTERN = Pattern.compile("@([~/a-zA-Z0-9._/\\\\-]+)");
 
     /**
@@ -36,12 +36,12 @@ public class PromptResolver {
     public List<PromptPart> resolvePromptParts(String template, String worktree) {
         List<PromptPart> parts = new ArrayList<>();
         
-        // 1. 添加原始文本
+        
         MessageV2.TextPart textPart = new MessageV2.TextPart();
         textPart.setText(template);
         parts.add(textPart);
 
-        // 2. 扫描文件引用
+        
         Matcher matcher = FILE_REF_PATTERN.matcher(template);
         while (matcher.find()) {
             String name = matcher.group(1);
@@ -57,12 +57,12 @@ public class PromptResolver {
                     filePart.setMime("application/x-directory");
                 } else {
                     filePart.setMime("text/plain");
-                    // 注意：OpenCode 在这里不注入内容，内容注入由 processor 处理
+                    
                 }
                 parts.add(filePart);
             } else {
-                // 如果文件不存在，尝试匹配 Agent (这里简化处理，假设所有非文件引用可能是 Agent)
-                // 实际 OpenCode 会调用 Agent.get(name)
+                
+                
                 MessageV2.AgentPart agentPart = new MessageV2.AgentPart();
                 agentPart.setName(name);
                 parts.add(agentPart);

@@ -157,13 +157,24 @@ public class PendingCommandsManager {
             return false;
         }
         boolean hasSessionScope = sessionId != null && !sessionId.isBlank();
-        if (hasSessionScope) {
-            return sessionId.equals(command.sessionId);
+        boolean hasWorkspaceScope = workspaceRoot != null && !workspaceRoot.isBlank();
+        if (!hasSessionScope && !hasWorkspaceScope) {
+            return false;
         }
-        if (workspaceRoot != null && !workspaceRoot.isBlank()) {
+        if (command.sessionId != null && !command.sessionId.isBlank()) {
+            if (!hasSessionScope || !sessionId.equals(command.sessionId)) {
+                return false;
+            }
+        }
+        if (command.workspaceRoot != null && !command.workspaceRoot.isBlank()) {
+            if (!hasWorkspaceScope) {
+                return false;
+            }
             String expectedRoot = normalize(workspaceRoot);
             String actualRoot = normalize(command.workspaceRoot);
-            return actualRoot.equals(expectedRoot);
+            if (!actualRoot.equals(expectedRoot)) {
+                return false;
+            }
         }
         return true;
     }

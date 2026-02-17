@@ -35,6 +35,7 @@ dependencies {
     implementation("com.fasterxml.jackson.core:jackson-annotations:2.15.2")
     implementation("org.commonmark:commonmark:0.21.0")
     implementation("org.commonmark:commonmark-ext-gfm-tables:0.21.0")
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
 }
 
 intellij {
@@ -59,4 +60,8 @@ tasks.buildSearchableOptions {
 
 tasks.runIde {
     jvmArgs("-Djb.vmOptionsFile=${project.file("src/main/resources/idea.vmoptions").absolutePath}")
+}
+
+tasks.test {
+    useJUnitPlatform()
 }
