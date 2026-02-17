@@ -1,11 +1,13 @@
 package com.zzf.codeagent.idea.utils;
 
+import com.intellij.ui.ColorUtil;
+import com.intellij.ui.JBColor;
 import org.commonmark.parser.Parser;
 import org.commonmark.renderer.html.HtmlRenderer;
 import org.commonmark.ext.gfm.tables.TablesExtension;
 import com.intellij.util.ui.UIUtil;
-import com.intellij.ui.JBColor;
 import java.awt.Color;
+import javax.swing.UIManager;
 import java.util.Arrays;
 
 public class MarkdownUtils {
@@ -33,23 +35,61 @@ public class MarkdownUtils {
     }
 
     private static String getCss() {
-        boolean dark = UIUtil.isUnderDarcula();
-        String textColor = colorToHex(UIUtil.getLabelForeground());
-        String linkColor = colorToHex(JBColor.BLUE); 
-        String codeBg = dark ? "#2f343a" : "#f5f5f5";
-        String borderColor = dark ? "#5e6060" : "#e0e0e0";
+        Color panelBg = UIUtil.getPanelBackground();
+        Color labelFg = UIUtil.getLabelForeground();
+        Color codeBackground = resolveCodeBackground(panelBg);
+        Color border = resolveColor("Component.borderColor", UIUtil.getBoundsColor());
+        Color link = resolveLinkColor(labelFg);
+        Color text = labelFg;
+
+        String textColor = colorToHex(text);
+        String linkColor = colorToHex(link);
+        String codeBg = colorToHex(codeBackground);
+        String borderColor = colorToHex(border);
         
         return "body { font-family: sans-serif; font-size: 13px; color: " + textColor + "; background: transparent; margin: 0; padding: 0; }" +
+               "p, li, span, div, h1, h2, h3, h4, h5, h6 { color: " + textColor + "; }" +
                "a { color: " + linkColor + "; text-decoration: none; }" +
-               "code { background-color: " + codeBg + "; font-family: monospace; padding: 2px 4px; }" +
-               "pre { background-color: " + codeBg + "; padding: 8px; border: 1px solid " + borderColor + "; border-radius: 6px; overflow-x: auto; }" +
+               "code { background-color: " + codeBg + "; color: " + textColor + "; font-family: monospace; padding: 2px 4px; }" +
+               "pre { background-color: " + codeBg + "; color: " + textColor + "; padding: 8px; border: 1px solid " + borderColor + "; border-radius: 6px; overflow-x: auto; }" +
+               "pre code { background-color: transparent; padding: 0; }" +
                "table { border-collapse: collapse; width: 100%; }" +
                "th, td { border: 1px solid " + borderColor + "; padding: 6px; text-align: left; }" +
                "th { background-color: " + codeBg + "; }";
+    }
+
+    private static Color resolveCodeBackground(Color fallback) {
+        Color textAreaBg = resolveColor("TextArea.background", null);
+        if (textAreaBg == null) {
+            textAreaBg = resolveColor("EditorPane.background", null);
+        }
+        if (textAreaBg == null) {
+            textAreaBg = resolveColor("TextField.background", fallback);
+        }
+        if (textAreaBg == null) {
+            textAreaBg = fallback;
+        }
+        return ColorUtil.mix(textAreaBg, fallback == null ? textAreaBg : fallback, 0.88);
+    }
+
+    private static Color resolveLinkColor(Color fallback) {
+        Color link = resolveColor("Link.activeForeground", null);
+        if (link != null) {
+            return link;
+        }
+        link = resolveColor("link.foreground", null);
+        if (link != null) {
+            return link;
+        }
+        return fallback == null ? JBColor.BLUE : fallback;
+    }
+
+    private static Color resolveColor(String key, Color fallback) {
+        Color color = key == null ? null : UIManager.getColor(key);
+        return color == null ? fallback : color;
     }
 
     private static String colorToHex(Color c) {
         return String.format("#%02x%02x%02x", c.getRed(), c.getGreen(), c.getBlue());
     }
 }
-

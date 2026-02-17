@@ -6,8 +6,13 @@ import com.intellij.ui.components.JBScrollPane;
 import javax.swing.JButton;
 import javax.swing.JScrollBar;
 import javax.swing.SwingUtilities;
+import java.awt.AWTEvent;
+import java.awt.Component;
+import java.awt.Toolkit;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.event.MouseWheelEvent;
+import java.awt.event.AWTEventListener;
 
 final class ConversationScrollController {
 
@@ -20,6 +25,7 @@ final class ConversationScrollController {
     private volatile boolean followStreamingOutput = true;
     private volatile boolean suppressScrollTracking;
     private volatile long lastManualScrollAtMs;
+    private volatile boolean wheelBridgeInstalled;
 
     ConversationScrollController(
             Project project,
@@ -88,6 +94,7 @@ final class ConversationScrollController {
         if (vertical == null) {
             return;
         }
+        installGlobalWheelBridge();
         scrollPane.addMouseWheelListener(e -> {
             markManualScroll();
             followStreamingOutput = false;
@@ -128,6 +135,56 @@ final class ConversationScrollController {
             updateJumpToBottomVisibility(vertical);
         });
         updateJumpToBottomVisibility(vertical);
+    }
+
+    private void installGlobalWheelBridge() {
+        if (wheelBridgeInstalled) {
+            return;
+        }
+        AWTEventListener listener = event -> {
+            if (!(event instanceof MouseWheelEvent wheelEvent)) {
+                return;
+            }
+            if (project.isDisposed()) {
+                return;
+            }
+            Object src = wheelEvent.getSource();
+            if (!(src instanceof Component component)) {
+                return;
+            }
+            if (!SwingUtilities.isDescendingFrom(component, scrollPane)) {
+                return;
+            }
+            JScrollBar target = wheelEvent.isShiftDown()
+                    ? scrollPane.getHorizontalScrollBar()
+                    : scrollPane.getVerticalScrollBar();
+            if (target == null) {
+                return;
+            }
+            int rotation = wheelEvent.getWheelRotation();
+            if (rotation == 0) {
+                return;
+            }
+            int direction = rotation > 0 ? 1 : -1;
+            int baseIncrement = target.getUnitIncrement(direction);
+            if (baseIncrement <= 0) {
+                baseIncrement = 16;
+            }
+            int delta = baseIncrement * Math.max(1, Math.abs(wheelEvent.getUnitsToScroll()));
+            if (direction < 0) {
+                delta = -delta;
+            }
+            int next = Math.max(target.getMinimum(), Math.min(target.getMaximum(), target.getValue() + delta));
+            if (next != target.getValue()) {
+                target.setValue(next);
+                markManualScroll();
+                followStreamingOutput = false;
+                updateJumpToBottomVisibility(scrollPane.getVerticalScrollBar());
+            }
+            wheelEvent.consume();
+        };
+        Toolkit.getDefaultToolkit().addAWTEventListener(listener, AWTEvent.MOUSE_WHEEL_EVENT_MASK);
+        wheelBridgeInstalled = true;
     }
 
     private void markManualScroll() {
