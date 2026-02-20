@@ -332,6 +332,12 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         if (message.toolActivities == null) {
             message.toolActivities = new ArrayList<>();
         }
+        if (message.sessionChanges == null) {
+            message.sessionChanges = new ArrayList<>();
+        }
+        if (message.undoneSessionChangeKeys == null) {
+            message.undoneSessionChangeKeys = new ArrayList<>();
+        }
         for (ToolActivity activity : message.toolActivities) {
             normalizeToolActivity(activity);
         }
@@ -370,6 +376,18 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         }
         if (activity.targetPath == null) {
             activity.targetPath = "";
+        }
+        if (activity.changePath == null) {
+            activity.changePath = "";
+        }
+        if (activity.changeType == null) {
+            activity.changeType = "";
+        }
+        if (activity.changeOldContent == null) {
+            activity.changeOldContent = "";
+        }
+        if (activity.changeNewContent == null) {
+            activity.changeNewContent = "";
         }
         if (activity.lineStart < 0) {
             activity.lineStart = -1;
@@ -528,11 +546,32 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
                     copied.lineStart = activity.lineStart;
                     copied.lineEnd = activity.lineEnd;
                     copied.navigable = activity.navigable;
+                    copied.changePath = activity.changePath;
+                    copied.changeType = activity.changeType;
+                    copied.changeOldContent = activity.changeOldContent;
+                    copied.changeNewContent = activity.changeNewContent;
                 }
                 normalizeToolActivity(copied);
                 message.toolActivities.add(copied);
             }
         }
+        if (source.sessionChanges != null) {
+            for (PersistedChange change : source.sessionChanges) {
+                if (change == null) {
+                    continue;
+                }
+                PersistedChange copied = new PersistedChange();
+                copied.path = change.path;
+                copied.type = change.type;
+                copied.oldContent = change.oldContent;
+                copied.newContent = change.newContent;
+                message.sessionChanges.add(copied);
+            }
+        }
+        if (source.undoneSessionChangeKeys != null) {
+            message.undoneSessionChangeKeys = new ArrayList<>(source.undoneSessionChangeKeys);
+        }
+        message.showSessionChangeSummary = source.showSessionChangeSummary;
         normalizeUiMessage(message);
         return message;
     }
@@ -614,6 +653,31 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
                     if (activity.targetPath != null) {
                         total += activity.targetPath.length();
                     }
+                    if (activity.changePath != null) {
+                        total += activity.changePath.length();
+                    }
+                    if (activity.changeOldContent != null) {
+                        total += activity.changeOldContent.length();
+                    }
+                    if (activity.changeNewContent != null) {
+                        total += activity.changeNewContent.length();
+                    }
+                }
+            }
+            if (message.sessionChanges != null) {
+                for (PersistedChange change : message.sessionChanges) {
+                    if (change == null) {
+                        continue;
+                    }
+                    if (change.path != null) {
+                        total += change.path.length();
+                    }
+                    if (change.oldContent != null) {
+                        total += change.oldContent.length();
+                    }
+                    if (change.newContent != null) {
+                        total += change.newContent.length();
+                    }
                 }
             }
         }
@@ -679,6 +743,18 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         public long timestamp;
         @XCollection(style = XCollection.Style.v2)
         public List<ToolActivity> toolActivities = new ArrayList<>();
+        @XCollection(style = XCollection.Style.v2)
+        public List<PersistedChange> sessionChanges = new ArrayList<>();
+        @XCollection(style = XCollection.Style.v2)
+        public List<String> undoneSessionChangeKeys = new ArrayList<>();
+        public boolean showSessionChangeSummary;
+    }
+
+    public static final class PersistedChange {
+        public String path;
+        public String type;
+        public String oldContent;
+        public String newContent;
     }
 
     public static final class ToolActivity {
@@ -696,6 +772,10 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         public int lineStart = -1;
         public int lineEnd = -1;
         public boolean navigable;
+        public String changePath;
+        public String changeType;
+        public String changeOldContent;
+        public String changeNewContent;
     }
 
     public static final class SessionSettings {

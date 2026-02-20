@@ -127,10 +127,11 @@ final class ConversationScrollController {
             if (project.isDisposed() || suppressScrollTracking) {
                 return;
             }
+            boolean atBottom = isAtBottom(vertical);
             if (isManualScrollRecent() || e.getValueIsAdjusting()) {
+                followStreamingOutput = atBottom;
+            } else if (followStreamingOutput && !atBottom) {
                 followStreamingOutput = false;
-            } else if (isAtBottom(vertical)) {
-                followStreamingOutput = true;
             }
             updateJumpToBottomVisibility(vertical);
         });

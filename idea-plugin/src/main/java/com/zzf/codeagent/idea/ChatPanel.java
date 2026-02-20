@@ -58,6 +58,7 @@ import java.awt.geom.Ellipse2D;
 import java.beans.PropertyChangeListener;
 import java.lang.reflect.Method;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -84,7 +85,7 @@ final class ChatPanel {
     private static final Duration CHAT_TIMEOUT = Duration.ofSeconds(longOrDefault(System.getProperty("codeagent.chatTimeoutSeconds", ""), 600L));
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(longOrDefault(System.getProperty("codeagent.connectTimeoutSeconds", ""), 10L));
     private static final int HISTORY_SEND_MAX_LINES = (int) longOrDefault(System.getProperty("codeagent.historyMaxLines", ""), 60L);
-    private static final int AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 100;
+    private static final int AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 48;
     private static final int TOOLWINDOW_AUTO_HIDE_THRESHOLD_PX = 140;
     private static final long MANUAL_SCROLL_WINDOW_MS = 1200L;
     private static final boolean AUTO_ALIGN_PROJECT_SDK =
@@ -162,6 +163,7 @@ final class ChatPanel {
     private volatile boolean toolWindowAutoHideTriggered;
     private PropertyChangeListener lookAndFeelListener;
     private MessageBusConnection lafMessageBusConnection;
+    private final TodoPanel todoPanel = new TodoPanel();
 
     ChatPanel(Project project) {
         this.project = project;
@@ -178,13 +180,13 @@ final class ChatPanel {
         this.rightPanel.setBackground(UIUtil.getPanelBackground());
         
         
-        this.conversationList = new JPanel();
+        this.conversationList = new ConversationListPanel();
         this.conversationList.setLayout(new BoxLayout(this.conversationList, BoxLayout.Y_AXIS));
         this.conversationList.setBorder(JBUI.Borders.empty(10));
         this.conversationList.setOpaque(false);
         
         this.scrollPane = new JBScrollPane(this.conversationList);
-        this.scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
+        this.scrollPane.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         this.scrollPane.setWheelScrollingEnabled(true);
         this.scrollPane.getVerticalScrollBar().setUnitIncrement(JBUI.scale(18));
         this.scrollPane.getHorizontalScrollBar().setUnitIncrement(JBUI.scale(18));
@@ -360,6 +362,7 @@ final class ChatPanel {
         JPanel bottomWrap = new JPanel(new BorderLayout());
         bottomWrap.setOpaque(false);
         bottomWrap.setBorder(JBUI.Borders.empty(8, 8, 8, 8));
+        bottomWrap.add(todoPanel, BorderLayout.NORTH);
         bottomWrap.add(bottom, BorderLayout.CENTER);
         rightPanel.add(bottomWrap, BorderLayout.SOUTH);
         
@@ -390,6 +393,7 @@ final class ChatPanel {
         refreshChatHeaderTitle();
         installResponsiveSidebarBehavior();
         installLookAndFeelListener();
+        loadTodosAsync();
     }
 
     JComponent getComponent() {
@@ -1214,7 +1218,6 @@ final class ChatPanel {
                             applyAndRecordSessionChange(ui, null, change);
                         }
                     }
-                    appendSessionChangeSummaryIfNeeded(ui);
                     persistAssistantUiSnapshot(ui);
                     scrollToBottomSmart();
                     setBusy(false, "Ready");
@@ -1223,7 +1226,6 @@ final class ChatPanel {
                     ui.answerBuffer.append("\n\nError: ").append(firstNonBlank(data));
                     setMarkdownContent(ui.answerPane, ui.answerBuffer.toString());
                     ui.streamFinished = true;
-                    appendSessionChangeSummaryIfNeeded(ui);
                     persistAssistantUiSnapshot(ui);
                 } else if ("tool_call".equals(event) || "tool_result".equals(event)) {
                     JsonNode node = mapper.readTree(data);
@@ -1231,7 +1233,13 @@ final class ChatPanel {
                 } else if ("status".equals(event)) {
                     handleStatusEvent(data);
                 } else if ("heartbeat".equals(event)) {
-                    
+                    // keep-alive — no action needed
+                } else if ("todo_updated".equals(event)) {
+                    JsonNode node = mapper.readTree(data);
+                    JsonNode todosNode = node.get("todos");
+                    if (todosNode != null) {
+                        todoPanel.updateFromJson(todosNode.toString());
+                    }
                 }
             } catch (Exception e) {
                 logger.warn("sse_event_parse_error event=" + event, e);
@@ -1463,10 +1471,10 @@ final class ChatPanel {
             state.workspaceApplied = state.workspaceApplied || isWorkspaceApplied(metaNode);
 
             applyPendingCommand(state, extractPendingCommand(metaNode), false);
-            PendingChangesManager.PendingChange pendingChange = extractPendingChange(metaNode);
-            if (pendingChange == null) {
-                pendingChange = synthesizePendingChangeFromArgs(state.tool, argsNode);
-            }
+            PendingChangesManager.PendingChange extracted = extractPendingChange(metaNode);
+            PendingChangesManager.PendingChange synthesized = synthesizePendingChangeFromArgs(state.tool, argsNode);
+            PendingChangesManager.PendingChange pendingChange = mergePendingChangeCandidates(extracted, synthesized);
+            pendingChange = hydratePendingChangeContent(pendingChange);
             applyPendingChange(state, pendingChange);
             state.exitCode = null;
         }
@@ -1496,11 +1504,11 @@ final class ChatPanel {
             state.output = extractToolOutput(node, metaNode);
             state.exitCode = extractExitCode(node, metaNode);
 
-            PendingChangesManager.PendingChange pendingChange = extractPendingChange(metaNode);
-            if (pendingChange == null) {
-                JsonNode sourceArgs = (state.lastArgs != null && !state.lastArgs.isNull()) ? state.lastArgs : argsNode;
-                pendingChange = synthesizePendingChangeFromArgs(state.tool, sourceArgs);
-            }
+            JsonNode sourceArgs = (state.lastArgs != null && !state.lastArgs.isNull()) ? state.lastArgs : argsNode;
+            PendingChangesManager.PendingChange extracted = extractPendingChange(metaNode);
+            PendingChangesManager.PendingChange synthesized = synthesizePendingChangeFromArgs(state.tool, sourceArgs);
+            PendingChangesManager.PendingChange pendingChange = mergePendingChangeCandidates(extracted, synthesized);
+            pendingChange = hydratePendingChangeContent(pendingChange);
             applyPendingChange(state, pendingChange);
             applyPendingCommand(state, extractPendingCommand(metaNode), true);
 
@@ -1565,7 +1573,7 @@ final class ChatPanel {
 
             ui.toolActivities.put(callID, created);
             activityPanel.add(created.hostPanel);
-            activityPanel.add(Box.createVerticalStrut(4));
+            activityPanel.add(Box.createVerticalStrut(1));
             ensureToolRenderType(ui, created, classifyToolRenderType(toolName, null, null));
             ui.messagePanel.revalidate();
             ui.messagePanel.repaint();
@@ -1585,7 +1593,7 @@ final class ChatPanel {
                 state.hostPanel.setLayout(new BoxLayout(state.hostPanel, BoxLayout.Y_AXIS));
                 state.hostPanel.setOpaque(false);
                 activityPanel.add(state.hostPanel);
-                activityPanel.add(Box.createVerticalStrut(4));
+                activityPanel.add(Box.createVerticalStrut(1));
                 rebuild = true;
             }
             if (rebuild) {
@@ -1632,27 +1640,60 @@ final class ChatPanel {
             if (state == null || state.hostPanel == null) {
                 return;
             }
+            // Remove existing diff card
             if (state.inlineDiffCard != null) {
                 state.hostPanel.remove(state.inlineDiffCard);
                 state.inlineDiffCard = null;
-            }
-            if (state.renderType != ToolRenderType.MODIFICATION) {
                 state.hostPanel.revalidate();
                 state.hostPanel.repaint();
+            }
+            // Show compact diff card only when tool has completed with a file change
+            if (!"completed".equalsIgnoreCase(state.status) || state.pendingChange == null) {
                 return;
             }
-            PendingChangesManager.PendingChange change = state.pendingChange;
-            if (change == null || "DELETE".equalsIgnoreCase(change.type)) {
-                state.hostPanel.revalidate();
-                state.hostPanel.repaint();
-                return;
+            PendingChangesManager.PendingChange displayChange = hydratePendingChangeContent(state.pendingChange);
+            LineDiffStat stat = computeLineDiffStat(displayChange);
+
+            JPanel card = new JPanel(new BorderLayout(6, 0));
+            card.setOpaque(false);
+            card.setBorder(JBUI.Borders.empty(1, 4, 2, 4));
+            card.setMaximumSize(new Dimension(Integer.MAX_VALUE, JBUI.scale(22)));
+            card.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+
+            JLabel nameLabel = new JLabel(shortFileName(state.pendingChange.path));
+            nameLabel.setFont(nameLabel.getFont().deriveFont(JBUI.scaleFontSize(11f)));
+            nameLabel.setForeground(UIUtil.getContextHelpForeground());
+
+            JPanel stats = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+            stats.setOpaque(false);
+            if (stat.added > 0 || stat.removed > 0) {
+                JLabel addLabel = new JLabel("+" + stat.added);
+                addLabel.setFont(addLabel.getFont().deriveFont(JBUI.scaleFontSize(11f)));
+                addLabel.setForeground(resolveSuccessColor());
+                stats.add(addLabel);
+                JLabel rmLabel = new JLabel("-" + stat.removed);
+                rmLabel.setFont(rmLabel.getFont().deriveFont(JBUI.scaleFontSize(11f)));
+                rmLabel.setForeground(resolveRemovalColor());
+                stats.add(rmLabel);
             }
-            JPanel wrapper = new JPanel(new BorderLayout());
-            wrapper.setOpaque(false);
-            wrapper.setBorder(JBUI.Borders.emptyTop(4));
-            wrapper.add(createChangeRowCard(change, "Show Diff"), BorderLayout.CENTER);
-            state.inlineDiffCard = wrapper;
-            state.hostPanel.add(wrapper);
+
+            card.add(nameLabel, BorderLayout.CENTER);
+            card.add(stats, BorderLayout.EAST);
+
+            PendingChangesManager.PendingChange finalChange = displayChange;
+            card.addMouseListener(new java.awt.event.MouseAdapter() {
+                @Override
+                public void mouseClicked(java.awt.event.MouseEvent e) {
+                    diffService.showDiffExplicit(
+                            finalChange.path,
+                            finalChange.oldContent,
+                            finalChange.newContent
+                    );
+                }
+            });
+
+            state.inlineDiffCard = card;
+            state.hostPanel.add(card);
             state.hostPanel.revalidate();
             state.hostPanel.repaint();
         }
@@ -1715,7 +1756,40 @@ final class ChatPanel {
         if (success != null) {
             return success;
         }
-        return UIUtil.getLabelForeground();
+        return new JBColor(new Color(0x36B336), new Color(0x59B85C));
+    }
+
+    private static Color resolveRemovalColor() {
+        Color danger = resolveUiColor("Label.errorForeground", null);
+        if (danger != null) {
+            return danger;
+        }
+        danger = resolveUiColor("Actions.Red", null);
+        if (danger != null) {
+            return danger;
+        }
+        danger = resolveUiColor("Component.errorFocusColor", null);
+        if (danger != null) {
+            return danger;
+        }
+        return new JBColor(new Color(0xCF222E), new Color(0xF47067));
+    }
+
+    private JComponent createDiffStatPanel(LineDiffStat stat) {
+        JPanel panel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        panel.setOpaque(false);
+
+        JLabel added = new JLabel("+" + Math.max(0, stat == null ? 0 : stat.added));
+        added.setForeground(resolveSuccessColor());
+        added.setFont(added.getFont().deriveFont(Font.BOLD));
+
+        JLabel removed = new JLabel("-" + Math.max(0, stat == null ? 0 : stat.removed));
+        removed.setForeground(resolveRemovalColor());
+        removed.setFont(removed.getFont().deriveFont(Font.BOLD));
+
+        panel.add(added);
+        panel.add(removed);
+        return panel;
     }
 
     private static Color resolveUiColor(String key, Color fallback) {
@@ -2168,8 +2242,38 @@ final class ChatPanel {
         });
     }
 
-    private String resolvePendingCommandEndpoint() {
-        String override = System.getProperty("codeagent.pending.command.endpoint");
+    private void loadTodosAsync() {
+        if (workspaceRoot == null || workspaceRoot.isBlank()) return;
+        String url = resolveTodosEndpoint();
+        CompletableFuture.runAsync(() -> {
+            try {
+                HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                        .timeout(Duration.ofSeconds(10))
+                        .GET()
+                        .build();
+                HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+                if (resp.statusCode() == 200 && resp.body() != null && !resp.body().isBlank()) {
+                    todoPanel.updateFromJson(resp.body());
+                }
+            } catch (Exception e) {
+                logger.warn("Failed to load todos from backend: " + e.getMessage());
+            }
+        });
+    }
+
+    private String resolveTodosEndpoint() {
+        String base = System.getProperty("codeagent.endpoint", DEFAULT_AGENT_ENDPOINT);
+        int idx = base.indexOf("/api/agent");
+        String apiBase = idx >= 0 ? base.substring(0, idx) + "/api/agent" : base;
+        try {
+            String encoded = URLEncoder.encode(workspaceRoot, StandardCharsets.UTF_8);
+            return apiBase + "/todos?workspaceRoot=" + encoded;
+        } catch (Exception e) {
+            return apiBase + "/todos?workspaceRoot=" + workspaceRoot.replace("\\", "/");
+        }
+    }
+
+    private String resolvePendingCommandEndpoint() {        String override = System.getProperty("codeagent.pending.command.endpoint");
         if (override != null && !override.isBlank()) {
             return override;
         }
@@ -2703,6 +2807,58 @@ final class ChatPanel {
         String source = markdown == null ? "" : markdown;
         pane.putClientProperty(MARKDOWN_SOURCE_CLIENT_KEY, source);
         pane.setText(MarkdownUtils.renderToHtml(source));
+        reflowMarkdownPane(pane);
+    }
+
+    private JEditorPane createMarkdownPane() {
+        JEditorPane pane = new JEditorPane() {
+            @Override
+            public Dimension getPreferredSize() {
+                int targetWidth = resolveMarkdownPaneWidth(this);
+                if (targetWidth > 0) {
+                    super.setSize(targetWidth, Short.MAX_VALUE);
+                }
+                return super.getPreferredSize();
+            }
+        };
+        pane.setEditable(false);
+        pane.setContentType("text/html");
+        pane.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
+        pane.setOpaque(false);
+        pane.setForeground(UIUtil.getLabelForeground());
+        return pane;
+    }
+
+    private int resolveMarkdownPaneWidth(JEditorPane pane) {
+        Container parent = pane.getParent();
+        if (parent != null && parent.getWidth() > 0) {
+            return Math.max(1, parent.getWidth());
+        }
+        JViewport viewport = (JViewport) SwingUtilities.getAncestorOfClass(JViewport.class, pane);
+        if (viewport != null && viewport.getWidth() > 0) {
+            return Math.max(1, viewport.getWidth() - JBUI.scale(20));
+        }
+        return -1;
+    }
+
+    private void reflowMarkdownPane(JEditorPane pane) {
+        SwingUtilities.invokeLater(() -> {
+            if (project.isDisposed() || pane == null) {
+                return;
+            }
+            int targetWidth = resolveMarkdownPaneWidth(pane);
+            if (targetWidth > 0) {
+                pane.setSize(new Dimension(targetWidth, Short.MAX_VALUE));
+            }
+            JScrollBar horizontal = scrollPane == null ? null : scrollPane.getHorizontalScrollBar();
+            if (horizontal != null && horizontal.getValue() != 0) {
+                horizontal.setValue(0);
+            }
+            pane.revalidate();
+            pane.repaint();
+            conversationList.revalidate();
+            conversationList.repaint();
+        });
     }
 
     private void refreshRenderedMarkdownInConversation() {
@@ -2719,7 +2875,7 @@ final class ChatPanel {
         if (component instanceof JEditorPane pane) {
             Object source = pane.getClientProperty(MARKDOWN_SOURCE_CLIENT_KEY);
             if (source instanceof String markdown) {
-                pane.setText(MarkdownUtils.renderToHtml(markdown));
+                setMarkdownContent(pane, markdown);
             }
             return;
         }
@@ -2787,11 +2943,95 @@ final class ChatPanel {
                     ui.historyCommitted = true;
                 }
                 ui.streamFinished = true;
-                appendSessionChangeSummaryIfNeeded(ui);
                 persistAssistantUiSnapshot(ui);
             }
+            finalizeSessionChangeSummary(assistantState);
             scrollToBottomSmart();
         });
+    }
+
+    private void finalizeSessionChangeSummary(ConversationStateManager<AgentMessageUI> assistantState) {
+        if (assistantState == null) {
+            return;
+        }
+        List<AgentMessageUI> snapshot = assistantState.uniqueSnapshot();
+        if (snapshot.isEmpty()) {
+            return;
+        }
+
+        AgentMessageUI finalUi = lastAssistantUi(assistantState);
+        if (finalUi == null) {
+            return;
+        }
+
+        LinkedHashMap<String, PendingChangesManager.PendingChange> merged = new LinkedHashMap<>();
+        for (AgentMessageUI ui : snapshot) {
+            if (ui == null || ui.sessionChanges == null || ui.sessionChanges.isEmpty()) {
+                continue;
+            }
+            for (PendingChangesManager.PendingChange change : ui.sessionChanges.values()) {
+                if (change == null || change.path == null || change.path.isBlank()) {
+                    continue;
+                }
+                PendingChangesManager.PendingChange normalized = normalizeChangeForDirectApply(change);
+                if (normalized == null) {
+                    continue;
+                }
+                String key = sessionChangeKey(normalized);
+                PendingChangesManager.PendingChange existing = merged.get(key);
+                if (existing == null) {
+                    merged.put(key, copyPendingChange(normalized));
+                    continue;
+                }
+                PendingChangesManager.PendingChange mergedChange = new PendingChangesManager.PendingChange(
+                        firstNonBlank(normalized.id, existing.id, java.util.UUID.randomUUID().toString()),
+                        firstNonBlank(normalized.path, existing.path),
+                        mergeChangeType(existing.type, normalized.type),
+                        firstNonBlank(existing.oldContent, normalized.oldContent),
+                        firstNonBlank(normalized.newContent, existing.newContent),
+                        firstNonBlank(normalized.preview, existing.preview),
+                        Math.max(normalized.timestamp, existing.timestamp),
+                        firstNonBlank(normalized.workspaceRoot, existing.workspaceRoot, workspaceRoot),
+                        firstNonBlank(normalized.sessionId, existing.sessionId, currentSessionId)
+                );
+                merged.put(key, mergedChange);
+            }
+        }
+
+        for (AgentMessageUI ui : snapshot) {
+            if (ui == null) {
+                continue;
+            }
+            clearSessionChangeSummaryPanel(ui);
+            if (ui != finalUi) {
+                ui.sessionChanges.clear();
+                ui.undoneSessionChangeKeys.clear();
+                ui.sessionChangeSummaryShown = false;
+            }
+        }
+
+        finalUi.sessionChanges.clear();
+        finalUi.sessionChanges.putAll(merged);
+        finalUi.sessionChangeSummaryShown = false;
+        appendSessionChangeSummaryIfNeeded(finalUi);
+
+        for (AgentMessageUI ui : snapshot) {
+            if (ui == null) {
+                continue;
+            }
+            persistAssistantUiSnapshot(ui);
+        }
+    }
+
+    private void clearSessionChangeSummaryPanel(AgentMessageUI ui) {
+        if (ui == null || ui.messagePanel == null || ui.sessionChangeSummaryPanel == null) {
+            return;
+        }
+        ui.messagePanel.remove(ui.sessionChangeSummaryPanel);
+        ui.sessionChangeSummaryPanel = null;
+        ui.sessionChangeSummaryShown = false;
+        ui.messagePanel.revalidate();
+        ui.messagePanel.repaint();
     }
 
     private void persistUserUiMessage(String text) {
@@ -2856,6 +3096,15 @@ final class ChatPanel {
                 activity.lineStart = state.targetLineStart;
                 activity.lineEnd = state.targetLineEnd;
                 activity.navigable = state.targetNavigable;
+                if (state.pendingChange != null) {
+                    PendingChangesManager.PendingChange persistedChange = normalizeChangeForDirectApply(state.pendingChange);
+                    if (persistedChange != null) {
+                        activity.changePath = firstNonBlank(persistedChange.path);
+                        activity.changeType = firstNonBlank(persistedChange.type, "EDIT");
+                        activity.changeOldContent = firstNonBlank(persistedChange.oldContent);
+                        activity.changeNewContent = firstNonBlank(persistedChange.newContent);
+                    }
+                }
                 if (state.panel != null) {
                     activity.summary = firstNonBlank(state.panel.getSummaryText(), state.uiSummary, buildToolSummary(state));
                     activity.expandedSummary = firstNonBlank(state.panel.getExpandedSummaryText(), state.uiExpandedSummary, resolveExpandedSummary(state));
@@ -2872,6 +3121,22 @@ final class ChatPanel {
                 message.toolActivities.add(activity);
             }
         }
+
+        if (ui.sessionChanges != null && !ui.sessionChanges.isEmpty()) {
+            for (PendingChangesManager.PendingChange change : ui.sessionChanges.values()) {
+                if (change == null || change.path == null || change.path.isBlank()) continue;
+                ChatHistoryService.PersistedChange pc = new ChatHistoryService.PersistedChange();
+                pc.path = change.path;
+                pc.type = change.type != null ? change.type : "EDIT";
+                pc.oldContent = change.oldContent != null ? change.oldContent : "";
+                pc.newContent = change.newContent != null ? change.newContent : "";
+                message.sessionChanges.add(pc);
+            }
+        }
+        if (ui.undoneSessionChangeKeys != null && !ui.undoneSessionChangeKeys.isEmpty()) {
+            message.undoneSessionChangeKeys.addAll(ui.undoneSessionChangeKeys);
+        }
+        message.showSessionChangeSummary = ui.sessionChangeSummaryShown;
 
         if (ui.historyUiMessageId == null || ui.historyUiMessageId.isBlank()) {
             ui.historyUiMessageId = history.appendUiMessage(message);
@@ -2937,12 +3202,7 @@ final class ChatPanel {
             
             
             String answerText = (response != null) ? response.answer : text;
-            JEditorPane content = new JEditorPane();
-            content.setEditable(false);
-            content.setContentType("text/html");
-            content.putClientProperty(JEditorPane.HONOR_DISPLAY_PROPERTIES, Boolean.TRUE);
-            content.setOpaque(false);
-            content.setForeground(UIUtil.getLabelForeground());
+            JEditorPane content = createMarkdownPane();
             
             if (animate && answerText != null && !answerText.isEmpty()) {
                 typewriterEffect(content, answerText);
@@ -2962,7 +3222,6 @@ final class ChatPanel {
                 for (PendingChangesManager.PendingChange change : response.changes) {
                     applyAndRecordSessionChange(ui, null, change);
                 }
-                appendSessionChangeSummaryIfNeeded(ui);
             }
         }
         
@@ -3055,7 +3314,7 @@ final class ChatPanel {
         Path absolute = resolvePathForChange(path, workspace);
         boolean exists = absolute != null && Files.exists(absolute) && Files.isRegularFile(absolute);
 
-        if ("EDIT".equals(normalizedType) || "CREATE".equals(normalizedType)) {
+        if ("EDIT".equals(normalizedType)) {
             if (oldContent.isBlank() && exists) {
                 try {
                     oldContent = Files.readString(absolute, StandardCharsets.UTF_8);
@@ -3063,10 +3322,13 @@ final class ChatPanel {
                     oldContent = "";
                 }
             }
-            if ("EDIT".equals(normalizedType) && !exists) {
+            if (!exists) {
                 normalizedType = "CREATE";
             }
-            if ("CREATE".equals(normalizedType) && exists && !oldContent.isBlank()) {
+        } else if ("CREATE".equals(normalizedType)) {
+            // Do NOT read oldContent from disk for CREATE: the file was just written,
+            // reading it now would give newContent == oldContent → diff +0 -0.
+            if (exists && !oldContent.isBlank()) {
                 normalizedType = "EDIT";
             }
         }
@@ -3100,6 +3362,68 @@ final class ChatPanel {
                 firstNonBlank(source.type, "EDIT"),
                 firstNonBlank(source.oldContent),
                 firstNonBlank(source.newContent),
+                firstNonBlank(source.preview),
+                source.timestamp > 0L ? source.timestamp : System.currentTimeMillis(),
+                firstNonBlank(source.workspaceRoot, workspaceRoot),
+                firstNonBlank(source.sessionId, currentSessionId)
+        );
+    }
+
+    private PendingChangesManager.PendingChange mergePendingChangeCandidates(
+            PendingChangesManager.PendingChange primary,
+            PendingChangesManager.PendingChange fallback
+    ) {
+        if (primary == null) {
+            return fallback == null ? null : copyPendingChange(fallback);
+        }
+        if (fallback == null) {
+            return copyPendingChange(primary);
+        }
+        String path = firstNonBlank(primary.path, fallback.path);
+        if (path.isBlank()) {
+            return null;
+        }
+        return new PendingChangesManager.PendingChange(
+                firstNonBlank(primary.id, fallback.id, java.util.UUID.randomUUID().toString()),
+                path,
+                mergeChangeType(primary.type, fallback.type),
+                firstNonBlank(primary.oldContent, fallback.oldContent),
+                firstNonBlank(primary.newContent, fallback.newContent),
+                firstNonBlank(primary.preview, fallback.preview),
+                Math.max(primary.timestamp, fallback.timestamp),
+                firstNonBlank(primary.workspaceRoot, fallback.workspaceRoot, workspaceRoot),
+                firstNonBlank(primary.sessionId, fallback.sessionId, currentSessionId)
+        );
+    }
+
+    private PendingChangesManager.PendingChange hydratePendingChangeContent(PendingChangesManager.PendingChange source) {
+        if (source == null || source.path == null || source.path.isBlank()) {
+            return source;
+        }
+        String oldContent = firstNonBlank(source.oldContent);
+        String newContent = firstNonBlank(source.newContent);
+        String normalizedType = firstNonBlank(source.type, "EDIT").trim().toUpperCase(Locale.ROOT);
+        if (!newContent.isBlank() || "DELETE".equals(normalizedType)) {
+            return source;
+        }
+        Path absolute = resolvePathForChange(source.path, firstNonBlank(source.workspaceRoot, workspaceRoot));
+        if (absolute == null || !Files.exists(absolute) || !Files.isRegularFile(absolute)) {
+            return source;
+        }
+        try {
+            newContent = Files.readString(absolute, StandardCharsets.UTF_8);
+        } catch (Exception ignored) {
+            newContent = "";
+        }
+        if (newContent.isBlank()) {
+            return source;
+        }
+        return new PendingChangesManager.PendingChange(
+                firstNonBlank(source.id, java.util.UUID.randomUUID().toString()),
+                source.path,
+                source.type,
+                oldContent,
+                newContent,
                 firstNonBlank(source.preview),
                 source.timestamp > 0L ? source.timestamp : System.currentTimeMillis(),
                 firstNonBlank(source.workspaceRoot, workspaceRoot),
@@ -3160,7 +3484,20 @@ final class ChatPanel {
         if (summaryPanel == null) {
             return;
         }
-        ui.messagePanel.add(Box.createVerticalStrut(10));
+        // If tool activities exist and answerPane is currently before them,
+        // move answerPane to appear AFTER the activity panel so the layout is:
+        //   [tool activities + diff cards]
+        //   [final answer text]
+        //   [session summary + undo buttons]
+        if (ui.activityPanel != null && ui.answerPane != null && ui.messagePanel != null) {
+            int answerIdx = ui.messagePanel.getComponentZOrder(ui.answerPane);
+            int activityIdx = ui.messagePanel.getComponentZOrder(ui.activityPanel);
+            if (answerIdx >= 0 && activityIdx >= 0 && answerIdx < activityIdx) {
+                ui.messagePanel.remove(ui.answerPane);
+                ui.messagePanel.add(Box.createVerticalStrut(4));
+                ui.messagePanel.add(ui.answerPane);
+            }
+        }
         ui.messagePanel.add(summaryPanel);
         ui.sessionChangeSummaryPanel = summaryPanel;
         ui.sessionChangeSummaryShown = true;
@@ -3177,98 +3514,121 @@ final class ChatPanel {
         int totalAdded = 0;
         int totalRemoved = 0;
         for (PendingChangesManager.PendingChange change : changes) {
-            LineDiffStat stat = computeLineDiffStat(change.oldContent, change.newContent);
+            LineDiffStat stat = computeLineDiffStat(hydratePendingChangeContent(change));
             totalAdded += stat.added;
             totalRemoved += stat.removed;
         }
 
         JPanel panel = new JPanel();
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
-        panel.setBorder(BorderFactory.createTitledBorder("Session Changes"));
+        panel.setBorder(JBUI.Borders.empty(6, 4, 4, 4));
         panel.setOpaque(false);
 
+        // ── Header ──────────────────────────────────────────────────────────
         JPanel header = new JPanel(new BorderLayout(8, 0));
         header.setOpaque(false);
         JLabel title = new JLabel(changes.size() + " files changed  +" + totalAdded + "  -" + totalRemoved);
         title.setFont(title.getFont().deriveFont(Font.BOLD));
         title.setForeground(UIUtil.getLabelForeground());
-        JButton undoAllBtn = new JButton("Undo All");
-        undoAllBtn.setFocusable(false);
         header.add(title, BorderLayout.WEST);
-        header.add(undoAllBtn, BorderLayout.EAST);
         panel.add(header);
         panel.add(Box.createVerticalStrut(6));
 
-        List<JButton> rowUndoButtons = new ArrayList<>();
+        JSeparator topSep = new JSeparator();
+        topSep.setMaximumSize(new Dimension(Integer.MAX_VALUE, 1));
+        panel.add(topSep);
+        panel.add(Box.createVerticalStrut(4));
+
+        // ── File rows ────────────────────────────────────────────────────────
+        // Each row: [filename + diff stats (left)] | [Undo button (right)]
+        // Clicking the left area opens the diff viewer.
+        List<JButton> undoButtons = new ArrayList<>();
         for (PendingChangesManager.PendingChange change : changes) {
+            PendingChangesManager.PendingChange displayChange = hydratePendingChangeContent(change);
+            String changeKey = sessionChangeKey(change);
+            LineDiffStat stat = computeLineDiffStat(displayChange);
+
             JPanel row = new JPanel(new BorderLayout(8, 0));
             row.setOpaque(false);
-            row.setBorder(JBUI.Borders.empty(4));
+            row.setBorder(JBUI.Borders.empty(3, 4, 3, 4));
+            row.setMaximumSize(new Dimension(Integer.MAX_VALUE, JBUI.scale(32)));
 
-            JPanel textPanel = new JPanel();
-            textPanel.setLayout(new BoxLayout(textPanel, BoxLayout.Y_AXIS));
-            textPanel.setOpaque(false);
+            // Left: filename + diff stats — clicking opens diff viewer
+            JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+            left.setOpaque(false);
+            left.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
             JLabel nameLabel = new JLabel(shortFileName(change.path));
             nameLabel.setFont(nameLabel.getFont().deriveFont(Font.BOLD));
-            JLabel pathLabel = new JLabel(firstNonBlank(change.path));
-            pathLabel.setForeground(UIUtil.getContextHelpForeground());
-            pathLabel.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
-            textPanel.add(nameLabel);
-            textPanel.add(pathLabel);
+            left.add(nameLabel);
+            left.add(createDiffStatPanel(stat));
 
-            JPanel actions = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
-            actions.setOpaque(false);
+            left.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    diffService.showDiffExplicit(
+                            displayChange.path,
+                            displayChange.oldContent,
+                            displayChange.newContent
+                    );
+                }
+            });
 
-            LineDiffStat stat = computeLineDiffStat(change.oldContent, change.newContent);
-            JLabel statLabel = new JLabel("+" + stat.added + "  -" + stat.removed);
-            statLabel.setForeground(resolveSuccessColor());
-
-            JButton reviewBtn = new JButton("Review");
-            reviewBtn.setFocusable(false);
-            reviewBtn.addActionListener(e -> diffService.showDiffExplicit(change.path, change.oldContent, change.newContent));
-
+            // Right: Undo button
             JButton undoBtn = new JButton("Undo");
             undoBtn.setFocusable(false);
-            String changeKey = sessionChangeKey(change);
             if (ui.undoneSessionChangeKeys.contains(changeKey)) {
                 undoBtn.setEnabled(false);
             }
             undoBtn.addActionListener(e -> {
-                if (undoSessionChange(change)) {
+                if (undoSessionChange(displayChange)) {
                     ui.undoneSessionChangeKeys.add(changeKey);
                     undoBtn.setEnabled(false);
                 }
             });
-            rowUndoButtons.add(undoBtn);
+            undoButtons.add(undoBtn);
 
-            actions.add(statLabel);
-            actions.add(reviewBtn);
-            actions.add(undoBtn);
-
-            row.add(textPanel, BorderLayout.CENTER);
-            row.add(actions, BorderLayout.EAST);
+            row.add(left, BorderLayout.CENTER);
+            row.add(undoBtn, BorderLayout.EAST);
             panel.add(row);
         }
 
-        undoAllBtn.addActionListener(e -> {
-            for (PendingChangesManager.PendingChange change : changes) {
-                String changeKey = sessionChangeKey(change);
-                if (ui.undoneSessionChangeKeys.contains(changeKey)) {
-                    continue;
-                }
-                if (undoSessionChange(change)) {
-                    ui.undoneSessionChangeKeys.add(changeKey);
-                }
-            }
-            for (JButton button : rowUndoButtons) {
-                button.setEnabled(false);
-            }
-            undoAllBtn.setEnabled(false);
-        });
+        // ── Undo All ─────────────────────────────────────────────────────────
+        panel.add(Box.createVerticalStrut(4));
+        JSeparator botSep = new JSeparator();
+        botSep.setMaximumSize(new Dimension(Integer.MAX_VALUE, 1));
+        panel.add(botSep);
+        panel.add(Box.createVerticalStrut(4));
+
+        JPanel undoAllRow = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+        undoAllRow.setOpaque(false);
+        JButton undoAllBtn = new JButton("Undo All");
+        undoAllBtn.setFocusable(false);
         if (changes.isEmpty()) {
             undoAllBtn.setEnabled(false);
         }
+        undoAllBtn.addActionListener(e -> {
+            List<PendingChangesManager.PendingChange> displayChanges =
+                    new ArrayList<>(ui.sessionChanges.values()).stream()
+                            .map(this::hydratePendingChangeContent)
+                            .collect(java.util.stream.Collectors.toList());
+            for (int i = 0; i < changes.size(); i++) {
+                String changeKey = sessionChangeKey(changes.get(i));
+                if (ui.undoneSessionChangeKeys.contains(changeKey)) {
+                    continue;
+                }
+                if (undoSessionChange(displayChanges.get(i))) {
+                    ui.undoneSessionChangeKeys.add(changeKey);
+                }
+            }
+            for (JButton btn : undoButtons) {
+                btn.setEnabled(false);
+            }
+            undoAllBtn.setEnabled(false);
+        });
+        undoAllRow.add(undoAllBtn);
+        panel.add(undoAllRow);
+
         return panel;
     }
 
@@ -3344,15 +3704,18 @@ final class ChatPanel {
         JPanel rightPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
         rightPanel.setOpaque(false);
 
-        LineDiffStat stat = computeLineDiffStat(change.oldContent, change.newContent);
-        JLabel statLabel = new JLabel("+" + stat.added + "  -" + stat.removed);
-        statLabel.setForeground(resolveSuccessColor());
+        PendingChangesManager.PendingChange displayChange = hydratePendingChangeContent(change);
+        LineDiffStat stat = computeLineDiffStat(displayChange);
 
         JButton viewBtn = new JButton((actionLabel == null || actionLabel.isBlank()) ? "Show Diff" : actionLabel);
         viewBtn.setFocusable(false);
-        viewBtn.addActionListener(e -> diffService.showDiffExplicit(change.path, change.oldContent, change.newContent));
+        viewBtn.addActionListener(e -> diffService.showDiffExplicit(
+                displayChange.path,
+                displayChange.oldContent,
+                displayChange.newContent
+        ));
 
-        rightPanel.add(statLabel);
+        rightPanel.add(createDiffStatPanel(stat));
         rightPanel.add(viewBtn);
 
         item.add(textPanel, BorderLayout.CENTER);
@@ -3411,6 +3774,22 @@ final class ChatPanel {
 
         int lcs = prev[m];
         return new LineDiffStat(Math.max(0, m - lcs), Math.max(0, n - lcs));
+    }
+
+    private LineDiffStat computeLineDiffStat(PendingChangesManager.PendingChange change) {
+        if (change == null) {
+            return new LineDiffStat(0, 0);
+        }
+        String oldContent = firstNonBlank(change.oldContent);
+        String newContent = firstNonBlank(change.newContent);
+        if (oldContent.isBlank() && newContent.isBlank()) {
+            PendingChangesManager.PendingChange hydrated = hydratePendingChangeContent(change);
+            if (hydrated != null) {
+                oldContent = firstNonBlank(hydrated.oldContent);
+                newContent = firstNonBlank(hydrated.newContent);
+            }
+        }
+        return computeLineDiffStat(oldContent, newContent);
     }
 
     private String[] splitLines(String content) {
@@ -3855,18 +4234,16 @@ final class ChatPanel {
 
     private static class InlineToolRowPanel extends JPanel {
         private final JLabel markerLabel;
-        private final JLabel summaryLabel;
+        private final ShimmerLabel summaryLabel;
         private final JLabel metaLabel;
         private Runnable action;
         private boolean hover;
         private boolean running;
-        private Timer shimmerTimer;
-        private int shimmerOffset;
 
         InlineToolRowPanel(String marker) {
             setLayout(new BorderLayout(8, 0));
             setOpaque(false);
-            setBorder(JBUI.Borders.empty(3, 4, 3, 4));
+            setBorder(JBUI.Borders.empty(1, 4, 1, 4));
             setCursor(Cursor.getDefaultCursor());
 
             JPanel left = new JPanel(new BorderLayout(6, 0));
@@ -3876,7 +4253,7 @@ final class ChatPanel {
             markerLabel.setForeground(UIUtil.getContextHelpForeground());
             markerLabel.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
 
-            summaryLabel = new JLabel();
+            summaryLabel = new ShimmerLabel();
             summaryLabel.setForeground(UIUtil.getLabelForeground());
 
             left.add(markerLabel, BorderLayout.WEST);
@@ -3936,76 +4313,20 @@ final class ChatPanel {
                 return;
             }
             this.running = running;
-            if (running) {
-                startShimmer();
-            } else {
-                stopShimmer();
-            }
-            repaint();
-        }
-
-        private void startShimmer() {
-            if (shimmerTimer != null && shimmerTimer.isRunning()) {
-                return;
-            }
-            shimmerOffset = -Math.max(80, getWidth() / 3);
-            shimmerTimer = new Timer(36, e -> {
-                int width = Math.max(120, getWidth());
-                int band = Math.max(90, width / 3);
-                shimmerOffset += Math.max(6, width / 28);
-                if (shimmerOffset > width + band) {
-                    shimmerOffset = -band;
-                }
-                repaint();
-            });
-            shimmerTimer.start();
-        }
-
-        private void stopShimmer() {
-            if (shimmerTimer != null) {
-                shimmerTimer.stop();
-                shimmerTimer = null;
-            }
-        }
-
-        @Override
-        public void removeNotify() {
-            stopShimmer();
-            super.removeNotify();
+            summaryLabel.setShimmerActive(running);
         }
 
         @Override
         protected void paintComponent(Graphics g) {
-            Graphics2D g2 = (Graphics2D) g.create();
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            if (hover || action != null) {
+            if (hover) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
                 Color panelBg = UIUtil.getPanelBackground();
                 Color selectionBg = resolveUiColor("List.selectionBackground", UIUtil.getLabelForeground());
-                Color fill = hover
-                        ? ColorUtil.mix(panelBg, selectionBg, UIUtil.isUnderDarcula() ? 0.28 : 0.14)
-                        : ColorUtil.mix(panelBg, UIUtil.getLabelForeground(), UIUtil.isUnderDarcula() ? 0.10 : 0.05);
-                g2.setColor(fill);
-                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 12, 12);
+                g2.setColor(ColorUtil.mix(panelBg, selectionBg, UIUtil.isUnderDarcula() ? 0.28 : 0.14));
+                g2.fillRoundRect(0, 0, getWidth(), getHeight(), 10, 10);
+                g2.dispose();
             }
-            if (running) {
-                int width = Math.max(1, getWidth());
-                int height = Math.max(1, getHeight());
-                int band = Math.max(90, width / 3);
-                float x1 = shimmerOffset - band;
-                float x2 = shimmerOffset + band;
-                LinearGradientPaint paint = new LinearGradientPaint(
-                        x1, 0f, x2, 0f,
-                        new float[]{0f, 0.5f, 1f},
-                        new Color[]{
-                                withAlpha(UIUtil.getLabelForeground(), 0),
-                                withAlpha(UIUtil.getLabelForeground(), 55),
-                                withAlpha(UIUtil.getLabelForeground(), 0)
-                        }
-                );
-                g2.setPaint(paint);
-                g2.fillRoundRect(0, 0, width, height, 12, 12);
-            }
-            g2.dispose();
             super.paintComponent(g);
         }
     }
@@ -4163,17 +4484,103 @@ final class ChatPanel {
         }
     }
 
-    private static class ThinkingStatusPanel extends JPanel {
-        private final JLabel textLabel;
-        private boolean active;
+    /**
+     * A JLabel that paints a left-to-right shimmer sweep <em>only on the text glyphs</em>.
+     * The surrounding row/panel background is untouched.
+     */
+    private static final class ShimmerLabel extends JLabel {
+        private boolean shimmerActive;
+        private float phase;
         private Timer shimmerTimer;
-        private int shimmerOffset;
+
+        ShimmerLabel() {
+            super();
+        }
+
+        void setShimmerActive(boolean active) {
+            if (this.shimmerActive == active) return;
+            this.shimmerActive = active;
+            if (active) {
+                phase = 0f;
+                if (shimmerTimer == null || !shimmerTimer.isRunning()) {
+                    shimmerTimer = new Timer(40, e -> {
+                        phase += 0.04f;
+                        if (phase > 1f) phase = 0f;
+                        repaint();
+                    });
+                    shimmerTimer.start();
+                }
+            } else {
+                if (shimmerTimer != null) {
+                    shimmerTimer.stop();
+                    shimmerTimer = null;
+                }
+                repaint();
+            }
+        }
+
+        @Override
+        public void removeNotify() {
+            if (shimmerTimer != null) { shimmerTimer.stop(); shimmerTimer = null; }
+            super.removeNotify();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            String text = getText();
+            if (!shimmerActive || text == null || text.isEmpty() || text.startsWith("<html")) {
+                super.paintComponent(g);
+                return;
+            }
+            Font font = getFont();
+            if (font == null) { super.paintComponent(g); return; }
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            g2.setFont(font);
+            FontMetrics fm = g2.getFontMetrics();
+            Insets ins = getInsets();
+            int ix = ins != null ? ins.left : 0;
+            int iy = ins != null ? ins.top  : 0;
+            int availH = getHeight() - iy - (ins != null ? ins.bottom : 0);
+            int tx = ix;
+            int ty = iy + Math.max(0, (availH - fm.getAscent() - fm.getDescent()) / 2) + fm.getAscent();
+            int textWidth = fm.stringWidth(text);
+            if (textWidth <= 0) { g2.dispose(); super.paintComponent(g); return; }
+
+            // Paint glyphs so gradient applies only to letter shapes
+            Shape textShape = font.createGlyphVector(g2.getFontRenderContext(), text)
+                                  .getOutline((float) tx, (float) ty);
+            // Base color
+            Color base = getForeground() != null ? getForeground() : UIUtil.getContextHelpForeground();
+            g2.setColor(base);
+            g2.fill(textShape);
+            // Shimmer sweep
+            float bandHalf = textWidth * 0.45f;
+            float center   = (float) tx - bandHalf + phase * (textWidth + 2f * bandHalf);
+            Color hi = withAlpha(UIUtil.getLabelForeground(), 155);
+            LinearGradientPaint shimmer = new LinearGradientPaint(
+                    center - bandHalf, 0f, center + bandHalf, 0f,
+                    new float[]{0f, 0.5f, 1f},
+                    new Color[]{withAlpha(UIUtil.getLabelForeground(), 0), hi,
+                                withAlpha(UIUtil.getLabelForeground(), 0)}
+            );
+            g2.setPaint(shimmer);
+            g2.fill(textShape);
+            g2.dispose();
+        }
+    }
+
+    private static class ThinkingStatusPanel extends JPanel {
+        private final ShimmerLabel textLabel;
+        private boolean active;
 
         ThinkingStatusPanel() {
             setOpaque(false);
             setLayout(new FlowLayout(FlowLayout.LEFT, 12, 0));
             setBorder(JBUI.Borders.empty(0, 2, 6, 2));
-            textLabel = new JLabel("正在思考");
+            textLabel = new ShimmerLabel();
+            textLabel.setText("正在思考");
             textLabel.setForeground(UIUtil.getContextHelpForeground());
             textLabel.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL).deriveFont(Font.BOLD));
             add(textLabel);
@@ -4188,76 +4595,14 @@ final class ChatPanel {
                 return;
             }
             this.active = active;
-            if (active) {
-                startShimmer();
-            } else {
-                stopShimmer();
-            }
-            repaint();
-        }
-
-        private void startShimmer() {
-            if (shimmerTimer != null && shimmerTimer.isRunning()) {
-                return;
-            }
-            shimmerOffset = -Math.max(120, getWidth() / 2);
-            shimmerTimer = new Timer(34, e -> {
-                int width = Math.max(240, getWidth());
-                int band = Math.max(140, width / 3);
-                shimmerOffset += Math.max(8, width / 28);
-                if (shimmerOffset > width + band) {
-                    shimmerOffset = -band;
-                }
-                repaint();
-            });
-            shimmerTimer.start();
-        }
-
-        private void stopShimmer() {
-            if (shimmerTimer != null) {
-                shimmerTimer.stop();
-                shimmerTimer = null;
-            }
-        }
-
-        @Override
-        protected void paintComponent(Graphics g) {
-            super.paintComponent(g);
-            if (!active) {
-                return;
-            }
-            Graphics2D g2 = (Graphics2D) g.create();
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            int width = Math.max(1, getWidth());
-            int height = Math.max(1, getHeight());
-            int band = Math.max(140, width / 3);
-            float x1 = shimmerOffset - band;
-            float x2 = shimmerOffset + band;
-            LinearGradientPaint paint = new LinearGradientPaint(
-                    x1, 0f, x2, 0f,
-                    new float[]{0f, 0.5f, 1f},
-                    new Color[]{
-                            withAlpha(UIUtil.getLabelForeground(), 0),
-                            withAlpha(UIUtil.getLabelForeground(), 70),
-                            withAlpha(UIUtil.getLabelForeground(), 0)
-                    }
-            );
-            g2.setPaint(paint);
-            g2.fillRoundRect(0, 0, width, height, 10, 10);
-            g2.dispose();
-        }
-
-        @Override
-        public void removeNotify() {
-            stopShimmer();
-            super.removeNotify();
+            textLabel.setShimmerActive(active);
         }
     }
 
     private static class ActivityCommandPanel extends JPanel {
         private final JPanel headerPanel;
         private final JLabel chevronLabel;
-        private final JLabel summaryLabel;
+        private final ShimmerLabel summaryLabel;
         private final JLabel subtitleLabel;
         private final JLabel metaLabel;
         private final JTextArea detailArea;
@@ -4278,8 +4623,6 @@ final class ChatPanel {
         private boolean expanded;
         private boolean headerHover;
         private boolean running;
-        private Timer shimmerTimer;
-        private int shimmerOffset;
 
         ActivityCommandPanel(String summary) {
             setLayout(new BorderLayout(0, 2));
@@ -4287,12 +4630,12 @@ final class ChatPanel {
 
             headerPanel = new JPanel(new BorderLayout(8, 0));
             headerPanel.setOpaque(false);
-            headerPanel.setBorder(JBUI.Borders.empty(2, 4, 2, 4));
+            headerPanel.setBorder(JBUI.Borders.empty(1, 4, 1, 4));
             headerPanel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
 
             JPanel left = new JPanel(new BorderLayout(6, 0));
             left.setOpaque(false);
-            summaryLabel = new JLabel();
+            summaryLabel = new ShimmerLabel();
             summaryLabel.setForeground(UIUtil.getLabelForeground());
             subtitleLabel = new JLabel();
             subtitleLabel.setForeground(UIUtil.getContextHelpForeground());
@@ -4431,36 +4774,7 @@ final class ChatPanel {
                 return;
             }
             this.running = running;
-            if (running) {
-                startShimmer();
-            } else {
-                stopShimmer();
-            }
-            repaint();
-        }
-
-        private void startShimmer() {
-            if (shimmerTimer != null && shimmerTimer.isRunning()) {
-                return;
-            }
-            shimmerOffset = -Math.max(120, getWidth() / 3);
-            shimmerTimer = new Timer(34, e -> {
-                int width = Math.max(140, getWidth());
-                int band = Math.max(140, width / 3);
-                shimmerOffset += Math.max(8, width / 30);
-                if (shimmerOffset > width + band) {
-                    shimmerOffset = -band;
-                }
-                repaint();
-            });
-            shimmerTimer.start();
-        }
-
-        private void stopShimmer() {
-            if (shimmerTimer != null) {
-                shimmerTimer.stop();
-                shimmerTimer = null;
-            }
+            summaryLabel.setShimmerActive(running);
         }
 
         private void applyDetailHeight(int height) {
@@ -4699,34 +5013,7 @@ final class ChatPanel {
         }
 
         @Override
-        protected void paintComponent(Graphics g) {
-            Graphics2D g2 = (Graphics2D) g.create();
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            if (running) {
-                int width = Math.max(1, getWidth());
-                int height = Math.max(1, headerPanel == null ? getHeight() : headerPanel.getHeight());
-                int band = Math.max(150, width / 3);
-                float x1 = shimmerOffset - band;
-                float x2 = shimmerOffset + band;
-                LinearGradientPaint paint = new LinearGradientPaint(
-                        x1, 0f, x2, 0f,
-                        new float[]{0f, 0.5f, 1f},
-                        new Color[]{
-                                withAlpha(UIUtil.getLabelForeground(), 0),
-                                withAlpha(UIUtil.getLabelForeground(), 55),
-                                withAlpha(UIUtil.getLabelForeground(), 0)
-                        }
-                );
-                g2.setPaint(paint);
-                g2.fillRoundRect(0, 0, width, height, 12, 12);
-            }
-            g2.dispose();
-            super.paintComponent(g);
-        }
-
-        @Override
         public void removeNotify() {
-            stopShimmer();
             super.removeNotify();
         }
 
@@ -5852,6 +6139,7 @@ final class ChatPanel {
             ui.streamFinished = true;
             ui.historyCommitted = true;
             rebuildToolActivitiesFromHistory(ui, message.toolActivities);
+            rebuildSessionChangesFromHistory(ui, message);
         }
     }
 
@@ -5879,6 +6167,16 @@ final class ChatPanel {
             state.targetNavigable = activity.navigable && isNavigableFileTarget(state.targetPath);
             state.status = firstNonBlank(activity.status);
             state.durationMs = activity.durationMs;
+            if (!firstNonBlank(activity.changePath).isBlank()) {
+                PendingChangesManager.PendingChange persistedChange = new PendingChangesManager.PendingChange(
+                        firstNonBlank(activity.changePath),
+                        firstNonBlank(activity.changeType, "EDIT"),
+                        firstNonBlank(activity.changeOldContent),
+                        firstNonBlank(activity.changeNewContent),
+                        null
+                );
+                state.pendingChange = normalizeChangeForDirectApply(persistedChange);
+            }
             ensureToolRenderType(ui, state, state.renderType);
             state.uiSummary = firstNonBlank(activity.summary, buildToolSummary(state));
             state.uiExpandedSummary = firstNonBlank(activity.expandedSummary, resolveExpandedSummary(state));
@@ -5909,8 +6207,68 @@ final class ChatPanel {
         }
     }
     
+    private void rebuildSessionChangesFromHistory(AgentMessageUI ui, ChatHistoryService.UiMessage message) {
+        if (ui == null || message == null) {
+            return;
+        }
+        List<ChatHistoryService.PersistedChange> persisted = message.sessionChanges;
+        if (persisted == null || persisted.isEmpty()) {
+            return;
+        }
+        for (ChatHistoryService.PersistedChange pc : persisted) {
+            if (pc == null || pc.path == null || pc.path.isBlank()) {
+                continue;
+            }
+            PendingChangesManager.PendingChange change = new PendingChangesManager.PendingChange(
+                    pc.path,
+                    pc.type != null ? pc.type : "EDIT",
+                    pc.oldContent != null ? pc.oldContent : "",
+                    pc.newContent != null ? pc.newContent : "",
+                    null
+            );
+            String key = sessionChangeKey(change);
+            ui.sessionChanges.put(key, change);
+        }
+        if (message.undoneSessionChangeKeys != null && !message.undoneSessionChangeKeys.isEmpty()) {
+            ui.undoneSessionChangeKeys.addAll(message.undoneSessionChangeKeys);
+        }
+        if (message.showSessionChangeSummary) {
+            appendSessionChangeSummaryIfNeeded(ui);
+        }
+    }
+
     private static long longOrDefault(String val, long def) {
         try { return Long.parseLong(val); } catch (Exception e) { return def; }
+    }
+
+    private static final class ConversationListPanel extends JPanel implements Scrollable {
+        @Override
+        public Dimension getPreferredScrollableViewportSize() {
+            return getPreferredSize();
+        }
+
+        @Override
+        public int getScrollableUnitIncrement(Rectangle visibleRect, int orientation, int direction) {
+            return JBUI.scale(18);
+        }
+
+        @Override
+        public int getScrollableBlockIncrement(Rectangle visibleRect, int orientation, int direction) {
+            if (orientation == SwingConstants.VERTICAL) {
+                return Math.max(JBUI.scale(32), visibleRect.height - JBUI.scale(32));
+            }
+            return Math.max(JBUI.scale(32), visibleRect.width - JBUI.scale(32));
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportWidth() {
+            return true;
+        }
+
+        @Override
+        public boolean getScrollableTracksViewportHeight() {
+            return false;
+        }
     }
     
     

@@ -5,7 +5,9 @@ import com.zzf.codeagent.id.Identifier;
 import com.zzf.codeagent.session.SessionInfo;
 import com.zzf.codeagent.session.SessionLoop;
 import com.zzf.codeagent.session.SessionService;
+import com.zzf.codeagent.session.TodoManager;
 import com.zzf.codeagent.session.model.MessageV2;
+import com.zzf.codeagent.session.model.TodoInfo;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -35,6 +37,7 @@ public class AgentChatController {
     private final SessionLoop sessionLoop;
     private final SessionService sessionService;
     private final AgentBus agentBus;
+    private final TodoManager todoManager;
     private final Map<String, SseEmitter> emitters = new ConcurrentHashMap<>();
     private final Map<String, List<Runnable>> unsubs = new ConcurrentHashMap<>();
 
@@ -117,6 +120,9 @@ public class AgentChatController {
         }
 
         final String finalSessionID = sessionID;
+        final String finalWorkspaceRoot = (effectiveWorkspaceRoot != null && !effectiveWorkspaceRoot.isBlank())
+                ? Paths.get(effectiveWorkspaceRoot).toAbsolutePath().normalize().toString()
+                : null;
         final Set<String> emittedFinishMessageIDs = ConcurrentHashMap.newKeySet();
         emitters.put(finalSessionID, emitter);
         List<Runnable> sessionUnsubs = new ArrayList<>();
@@ -319,6 +325,18 @@ public class AgentChatController {
             }
         }));
 
+        sessionUnsubs.add(agentBus.subscribe("todo.updated", event -> {
+            Object props = event.getProperties();
+            if (props instanceof Map) {
+                Map<?, ?> map = (Map<?, ?>) props;
+                String eventWorkspace = (String) map.get("workspaceRoot");
+                if (eventWorkspace != null && finalWorkspaceRoot != null
+                        && eventWorkspace.equals(finalWorkspaceRoot)) {
+                    sendSse(emitter, "todo_updated", Map.of("todos", map.get("todos")));
+                }
+            }
+        }));
+
         hydrateSessionHistoryIfNeeded(finalSessionID, request);
 
         
@@ -331,9 +349,13 @@ public class AgentChatController {
         return emitter;
     }
 
+    @GetMapping("/todos")
+    public List<TodoInfo> getTodos(@RequestParam String workspaceRoot) {
+        return todoManager.get(workspaceRoot);
+    }
+
     @PostMapping("/chat/stop")
-    public Map<String, Object> stop(@RequestBody(required = false) StopRequest request) {
-        Map<String, Object> response = new HashMap<>();
+    public Map<String, Object> stop(@RequestBody(required = false) StopRequest request) {        Map<String, Object> response = new HashMap<>();
         String sessionID = request != null ? request.getEffectiveSessionID() : null;
         if (sessionID == null || sessionID.isBlank()) {
             response.put("status", "error");
