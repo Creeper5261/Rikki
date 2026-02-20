@@ -1,15 +1,15 @@
 <idea-plugin>
-    <id>com.zzf.codeagent.idea</id>
+    <id>com.zzf.rikki.idea</id>
     <name>Rikki Code Agent</name>
     <vendor>zzf</vendor>
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.java</depends>
     <depends>org.jetbrains.plugins.terminal</depends>
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow id="RIKKI" anchor="right" factoryClass="com.zzf.codeagent.idea.ChatToolWindowFactory"/>
+        <toolWindow id="RIKKI" anchor="right" factoryClass="com.zzf.rikki.idea.ChatToolWindowFactory"/>
         <notificationGroup id="RIKKI" displayType="LOG_ONLY"/>
         <inline.completion.provider
-            implementation="com.zzf.codeagent.idea.completion.RikkiInlineCompletionProvider"
+            implementation="com.zzf.rikki.idea.completion.RikkiInlineCompletionProvider"
             order="last"/>
     </extensions>
 </idea-plugin>
