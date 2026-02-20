@@ -8,5 +8,8 @@
     <extensions defaultExtensionNs="com.intellij">
         <toolWindow id="RIKKI" anchor="right" factoryClass="com.zzf.codeagent.idea.ChatToolWindowFactory"/>
         <notificationGroup id="RIKKI" displayType="LOG_ONLY"/>
+        <inline.completion.provider
+            implementation="com.zzf.codeagent.idea.completion.RikkiInlineCompletionProvider"
+            order="last"/>
     </extensions>
 </idea-plugin>

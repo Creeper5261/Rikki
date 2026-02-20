@@ -343,7 +343,15 @@ final class ChatPanel {
         inputCardPanel.setLayout(new BorderLayout(8, 8));
         inputCardPanel.setBorder(JBUI.Borders.empty(8, 10, 8, 8));
 
-        JBScrollPane inputScroll = new JBScrollPane(input);
+        JBScrollPane inputScroll = new JBScrollPane(input) {
+            @Override
+            public Dimension getPreferredSize() {
+                Dimension d = super.getPreferredSize();
+                // Cap the input area height so it never pushes the conversation list out of view.
+                // The textarea auto-grows up to this limit, then scrolls internally.
+                return new Dimension(d.width, Math.min(d.height, JBUI.scale(160)));
+            }
+        };
         inputScroll.setBorder(BorderFactory.createEmptyBorder());
         inputScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         inputScroll.setOpaque(false);
@@ -2163,6 +2171,15 @@ final class ChatPanel {
         state.panel.setDecisionEnabled(false);
         boolean reject = decision == CommandApprovalDecision.REJECT;
         String decisionMode = resolveDecisionMode(decision);
+        // For approvals (not reject): immediately clear the waiting-for-approval state
+        // so the status bar switches from "等待确认" to "正在思考" right away,
+        // rather than staying frozen until the command finishes executing.
+        if (!reject) {
+            state.commandDecisionMade = true;
+            state.commandDecisionRequired = false;
+            state.panel.clearDecisionActions();
+            syncApprovalState(state);
+        }
         resolvePendingCommand(state.pendingCommand, reject, decisionMode, result -> {
             state.commandDecisionMade = true;
             state.commandDecisionRequired = false;

@@ -181,13 +181,7 @@ final class BashRiskAssessor {
 
     private List<String> detectWorkspaceBoundaryRisk(String command, String workspaceRoot) {
         List<String> reasons = new ArrayList<>();
-        if (command == null || command.isBlank() || workspaceRoot == null || workspaceRoot.isBlank()) {
-            return reasons;
-        }
-        Path root;
-        try {
-            root = Paths.get(workspaceRoot).toAbsolutePath().normalize();
-        } catch (Exception ignored) {
+        if (command == null || command.isBlank()) {
             return reasons;
         }
 
@@ -196,17 +190,48 @@ final class BashRiskAssessor {
         }
 
         Set<Path> candidates = extractAbsolutePathCandidates(command);
+        if (candidates.isEmpty()) {
+            return reasons;
+        }
+
+        // Resolve a trusted workspace root. If it is blank or resolves to a trivially
+        // shallow path (depth < 2, e.g. "/" or "C:\"), we cannot use it as a meaningful
+        // boundary. Fall back to flagging system-level paths directly.
+        Path root = null;
+        if (workspaceRoot != null && !workspaceRoot.isBlank()) {
+            try {
+                Path candidate = Paths.get(workspaceRoot).toAbsolutePath().normalize();
+                if (candidate.getNameCount() >= 2) {
+                    root = candidate;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+
         int outsideCount = 0;
         for (Path candidate : candidates) {
             if (candidate == null) {
                 continue;
             }
             Path normalized = candidate.toAbsolutePath().normalize();
-            if (!normalized.startsWith(root)) {
-                reasons.add("outside-workspace path access detected: " + normalized);
-                outsideCount++;
-                if (outsideCount >= 3) {
-                    break;
+            if (root != null) {
+                // Normal workspace boundary check
+                if (!normalized.startsWith(root)) {
+                    reasons.add("outside-workspace path access detected: " + normalized);
+                    outsideCount++;
+                    if (outsideCount >= 3) {
+                        break;
+                    }
+                }
+            } else {
+                // No valid workspace root available: flag system-level paths
+                // (depth ≤ 1 means /etc, /var, /bin, C:\Windows, etc.)
+                if (normalized.getNameCount() <= 1) {
+                    reasons.add("system-level path access detected (no workspace boundary configured): " + normalized);
+                    outsideCount++;
+                    if (outsideCount >= 3) {
+                        break;
+                    }
                 }
             }
         }
@@ -244,6 +269,17 @@ final class BashRiskAssessor {
         }
         String token = sanitizePathToken(rawToken);
         if (token.isBlank()) {
+            return;
+        }
+        // Recursively split compound tokens (e.g. the dequoted content of
+        // bash -c "ls /etc" becomes "ls /etc" as one token).
+        // Splitting on whitespace ensures the embedded absolute path is checked.
+        if (token.contains(" ") || token.contains("\t")) {
+            for (String sub : token.trim().split("\\s+")) {
+                if (!sub.isBlank() && sub.length() > 1) {
+                    addAbsolutePathCandidate(candidates, sub);
+                }
+            }
             return;
         }
         int equalsIndex = token.indexOf('=');

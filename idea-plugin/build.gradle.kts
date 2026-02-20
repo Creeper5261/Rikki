@@ -1,7 +1,7 @@
 plugins {
     id("java")
-    id("org.jetbrains.intellij") version "1.17.3"
-    id("io.spring.dependency-management") version "1.0.15.RELEASE"
+    id("org.jetbrains.kotlin.jvm") version "1.9.22"
+    id("org.jetbrains.intellij") version "1.17.4"
 }
 
 group = "com.zzf"
@@ -13,13 +13,23 @@ java {
     }
 }
 
+kotlin {
+    jvmToolchain(17)
+}
+
 repositories {
     mavenCentral()
 }
 
-dependencyManagement {
-    imports {
-        mavenBom("org.springframework.boot:spring-boot-dependencies:2.6.13")
+// Force Kotlin stdlib version to match what IntelliJ 2024.1 bundles.
+// This prevents older versions (e.g. from the root project's Spring BOM) from
+// replacing 1.9.x and breaking the Kotlin compiler at build time.
+configurations.all {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "org.jetbrains.kotlin") {
+            useVersion("1.9.22")
+            because("IntelliJ 2024.1 bundles Kotlin 1.9.22; compiler and stdlib must match")
+        }
     }
 }
 
@@ -27,6 +37,8 @@ dependencies {
     implementation(project(":")) {
         exclude(group = "com.fasterxml.jackson.core")
         exclude(group = "org.springframework.boot")
+        exclude(group = "org.springframework.kafka")
+        exclude(group = "io.micrometer")
         exclude(group = "org.slf4j")
         exclude(group = "ch.qos.logback")
     }
@@ -39,19 +51,26 @@ dependencies {
 }
 
 intellij {
-    version.set("2023.2")
+    version.set("2024.1")
     type.set("IC")
     sandboxDir.set(layout.buildDirectory.dir("idea-sandbox").get().asFile.absolutePath)
     plugins.set(listOf("java", "org.jetbrains.plugins.terminal"))
 }
 
 tasks.patchPluginXml {
-    sinceBuild.set("232")
-    untilBuild.set("241.*")
+    sinceBuild.set("241")
+    untilBuild.set("")   // open-ended: works on 241 and all future builds
 }
 
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
+}
+
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+    kotlinOptions {
+        jvmTarget = "17"
+        freeCompilerArgs = listOf("-Xjvm-default=all")
+    }
 }
 
 tasks.buildSearchableOptions {
