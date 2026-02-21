@@ -1,11 +1,41 @@
 <idea-plugin>
     <id>com.zzf.rikki.idea</id>
     <name>Rikki Code Agent</name>
-    <vendor>zzf</vendor>
+    <vendor email="zhengzhengfeng@outlook.com" url="https://github.com/Creeper5261/Rikki">Creeper5261</vendor>
+
+    <idea-version since-build="241" until-build="243.*"/>
+
+    <description><![CDATA[
+        Rikki is a lightweight AI coding assistant for JetBrains IDEs.<br><br>
+        <b>Features:</b>
+        <ul>
+            <li><b>Inline TAB completion</b> — ghost-text suggestions as you type, accepted with TAB</li>
+            <li><b>AI chat panel</b> — context-aware conversation with your codebase in a side tool window</li>
+            <li><b>OpenAI-compatible</b> — works with DeepSeek, OpenAI, local Ollama, or any compatible endpoint</li>
+        </ul>
+        Configure your API key and base URL under <b>Settings → Tools → Rikki Code Agent</b>.
+    ]]></description>
+
+    <change-notes><![CDATA[
+        <b>0.1.0</b>
+        <ul>
+            <li>Initial release: inline TAB completion and AI chat panel</li>
+            <li>OpenAI-compatible API with configurable base URL and model</li>
+            <li>Separate completion model setting (defaults to chat model)</li>
+        </ul>
+    ]]></change-notes>
+
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.java</depends>
     <depends>org.jetbrains.plugins.terminal</depends>
+
     <extensions defaultExtensionNs="com.intellij">
+        <applicationService serviceImplementation="com.zzf.rikki.idea.settings.RikkiSettings"/>
+        <applicationConfigurable
+            parentId="tools"
+            instance="com.zzf.rikki.idea.settings.RikkiSettingsConfigurable"
+            id="com.zzf.rikki.idea.settings.RikkiSettingsConfigurable"
+            displayName="Rikki Code Agent"/>
         <toolWindow id="RIKKI" anchor="right" factoryClass="com.zzf.rikki.idea.ChatToolWindowFactory"/>
         <notificationGroup id="RIKKI" displayType="LOG_ONLY"/>
         <inline.completion.provider
