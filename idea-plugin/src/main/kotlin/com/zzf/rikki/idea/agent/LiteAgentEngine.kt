@@ -30,6 +30,74 @@ class LiteAgentEngine(
         private const val MAX_OUTPUT = 8_000
     }
 
+    // ── Model capabilities ────────────────────────────────────────────────────
+
+    /**
+     * Provider-specific and model-specific capabilities derived from official
+     * API documentation. All fields default to the standard OpenAI-compatible
+     * behaviour so that unknown models work without special handling.
+     *
+     * @param systemRole         Role name for the system/instruction message.
+     *                           OpenAI o1/o1-mini require "developer"; everything
+     *                           else uses "system".
+     * @param temperatureFixed   Exact temperature value that must be sent.
+     *                           o1/o1-mini only accept 1.0. null = use default.
+     * @param maxTokensKey       Parameter name for the token limit.
+     *                           OpenAI o-series uses "max_completion_tokens";
+     *                           all others use "max_tokens".
+     * @param supportsTools      Whether the model accepts a "tools" array.
+     *                           o1/o1-mini originally did not; kept false for
+     *                           safety – users who know their model supports
+     *                           tools can switch to o3/o4-mini instead.
+     * @param hasReasoningContent Whether the model returns a "reasoning_content"
+     *                           delta field that must be replayed in assistant
+     *                           history messages (deepseek-reasoner / R1).
+     */
+    data class ModelCapabilities(
+        val systemRole: String          = "system",
+        val temperatureFixed: Double?   = null,
+        val maxTokensKey: String        = "max_tokens",
+        val supportsTools: Boolean      = true,
+        val hasReasoningContent: Boolean = false
+    )
+
+    /**
+     * Returns capabilities for the given provider + model combination.
+     * Sources:
+     *  - DeepSeek: https://api-docs.deepseek.com/guides/thinking_mode
+     *  - OpenAI o1: https://platform.openai.com/docs/guides/reasoning
+     *  - OpenAI o3/o4: https://platform.openai.com/docs/models
+     */
+    private fun detectCapabilities(provider: String, model: String): ModelCapabilities {
+        val m = model.trim().lowercase()
+        return when {
+            // ── DeepSeek R1: exposes reasoning_content in streaming delta ─────
+            m == "deepseek-reasoner" ->
+                ModelCapabilities(hasReasoningContent = true)
+
+            // ── OpenAI o1 / o1-mini / o1-preview ─────────────────────────────
+            // Requires: developer role, temperature=1, max_completion_tokens,
+            // does NOT support function calling (tools).
+            provider == "OPENAI" && (m == "o1" || m == "o1-mini" || m == "o1-preview") ->
+                ModelCapabilities(
+                    systemRole          = "developer",
+                    temperatureFixed    = 1.0,
+                    maxTokensKey        = "max_completion_tokens",
+                    supportsTools       = false
+                )
+
+            // ── OpenAI o3 / o4 series ─────────────────────────────────────────
+            // Full tool support; max_tokens is deprecated, use max_completion_tokens.
+            provider == "OPENAI" && (m.startsWith("o3") || m.startsWith("o4")) ->
+                ModelCapabilities(maxTokensKey = "max_completion_tokens")
+
+            // ── Everything else: standard OpenAI-compatible behaviour ─────────
+            else -> ModelCapabilities()
+        }
+    }
+
+    // ── Agent loop ────────────────────────────────────────────────────────────
+
     private val tools = LiteToolRegistry(project, mapper)
 
     fun setSkipFlag(flag: AtomicBoolean) { tools.setSkipFlag(flag) }
@@ -46,25 +114,28 @@ class LiteAgentEngine(
         sessionId: String,
         sseWriter: LiteSseWriter
     ) {
-        val sid = sessionId.ifBlank { UUID.randomUUID().toString() }
+        val s    = RikkiSettings.getInstance().state
+        val sid  = sessionId.ifBlank { UUID.randomUUID().toString() }
+        val caps = detectCapabilities(s.provider, s.modelName)
+
         sseWriter.emitSession(sid)
         sseWriter.emitStatus("busy", "Agent is thinking...")
 
-        // Make IDE context available to ide_context tool
         tools.ide.ideContextNode = ideContext
 
-        // Build message list
+        // Build initial message list
         val messages = mutableListOf<Map<String, Any?>>()
-        messages += mapOf("role" to "system", "content" to buildSystemPrompt(workspaceRoot, ideContext))
+        val systemPrompt = buildSystemPrompt(workspaceRoot, ideContext, caps)
+        messages += mapOf("role" to caps.systemRole, "content" to systemPrompt)
 
-        // Replay history lines
+        // Replay history
         if (history.isArray) {
             for (line in history) {
                 val text = line.asText("").trim()
                 if (text.isBlank()) continue
                 when {
                     text.startsWith("You:") ->
-                        messages += mapOf("role" to "user", "content" to text.removePrefix("You:").trim())
+                        messages += mapOf("role" to "user",      "content" to text.removePrefix("You:").trim())
                     text.startsWith("Assistant:") ->
                         messages += mapOf("role" to "assistant", "content" to text.removePrefix("Assistant:").trim())
                 }
@@ -76,15 +147,15 @@ class LiteAgentEngine(
         var msgIdx = 0
 
         for (step in 0 until MAX_STEPS) {
-            val msgId = "msg_$msgIdx"
-
-            val result = callLlmStreaming(messages, sseWriter, msgId)
+            val msgId  = "msg_$msgIdx"
+            val result = callLlmStreaming(messages, caps, sseWriter, msgId)
             textAnswer = result.text
 
-            // Add assistant turn to history
+            // Build assistant history entry
             val assistantMsg = mutableMapOf<String, Any?>("role" to "assistant")
             assistantMsg["content"] = result.text.ifBlank { null }
-            if (result.reasoningContent.isNotBlank()) {
+            // Carry reasoning_content for models that require it (deepseek-reasoner)
+            if (caps.hasReasoningContent && result.reasoningContent.isNotBlank()) {
                 assistantMsg["reasoning_content"] = result.reasoningContent
             }
             if (result.toolCalls.isNotEmpty()) {
@@ -107,7 +178,6 @@ class LiteAgentEngine(
                     mapper.convertValue(tc.args, Map::class.java) as Map<String, Any?>
                 } catch (_: Exception) { emptyMap() }
 
-                // Emit the tool call as "pending" first (creates the UI row)
                 sseWriter.emitToolCall(partId, tc.name, tc.id, msgId, "pending", tc.name, argsMap)
 
                 // High-risk inline confirmation
@@ -144,22 +214,20 @@ class LiteAgentEngine(
                     }
                 }
 
-                // Update to "running" state and execute
                 sseWriter.emitToolCall(partId, tc.name, tc.id, msgId, "running", tc.name, argsMap)
 
                 val toolResult = tools.execute(tc.name, tc.args, workspaceRoot, sid, tc.id)
 
-                // Build meta for file-change tools: carry old/new content + workspaceApplied flag
                 val meta: Map<String, Any?>? = if (toolResult.pendingChangePath != null) {
                     mapOf(
                         "workspaceApplied" to true,
                         "pending_change" to mapOf(
-                            "path"         to toolResult.pendingChangePath,
-                            "type"         to toolResult.pendingChangeType,
-                            "oldContent"   to toolResult.pendingChangeOld,
-                            "newContent"   to toolResult.pendingChangeNew,
+                            "path"          to toolResult.pendingChangePath,
+                            "type"          to toolResult.pendingChangeType,
+                            "oldContent"    to toolResult.pendingChangeOld,
+                            "newContent"    to toolResult.pendingChangeNew,
                             "workspaceRoot" to workspaceRoot,
-                            "sessionId"    to sid
+                            "sessionId"     to sid
                         )
                     )
                 } else null
@@ -173,7 +241,6 @@ class LiteAgentEngine(
                     messages += mapOf("role" to "tool", "tool_call_id" to tc.id, "content" to out)
                 }
 
-                // Emit todo_updated after successful todo_write
                 if (tc.name == "todo_write" && toolResult.error == null) {
                     val todosFile = File(workspaceRoot, ".rikki/todos.json")
                     if (todosFile.exists()) sseWriter.emitTodoUpdated(todosFile.readText())
@@ -186,17 +253,18 @@ class LiteAgentEngine(
         sseWriter.emitStatus("idle", "Ready")
     }
 
-    // ── LLM streaming ────────────────────────────────────────────────────────
+    // ── LLM streaming ─────────────────────────────────────────────────────────
 
     data class ToolCallInfo(val id: String, val name: String, val argsRaw: String, val args: JsonNode)
     data class LlmResult(val text: String, val toolCalls: List<ToolCallInfo>, val reasoningContent: String = "")
 
     private suspend fun callLlmStreaming(
         messages: List<Map<String, Any?>>,
+        caps: ModelCapabilities,
         sseWriter: LiteSseWriter,
         msgId: String
     ): LlmResult = withContext(Dispatchers.IO) {
-        val s = RikkiSettings.getInstance().state
+        val s      = RikkiSettings.getInstance().state
         val apiKey = s.currentApiKey()
         if (apiKey.isBlank() && s.provider != "OLLAMA")
             return@withContext LlmResult("Error: API key not configured.", emptyList())
@@ -204,7 +272,7 @@ class LiteAgentEngine(
         val model   = s.modelName.ifBlank { "deepseek-chat" }
         val baseUrl = s.currentBaseUrl().trimEnd('/')
 
-        val body = buildRequestBody(model, messages)
+        val body = buildRequestBody(model, messages, caps)
         val conn = openConnection("$baseUrl/chat/completions", apiKey)
             ?: return@withContext LlmResult("Error: cannot connect to LLM endpoint.", emptyList())
 
@@ -221,8 +289,7 @@ class LiteAgentEngine(
 
             val textBuf      = StringBuilder()
             val reasoningBuf = StringBuilder()
-            // Accumulate streaming tool calls: index → (id, name, args)
-            val tcAccum = mutableMapOf<Int, Triple<String, String, StringBuilder>>()
+            val tcAccum      = mutableMapOf<Int, Triple<String, String, StringBuilder>>()
             var finishReason = ""
 
             BufferedReader(InputStreamReader(conn.inputStream, StandardCharsets.UTF_8)).use { br ->
@@ -238,7 +305,7 @@ class LiteAgentEngine(
                     val choice = chunk.path("choices").path(0)
                     val delta  = choice.path("delta")
 
-                    // Text delta
+                    // Text content
                     val content = delta.path("content")
                     if (!content.isNull && !content.isMissingNode) {
                         val text = content.asText("")
@@ -248,7 +315,7 @@ class LiteAgentEngine(
                         }
                     }
 
-                    // Reasoning delta (deepseek-reasoner / o-series)
+                    // Reasoning content — only replayed in history when caps.hasReasoningContent
                     val reasoning = delta.path("reasoning_content")
                     if (!reasoning.isNull && !reasoning.isMissingNode) {
                         reasoningBuf.append(reasoning.asText(""))
@@ -302,29 +369,35 @@ class LiteAgentEngine(
         (URI.create(url).toURL().openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
             setRequestProperty("Content-Type", "application/json")
-            setRequestProperty("Authorization", "Bearer $apiKey")
+            if (apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer $apiKey")
             doOutput = true
             connectTimeout = 10_000
             readTimeout    = 180_000
         }
     } catch (_: Exception) { null }
 
-    private fun buildRequestBody(model: String, messages: List<Map<String, Any?>>): String =
-        mapper.writeValueAsString(
-            mapOf(
-                "model"       to model,
-                "stream"      to true,
-                "max_tokens"  to 8192,
-                "temperature" to 0.1,
-                "tools"       to LiteToolRegistry.toolDefinitions(),
-                "messages"    to messages
-            )
+    private fun buildRequestBody(
+        model: String,
+        messages: List<Map<String, Any?>>,
+        caps: ModelCapabilities
+    ): String {
+        val body = mutableMapOf<String, Any?>(
+            "model"            to model,
+            "stream"           to true,
+            caps.maxTokensKey  to 8192,
+            "temperature"      to (caps.temperatureFixed ?: 0.1),
+            "messages"         to messages
         )
+        if (caps.supportsTools) {
+            body["tools"] = LiteToolRegistry.toolDefinitions()
+        }
+        return mapper.writeValueAsString(body)
+    }
 
-    // ── System prompt ─────────────────────────────────────────────────────────
+    // ── System prompt ──────────────────────────────────────────────────────────
 
-    private fun buildSystemPrompt(workspaceRoot: String, ideContext: JsonNode): String {
-        val sb = StringBuilder(SYSTEM_PROMPT)
+    private fun buildSystemPrompt(workspaceRoot: String, ideContext: JsonNode, caps: ModelCapabilities): String {
+        val sb = StringBuilder(if (caps.supportsTools) SYSTEM_PROMPT else SYSTEM_PROMPT_NO_TOOLS)
         sb.append("\n\nWorking directory: $workspaceRoot")
         if (!ideContext.isNull && !ideContext.isMissingNode && ideContext.size() > 0) {
             sb.append("\n\n<ide_context>\n")
@@ -354,5 +427,14 @@ You are an interactive assistant that helps users with software engineering task
 - Default to doing the work without asking questions.
 - Only ask when truly blocked after checking relevant context.
 - Be concise and friendly.
+    """.trimIndent()
+
+    /** Prompt variant for models that do not support function calling (e.g. o1/o1-mini). */
+    private val SYSTEM_PROMPT_NO_TOOLS = """
+You are Rikki, an AI coding assistant.
+
+This model does not support tool calls, so you cannot execute code or read files directly.
+Provide clear, detailed answers and code snippets the user can apply manually.
+Be concise and friendly.
     """.trimIndent()
 }
