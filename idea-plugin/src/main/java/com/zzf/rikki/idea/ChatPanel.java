@@ -45,7 +45,6 @@ import com.zzf.rikki.core.event.EventStream;
 import com.zzf.rikki.core.tool.PendingChangesManager;
 import com.zzf.rikki.core.tools.FileSystemToolService;
 import com.zzf.rikki.idea.utils.MarkdownUtils;
-import com.zzf.rikki.idea.settings.RikkiSettingsConfigurable;
 
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
@@ -533,7 +532,8 @@ final class ChatPanel {
     }
 
     private void openSettingsDialogForCurrentSession() {
-        ShowSettingsUtil.getInstance().showSettingsDialog(project, RikkiSettingsConfigurable.class);
+        ShowSettingsUtil.getInstance().showSettingsDialog(
+                project, "com.zzf.rikki.idea.settings.RikkiSettingsConfigurable");
     }
     
     private void refreshSessionList() {
