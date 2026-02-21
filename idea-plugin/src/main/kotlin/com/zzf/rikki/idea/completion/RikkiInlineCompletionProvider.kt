@@ -8,9 +8,13 @@ import com.intellij.codeInsight.inline.completion.elements.InlineCompletionGrayT
 import com.intellij.codeInsight.inline.completion.suggestion.InlineCompletionSingleSuggestion
 import com.intellij.codeInsight.inline.completion.suggestion.InlineCompletionSuggestion
 import com.intellij.openapi.application.readAction
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.util.TextRange
 import com.zzf.rikki.idea.llm.LiteLlmClient
 import com.zzf.rikki.idea.settings.RikkiSettings
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -20,13 +24,15 @@ import kotlin.time.Duration.Companion.milliseconds
  */
 class RikkiInlineCompletionProvider : DebouncedInlineCompletionProvider() {
 
+    private val LOG = Logger.getInstance(RikkiInlineCompletionProvider::class.java)
+
     override val id = InlineCompletionProviderID("com.zzf.rikki.idea.completion")
 
-    // IntelliJ 2024.1 API
+    // IntelliJ 2024.1 debounce via `delay` property
     override val delay: Duration get() = 350.milliseconds
 
-    // IntelliJ 2025.1+ renamed the abstract method; add without 'override'
-    // so it compiles against 2024.1 SDK but overrides at runtime on 2025.1+
+    // IntelliJ 2025.1+ uses getDebounceDelay(): Long (no 'override' — compiles against
+    // 2024.1 SDK but overrides via JVM dispatch at runtime on 2025.1+)
     @Suppress("unused")
     fun getDebounceDelay(): Long = 350L
 
@@ -37,10 +43,36 @@ class RikkiInlineCompletionProvider : DebouncedInlineCompletionProvider() {
                event is InlineCompletionEvent.DirectCall
     }
 
+    /**
+     * Called by IntelliJ 2025.1+ directly (replaces getSuggestionDebounced in their refactored API).
+     * Also called on 2024.1 if the framework ever dispatches getSuggestion() first.
+     * We add our own 350ms debounce; the coroutine is cancelled by the framework on the next
+     * keystroke, so early-exit is safe.
+     */
+    override suspend fun getSuggestion(
+        request: InlineCompletionRequest
+    ): InlineCompletionSuggestion {
+        LOG.info("Rikki getSuggestion called")
+        // Manual debounce: yields to cancellation if user keeps typing
+        delay(350)
+        currentCoroutineContext().ensureActive()
+        return doGetSuggestion(request)
+    }
+
+    /**
+     * Called by IntelliJ 2024.1 after the framework's own debounce.
+     * On 2025.1 this is never called (getSuggestion is called directly).
+     */
     override suspend fun getSuggestionDebounced(
         request: InlineCompletionRequest
     ): InlineCompletionSuggestion {
+        LOG.info("Rikki getSuggestionDebounced called")
+        return doGetSuggestion(request)
+    }
 
+    private suspend fun doGetSuggestion(
+        request: InlineCompletionRequest
+    ): InlineCompletionSuggestion {
         val ctx = readAction {
             val doc    = request.document
             val offset = request.startOffset
@@ -56,15 +88,23 @@ class RikkiInlineCompletionProvider : DebouncedInlineCompletionProvider() {
             return InlineCompletionSuggestion.Empty
         }
 
+        currentCoroutineContext().ensureActive()
+        LOG.info("Rikki calling LLM, language=${ctx.language}")
+
         return InlineCompletionSingleSuggestion.build { _ ->
             val buf = StringBuilder()
-            LiteLlmClient.streamCompletion(
-                prefix   = ctx.prefix,
-                suffix   = ctx.suffix,
-                language = ctx.language,
-                onToken  = { token -> buf.append(token) }
-            )
+            try {
+                LiteLlmClient.streamCompletion(
+                    prefix   = ctx.prefix,
+                    suffix   = ctx.suffix,
+                    language = ctx.language,
+                    onToken  = { token -> buf.append(token) }
+                )
+            } catch (e: Exception) {
+                LOG.warn("Rikki LLM completion error", e)
+            }
             val text = buf.toString().trimEnd()
+            LOG.info("Rikki completion result length=${text.length}")
             if (text.isNotEmpty()) {
                 emit(InlineCompletionGrayTextElement(text))
             }
