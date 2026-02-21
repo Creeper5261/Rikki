@@ -38,7 +38,6 @@
             displayName="Rikki Code Agent"/>
         <projectService serviceImplementation="com.zzf.rikki.idea.IdeBridgeServer"/>
         <toolWindow id="RIKKI" anchor="right" factoryClass="com.zzf.rikki.idea.ChatToolWindowFactory"/>
-        <notificationGroup id="RIKKI" displayType="LOG_ONLY"/>
         <inline.completion.provider
             implementation="com.zzf.rikki.idea.completion.RikkiInlineCompletionProvider"
             order="last"/>

@@ -22,7 +22,13 @@ class RikkiInlineCompletionProvider : DebouncedInlineCompletionProvider() {
 
     override val id = InlineCompletionProviderID("com.zzf.rikki.idea.completion")
 
+    // IntelliJ 2024.1 API
     override val delay: Duration get() = 350.milliseconds
+
+    // IntelliJ 2025.1+ renamed the abstract method; add without 'override'
+    // so it compiles against 2024.1 SDK but overrides at runtime on 2025.1+
+    @Suppress("unused")
+    fun getDebounceDelay(): Long = 350L
 
     override fun isEnabled(event: InlineCompletionEvent): Boolean {
         val s = RikkiSettings.getInstance().state
