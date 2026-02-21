@@ -34,6 +34,7 @@ import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
 import com.intellij.ui.JBColor;
 import com.intellij.util.ui.JBUI;
+import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.popup.JBPopup;
 import com.intellij.openapi.ui.popup.JBPopupFactory;
@@ -44,6 +45,7 @@ import com.zzf.rikki.core.event.EventStream;
 import com.zzf.rikki.core.tool.PendingChangesManager;
 import com.zzf.rikki.core.tools.FileSystemToolService;
 import com.zzf.rikki.idea.utils.MarkdownUtils;
+import com.zzf.rikki.idea.settings.RikkiSettingsConfigurable;
 
 import javax.swing.*;
 import javax.swing.event.DocumentEvent;
@@ -531,15 +533,7 @@ final class ChatPanel {
     }
 
     private void openSettingsDialogForCurrentSession() {
-        ChatHistoryService.ChatSession session = history.getCurrentSession();
-        if (session == null) {
-            return;
-        }
-        SettingsDialog dialog = new SettingsDialog(session.settings);
-        if (dialog.showAndGet()) {
-            refreshSessionList();
-            refreshChatHeaderTitle();
-        }
+        ShowSettingsUtil.getInstance().showSettingsDialog(project, RikkiSettingsConfigurable.class);
     }
     
     private void refreshSessionList() {
