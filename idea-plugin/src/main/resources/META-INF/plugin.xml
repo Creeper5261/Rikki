@@ -42,4 +42,13 @@
             implementation="com.zzf.rikki.idea.completion.RikkiInlineCompletionProvider"
             order="last"/>
     </extensions>
+
+    <actions>
+        <action id="Rikki.TriggerCompletion"
+                class="com.zzf.rikki.idea.completion.RikkiTriggerCompletionAction"
+                text="Trigger Rikki AI Completion"
+                description="Manually trigger Rikki inline AI completion at cursor">
+            <keyboard-shortcut keymap="$default" first-keystroke="alt BACK_SLASH"/>
+        </action>
+    </actions>
 </idea-plugin>

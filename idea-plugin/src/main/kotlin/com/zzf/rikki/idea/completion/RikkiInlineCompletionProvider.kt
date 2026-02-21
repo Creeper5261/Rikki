@@ -12,6 +12,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.util.TextRange
 import com.zzf.rikki.idea.llm.LiteLlmClient
 import com.zzf.rikki.idea.settings.RikkiSettings
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -100,8 +101,10 @@ class RikkiInlineCompletionProvider : DebouncedInlineCompletionProvider() {
                     language = ctx.language,
                     onToken  = { token -> buf.append(token) }
                 )
-            } catch (e: Exception) {
-                LOG.warn("Rikki LLM completion error", e)
+            } catch (ce: CancellationException) {
+                throw ce  // MUST rethrow — never swallow CancellationException in coroutines
+            } catch (_: Exception) {
+                // ignore network/IO errors; use whatever tokens arrived before the error
             }
             val text = buf.toString().trimEnd()
             LOG.info("Rikki completion result length=${text.length}")
@@ -114,7 +117,7 @@ class RikkiInlineCompletionProvider : DebouncedInlineCompletionProvider() {
     private data class Context(val prefix: String, val suffix: String, val language: String)
 
     companion object {
-        private const val PREFIX_LIMIT = 4_000
-        private const val SUFFIX_LIMIT = 500
+        private const val PREFIX_LIMIT = 2_000   // reduced: less context = faster LLM response
+        private const val SUFFIX_LIMIT = 400
     }
 }

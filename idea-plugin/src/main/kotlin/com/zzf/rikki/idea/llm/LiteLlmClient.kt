@@ -78,7 +78,7 @@ object LiteLlmClient {
 
     private fun buildBody(model: String, prefix: String, suffix: String, language: String): String {
         val user = "Language: ${language.escapeJson()}\\n\\n${prefix.escapeJson()}<|CURSOR|>${suffix.escapeJson()}"
-        return """{"model":"${model.escapeJson()}","stream":true,"max_tokens":256,"temperature":0.1,""" +
+        return """{"model":"${model.escapeJson()}","stream":true,"max_tokens":100,"temperature":0.1,""" +
                """"messages":[{"role":"system","content":"${SYSTEM_PROMPT.escapeJson()}"},""" +
                """{"role":"user","content":"$user"}]}"""
     }
