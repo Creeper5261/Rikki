@@ -1254,6 +1254,9 @@ final class ChatPanel {
                 } else if ("tool_call".equals(event) || "tool_result".equals(event)) {
                     JsonNode node = mapper.readTree(data);
                     handleToolEvent(event, node, assistantState);
+                } else if ("tool_confirm".equals(event)) {
+                    JsonNode node = mapper.readTree(data);
+                    handleToolConfirmEvent(node, assistantState);
                 } else if ("status".equals(event)) {
                     handleStatusEvent(data);
                 } else if ("heartbeat".equals(event)) {
@@ -1343,6 +1346,74 @@ final class ChatPanel {
         syncApprovalState(state);
         persistAssistantUiSnapshot(ui);
         scrollToBottomSmart();
+    }
+
+    /**
+     * Handles the lite-branch "tool_confirm" SSE event.
+     * Shows inline Approve/Skip buttons directly in the tool's ActivityCommandPanel row.
+     * Engine is suspended waiting for a POST to /api/agent/confirm.
+     */
+    private void handleToolConfirmEvent(JsonNode node, ConversationStateManager<AgentMessageUI> assistantState) {
+        String callID = extractToolCallID(node);
+        if (callID == null || callID.isBlank()) return;
+        String command = node.path("command").asText("(unknown command)");
+        String toolName = node.path("tool").asText("bash");
+
+        AgentMessageUI ui = lastAssistantUi(assistantState);
+        if (ui == null) return;
+
+        ToolActivityState state = resolveToolActivity(ui, callID, toolName);
+        if (state == null) return;
+
+        // Ensure an ActivityCommandPanel exists (bash → TERMINAL render type)
+        ensureToolRenderType(ui, state, ToolRenderType.TERMINAL);
+        if (state.panel == null) return;
+
+        state.commandDecisionRequired = true;
+        state.commandDecisionMade = false;
+
+        PendingCommandInfo pc = new PendingCommandInfo();
+        pc.id = callID;
+        pc.command = command;
+        pc.strictApproval = true;  // lite mode: only Approve / Skip
+        state.pendingCommand = pc;
+
+        String confirmEndpoint = System.getProperty("rikki.confirm.endpoint");
+        state.panel.setDecisionActions(
+                "Approve",
+                "Skip",
+                true,
+                () -> sendLiteConfirm(confirmEndpoint, true, ui, state),
+                () -> sendLiteConfirm(confirmEndpoint, false, ui, state),
+                true
+        );
+
+        syncApprovalState(state);
+        persistAssistantUiSnapshot(ui);
+        scrollToBottomSmart();
+    }
+
+    /** Sends approve/reject to the lite engine's /api/agent/confirm endpoint. */
+    private void sendLiteConfirm(String endpoint, boolean approve, AgentMessageUI ui, ToolActivityState state) {
+        if (state.panel != null) state.panel.setDecisionEnabled(false);
+        state.commandDecisionMade = true;
+        state.commandDecisionRequired = false;
+        if (state.panel != null) state.panel.clearDecisionActions();
+        syncApprovalState(state);
+
+        if (endpoint == null || endpoint.isBlank()) return;
+        new Thread(() -> {
+            try {
+                String url = endpoint + "?decision=" + (approve ? "approve" : "reject");
+                HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                        .timeout(Duration.ofSeconds(10))
+                        .POST(HttpRequest.BodyPublishers.noBody())
+                        .build();
+                http.send(req, HttpResponse.BodyHandlers.discarding());
+            } catch (Exception e) {
+                logger.warn("lite_confirm_failed", e);
+            }
+        }, "rikki-confirm").start();
     }
 
     private void handleStatusEvent(String data) {
@@ -3617,12 +3688,13 @@ final class ChatPanel {
             JButton undoBtn = new JButton("Undo");
             undoBtn.setFocusable(false);
             if (ui.undoneSessionChangeKeys.contains(changeKey)) {
-                undoBtn.setEnabled(false);
+                undoBtn.setVisible(false);
             }
             undoBtn.addActionListener(e -> {
                 if (undoSessionChange(displayChange)) {
                     ui.undoneSessionChangeKeys.add(changeKey);
-                    undoBtn.setEnabled(false);
+                    undoBtn.setVisible(false);
+                    if (undoBtn.getParent() != null) undoBtn.getParent().revalidate();
                 }
             });
             undoButtons.add(undoBtn);
@@ -3661,9 +3733,10 @@ final class ChatPanel {
                 }
             }
             for (JButton btn : undoButtons) {
-                btn.setEnabled(false);
+                btn.setVisible(false);
             }
-            undoAllBtn.setEnabled(false);
+            undoAllBtn.setVisible(false);
+            undoAllRow.revalidate();
         });
         undoAllRow.add(undoAllBtn);
         panel.add(undoAllRow);

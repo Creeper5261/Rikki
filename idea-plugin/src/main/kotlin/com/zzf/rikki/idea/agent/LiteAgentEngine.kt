@@ -9,12 +9,16 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /** Runs the agentic LLM loop and emits SSE events through [LiteSseWriter]. */
 class LiteAgentEngine(
@@ -29,6 +33,9 @@ class LiteAgentEngine(
     private val tools = LiteToolRegistry(project, mapper)
 
     fun setSkipFlag(flag: AtomicBoolean) { tools.setSkipFlag(flag) }
+
+    private var confirmFutureRef: AtomicReference<CompletableFuture<Boolean>?>? = null
+    fun setConfirmFutureRef(ref: AtomicReference<CompletableFuture<Boolean>?>) { confirmFutureRef = ref }
 
     suspend fun run(
         goal: String,
@@ -97,17 +104,74 @@ class LiteAgentEngine(
                     mapper.convertValue(tc.args, Map::class.java) as Map<String, Any?>
                 } catch (_: Exception) { emptyMap() }
 
+                // Emit the tool call as "pending" first (creates the UI row)
+                sseWriter.emitToolCall(partId, tc.name, tc.id, msgId, "pending", tc.name, argsMap)
+
+                // High-risk inline confirmation
+                if (tools.isHighRisk(tc.name, tc.args)) {
+                    val command = if (tc.name == "bash")
+                        tc.args.path("command").asText("(unknown)")
+                    else
+                        "Delete: ${tc.args.path("filePath").asText("(unknown)")}"
+
+                    sseWriter.emitToolConfirm(partId, tc.id, command, tc.name)
+                    sseWriter.emitStatus("waiting_approval", "Awaiting your approval...")
+
+                    val future = CompletableFuture<Boolean>()
+                    confirmFutureRef?.set(future)
+                    val approved = try {
+                        withContext(Dispatchers.IO) { future.get(120L, TimeUnit.SECONDS) }
+                    } catch (_: Exception) { false }
+                    confirmFutureRef?.set(null)
+
+                    sseWriter.emitStatus("busy", "Agent is thinking...")
+
+                    if (!approved) {
+                        sseWriter.emitToolResult(
+                            partId, tc.name, tc.id, msgId, "rejected", tc.name,
+                            "(User rejected this command.)"
+                        )
+                        messages += mapOf(
+                            "role" to "tool", "tool_call_id" to tc.id,
+                            "content" to "(User rejected this command. Do not retry.)"
+                        )
+                        continue
+                    }
+                }
+
+                // Update to "running" state and execute
                 sseWriter.emitToolCall(partId, tc.name, tc.id, msgId, "running", tc.name, argsMap)
 
                 val toolResult = tools.execute(tc.name, tc.args, workspaceRoot, sid, tc.id)
+
+                // Build meta for file-change tools: carry old/new content + workspaceApplied flag
+                val meta: Map<String, Any?>? = if (toolResult.pendingChangePath != null) {
+                    mapOf(
+                        "workspaceApplied" to true,
+                        "pending_change" to mapOf(
+                            "path"         to toolResult.pendingChangePath,
+                            "type"         to toolResult.pendingChangeType,
+                            "oldContent"   to toolResult.pendingChangeOld,
+                            "newContent"   to toolResult.pendingChangeNew,
+                            "workspaceRoot" to workspaceRoot,
+                            "sessionId"    to sid
+                        )
+                    )
+                } else null
 
                 if (toolResult.error != null) {
                     sseWriter.emitToolResult(partId, tc.name, tc.id, msgId, "error", tc.name, "", toolResult.error)
                     messages += mapOf("role" to "tool", "tool_call_id" to tc.id, "content" to "Error: ${toolResult.error}")
                 } else {
                     val out = toolResult.output.take(MAX_OUTPUT)
-                    sseWriter.emitToolResult(partId, tc.name, tc.id, msgId, "completed", tc.name, out)
+                    sseWriter.emitToolResult(partId, tc.name, tc.id, msgId, "completed", tc.name, out, meta = meta)
                     messages += mapOf("role" to "tool", "tool_call_id" to tc.id, "content" to out)
+                }
+
+                // Emit todo_updated after successful todo_write
+                if (tc.name == "todo_write" && toolResult.error == null) {
+                    val todosFile = File(workspaceRoot, ".rikki/todos.json")
+                    if (todosFile.exists()) sseWriter.emitTodoUpdated(todosFile.readText())
                 }
             }
             msgIdx++

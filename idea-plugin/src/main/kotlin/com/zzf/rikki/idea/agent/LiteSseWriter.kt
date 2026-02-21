@@ -44,7 +44,8 @@ class LiteSseWriter(outputStream: OutputStream) {
 
     fun emitToolResult(
         partId: String, tool: String, callId: String, msgId: String,
-        state: String, title: String, output: String, error: String? = null
+        state: String, title: String, output: String, error: String? = null,
+        meta: Map<String, Any?>? = null
     ) {
         val data = mutableMapOf<String, Any?>(
             "id" to partId, "partID" to partId, "partId" to partId,
@@ -54,7 +55,29 @@ class LiteSseWriter(outputStream: OutputStream) {
             "output" to output
         )
         if (error != null) data["error"] = error
+        if (meta != null) data["meta"] = meta
         emit("tool_result", data)
+    }
+
+    /**
+     * Asks the frontend to show inline approve/skip buttons for a high-risk tool.
+     * The engine suspends until the user responds via /api/agent/confirm.
+     */
+    fun emitToolConfirm(partId: String, callId: String, command: String, tool: String) =
+        emit(
+            "tool_confirm", mapOf(
+                "id" to partId, "partID" to partId, "partId" to partId,
+                "callID" to callId, "callId" to callId,
+                "tool" to tool, "command" to command
+            )
+        )
+
+    /** Pushes a todo list update so ChatPanel's TodoPanel refreshes in real time. */
+    fun emitTodoUpdated(todosJson: String) {
+        try {
+            val todosNode = mapper.readTree(todosJson)
+            emit("todo_updated", mapOf("todos" to todosNode))
+        } catch (_: Exception) {}
     }
 
     fun emitFinish(sessionId: String, msgId: String, answer: String) =

@@ -2,16 +2,24 @@ package com.zzf.rikki.idea.agent
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.ui.Messages
 import com.zzf.rikki.idea.agent.tools.*
+import java.io.File
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Dispatches tool calls and provides tool definitions for the LLM. */
 class LiteToolRegistry(private val project: Project, private val mapper: ObjectMapper) {
 
-    data class ToolResult(val output: String, val error: String? = null)
+    data class ToolResult(
+        val output: String,
+        val error: String? = null,
+        /** Non-null for write/edit/delete_file — carries before+after content for diff. */
+        val pendingChangePath: String? = null,
+        val pendingChangeOld: String? = null,
+        val pendingChangeNew: String? = null,
+        val pendingChangeType: String? = null
+    )
 
     private val bash   = LiteBashTool()
     private val files  = LiteFileTools(mapper)
@@ -22,27 +30,23 @@ class LiteToolRegistry(private val project: Project, private val mapper: ObjectM
 
     fun setSkipFlag(flag: AtomicBoolean) { skipFlag = flag }
 
+    /** Returns true if this tool+args requires inline user confirmation. */
+    fun isHighRisk(name: String, args: JsonNode): Boolean {
+        if (name == "bash") return isHighRiskBashCommand(args.path("command").asText(""))
+        if (name == "delete_file") return true
+        return false
+    }
+
     fun execute(name: String, args: JsonNode, workspaceRoot: String, sessionId: String, callId: String): ToolResult {
-        // High-risk confirmation
-        if (name == "bash") {
-            val command = args.path("command").asText("")
-            if (isHighRiskBashCommand(command) && !askUserConfirmation(
-                    "High-Risk Command",
-                    "The agent wants to execute a potentially dangerous command:\n\n$ $command\n\nAllow execution?"
-                )
-            ) {
-                return ToolResult("(User denied execution of this command. Do not retry.)")
-            }
-        }
-        if (name == "delete_file") {
-            val filePath = args.path("filePath").asText("")
-            if (!askUserConfirmation(
-                    "Confirm File Deletion",
-                    "The agent wants to permanently delete:\n\n$filePath\n\nAllow?"
-                )
-            ) {
-                return ToolResult("(User denied file deletion. Do not retry.)")
-            }
+        // Capture old file content for diff before touching it
+        val filePath = if (name in FILE_CHANGE_TOOLS) args.path("filePath").asText("") else ""
+        val absFile  = if (filePath.isNotBlank()) resolveAbsFile(filePath, workspaceRoot) else null
+        val oldContent = if (absFile?.exists() == true) {
+            try { absFile.readText() } catch (_: Exception) { "" }
+        } else ""
+        val changeType = when (name) {
+            "delete_file" -> "DELETE"
+            else -> if (absFile?.exists() == true) "EDIT" else "CREATE"
         }
 
         return try {
@@ -62,10 +66,22 @@ class LiteToolRegistry(private val project: Project, private val mapper: ObjectM
                 "ide_capabilities"  -> ide.capabilities()
                 else -> "Unknown tool: $name"
             }
-            ToolResult(out)
+            if (absFile != null && filePath.isNotBlank()) {
+                val newContent = if ("delete_file" == name) "" else {
+                    try { absFile.readText() } catch (_: Exception) { "" }
+                }
+                ToolResult(out, null, filePath, oldContent, newContent, changeType)
+            } else {
+                ToolResult(out)
+            }
         } catch (e: Exception) {
             ToolResult("", e.message ?: "Tool error")
         }
+    }
+
+    private fun resolveAbsFile(filePath: String, workspaceRoot: String): File {
+        val f = File(filePath)
+        return if (f.isAbsolute) f else File(workspaceRoot, filePath)
     }
 
     // ── Risk assessment ───────────────────────────────────────────────────────
@@ -85,23 +101,9 @@ class LiteToolRegistry(private val project: Project, private val mapper: ObjectM
         ":(){ :|:& };:"   // fork bomb
     )
 
-    private fun askUserConfirmation(title: String, message: String): Boolean {
-        var confirmed = false
-        ApplicationManager.getApplication().invokeAndWait {
-            val result = Messages.showYesNoDialog(
-                project,
-                message,
-                title,
-                "Allow",
-                "Deny",
-                Messages.getWarningIcon()
-            )
-            confirmed = (result == Messages.YES)
-        }
-        return confirmed
-    }
-
     companion object {
+        private val FILE_CHANGE_TOOLS = setOf("write", "edit", "delete_file")
+
         fun toolDefinitions(): List<Map<String, Any>> = listOf(
             tool("bash", "Execute a bash command in the workspace.",
                 props(
