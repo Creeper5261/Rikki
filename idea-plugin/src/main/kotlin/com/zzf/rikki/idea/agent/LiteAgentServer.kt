@@ -8,6 +8,7 @@ import kotlinx.coroutines.runBlocking
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Embedded JDK HTTP server that serves the same SSE API as the Spring Boot backend.
@@ -20,9 +21,13 @@ class LiteAgentServer(private val project: Project) {
     var port: Int = 0
         private set
 
+    /** Set to true by /api/agent/skip; LiteBashTool polls this to interrupt commands. */
+    private val skipFlag = AtomicBoolean(false)
+
     fun start() {
         val srv = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 32)
         srv.createContext("/api/agent/chat/stream", ::handleStream)
+        srv.createContext("/api/agent/skip", ::handleSkip)
         srv.executor = Executors.newCachedThreadPool { r ->
             Thread(r, "rikki-lite-agent").also { it.isDaemon = true }
         }
@@ -31,12 +36,19 @@ class LiteAgentServer(private val project: Project) {
         port = srv.address.port
         // Point ChatPanel to this local server; disable pending diff workflow
         System.setProperty("rikki.endpoint", "http://127.0.0.1:$port/api/agent/chat/stream")
+        System.setProperty("rikki.skip.endpoint", "http://127.0.0.1:$port/api/agent/skip")
         System.setProperty("rikki.pending.enabled", "false")
     }
 
     fun stop() {
         server?.stop(0)
         server = null
+    }
+
+    private fun handleSkip(exchange: HttpExchange) {
+        skipFlag.set(true)
+        exchange.sendResponseHeaders(200, -1)
+        exchange.close()
     }
 
     private fun handleStream(exchange: HttpExchange) {
@@ -60,9 +72,13 @@ class LiteAgentServer(private val project: Project) {
         exchange.responseHeaders.add("Connection", "keep-alive")
         exchange.sendResponseHeaders(200, 0)
 
+        // Reset skip flag for each new request
+        skipFlag.set(false)
+
         val sseWriter = LiteSseWriter(exchange.responseBody)
         try {
             val engine = LiteAgentEngine(project, mapper)
+            engine.setSkipFlag(skipFlag)
             runBlocking {
                 engine.run(goal, workspaceRoot, ideContext, history, settings, sessionId, sseWriter)
             }

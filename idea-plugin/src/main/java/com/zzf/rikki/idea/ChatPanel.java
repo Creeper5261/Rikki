@@ -964,6 +964,22 @@ final class ChatPanel {
         }, "rikki-stop-request").start();
     }
 
+    private void skipCurrentTool() {
+        String skipUrl = System.getProperty("rikki.skip.endpoint");
+        if (skipUrl == null || skipUrl.isBlank()) return;
+        new Thread(() -> {
+            try {
+                HttpRequest req = HttpRequest.newBuilder(URI.create(skipUrl))
+                        .timeout(Duration.ofSeconds(5))
+                        .POST(HttpRequest.BodyPublishers.noBody())
+                        .build();
+                http.send(req, HttpResponse.BodyHandlers.discarding());
+            } catch (Exception e) {
+                logger.warn("skip_request_failed", e);
+            }
+        }, "rikki-skip-request").start();
+    }
+
     private String formatSessionAge(long createdAt) {
         if (createdAt <= 0L) {
             return "";
@@ -2521,6 +2537,12 @@ final class ChatPanel {
                 state.inlineRow.setAction(true, () -> navigateToReadTarget(state));
             } else {
                 state.inlineRow.setAction(false, null);
+            }
+            // Show skip button for running terminal (bash) commands
+            if (running && state.renderType == ToolRenderType.TERMINAL) {
+                state.inlineRow.setSkipAction(this::skipCurrentTool);
+            } else {
+                state.inlineRow.setSkipAction(null);
             }
         }
         refreshInlineDiffCard(state);
@@ -4253,7 +4275,9 @@ final class ChatPanel {
         private final JLabel markerLabel;
         private final ShimmerLabel summaryLabel;
         private final JLabel metaLabel;
+        private final JLabel skipLabel;
         private Runnable action;
+        private Runnable skipAction;
         private boolean hover;
         private boolean running;
 
@@ -4280,8 +4304,20 @@ final class ChatPanel {
             metaLabel.setForeground(UIUtil.getContextHelpForeground());
             metaLabel.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
 
+            skipLabel = new JLabel("\u29BB");  // ⦻ skip symbol
+            skipLabel.setForeground(UIUtil.getContextHelpForeground());
+            skipLabel.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
+            skipLabel.setToolTipText("Skip this command");
+            skipLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            skipLabel.setVisible(false);
+
+            JPanel eastPanel = new JPanel(new BorderLayout(4, 0));
+            eastPanel.setOpaque(false);
+            eastPanel.add(metaLabel, BorderLayout.WEST);
+            eastPanel.add(skipLabel, BorderLayout.EAST);
+
             add(left, BorderLayout.CENTER);
-            add(metaLabel, BorderLayout.EAST);
+            add(eastPanel, BorderLayout.EAST);
 
             MouseAdapter click = new MouseAdapter() {
                 @Override
@@ -4308,6 +4344,24 @@ final class ChatPanel {
             markerLabel.addMouseListener(click);
             summaryLabel.addMouseListener(click);
             metaLabel.addMouseListener(click);
+
+            skipLabel.addMouseListener(new MouseAdapter() {
+                @Override
+                public void mouseClicked(MouseEvent e) {
+                    e.consume();
+                    if (skipAction != null) skipAction.run();
+                }
+
+                @Override
+                public void mouseEntered(MouseEvent e) {
+                    skipLabel.setForeground(UIUtil.getLabelForeground());
+                }
+
+                @Override
+                public void mouseExited(MouseEvent e) {
+                    skipLabel.setForeground(UIUtil.getContextHelpForeground());
+                }
+            });
         }
 
         void setSummaryText(String summary) {
@@ -4325,12 +4379,21 @@ final class ChatPanel {
             repaint();
         }
 
+        void setSkipAction(Runnable action) {
+            this.skipAction = action;
+            skipLabel.setVisible(action != null);
+        }
+
         void setRunning(boolean running) {
             if (this.running == running) {
                 return;
             }
             this.running = running;
             summaryLabel.setShimmerActive(running);
+            if (!running) {
+                skipLabel.setVisible(false);
+                skipAction = null;
+            }
         }
 
         @Override

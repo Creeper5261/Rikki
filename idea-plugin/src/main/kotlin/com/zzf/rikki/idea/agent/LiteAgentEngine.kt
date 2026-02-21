@@ -14,6 +14,7 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Runs the agentic LLM loop and emits SSE events through [LiteSseWriter]. */
 class LiteAgentEngine(
@@ -26,6 +27,8 @@ class LiteAgentEngine(
     }
 
     private val tools = LiteToolRegistry(project, mapper)
+
+    fun setSkipFlag(flag: AtomicBoolean) { tools.setSkipFlag(flag) }
 
     suspend fun run(
         goal: String,

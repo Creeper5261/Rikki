@@ -2,11 +2,14 @@ package com.zzf.rikki.idea.agent
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
 import com.zzf.rikki.idea.agent.tools.*
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Dispatches tool calls and provides tool definitions for the LLM. */
-class LiteToolRegistry(project: Project, private val mapper: ObjectMapper) {
+class LiteToolRegistry(private val project: Project, private val mapper: ObjectMapper) {
 
     data class ToolResult(val output: String, val error: String? = null)
 
@@ -15,10 +18,36 @@ class LiteToolRegistry(project: Project, private val mapper: ObjectMapper) {
     val ide            = LiteIdeTools(project, mapper)  // public so engine can set ideContextNode
     private val todos  = LiteTodoTools(mapper)
 
-    fun execute(name: String, args: JsonNode, workspaceRoot: String, sessionId: String, callId: String): ToolResult =
-        try {
+    private var skipFlag: AtomicBoolean? = null
+
+    fun setSkipFlag(flag: AtomicBoolean) { skipFlag = flag }
+
+    fun execute(name: String, args: JsonNode, workspaceRoot: String, sessionId: String, callId: String): ToolResult {
+        // High-risk confirmation
+        if (name == "bash") {
+            val command = args.path("command").asText("")
+            if (isHighRiskBashCommand(command) && !askUserConfirmation(
+                    "High-Risk Command",
+                    "The agent wants to execute a potentially dangerous command:\n\n$ $command\n\nAllow execution?"
+                )
+            ) {
+                return ToolResult("(User denied execution of this command. Do not retry.)")
+            }
+        }
+        if (name == "delete_file") {
+            val filePath = args.path("filePath").asText("")
+            if (!askUserConfirmation(
+                    "Confirm File Deletion",
+                    "The agent wants to permanently delete:\n\n$filePath\n\nAllow?"
+                )
+            ) {
+                return ToolResult("(User denied file deletion. Do not retry.)")
+            }
+        }
+
+        return try {
             val out = when (name) {
-                "bash"              -> bash.execute(args, workspaceRoot)
+                "bash"              -> bash.execute(args, workspaceRoot, skipFlag)
                 "read"              -> files.read(args, workspaceRoot)
                 "write"             -> files.write(args, workspaceRoot)
                 "edit"              -> files.edit(args, workspaceRoot)
@@ -37,6 +66,40 @@ class LiteToolRegistry(project: Project, private val mapper: ObjectMapper) {
         } catch (e: Exception) {
             ToolResult("", e.message ?: "Tool error")
         }
+    }
+
+    // ── Risk assessment ───────────────────────────────────────────────────────
+
+    private fun isHighRiskBashCommand(cmd: String): Boolean {
+        val c = cmd.trim()
+        return RISK_PATTERNS.any { c.contains(it) }
+    }
+
+    private val RISK_PATTERNS = listOf(
+        "sudo ", "su -", "su root",
+        "rm -rf", "rm -fr", "rm -r ", "rm -f /",
+        "mkfs", "dd if=",
+        "| bash", "| sh ", "| zsh ", "| fish ",
+        "chmod 777", "chmod -R ",
+        "> /dev/", "/dev/sd", "/dev/hd", "/dev/nvme",
+        ":(){ :|:& };:"   // fork bomb
+    )
+
+    private fun askUserConfirmation(title: String, message: String): Boolean {
+        var confirmed = false
+        ApplicationManager.getApplication().invokeAndWait {
+            val result = Messages.showYesNoDialog(
+                project,
+                message,
+                title,
+                "Allow",
+                "Deny",
+                Messages.getWarningIcon()
+            )
+            confirmed = (result == Messages.YES)
+        }
+        return confirmed
+    }
 
     companion object {
         fun toolDefinitions(): List<Map<String, Any>> = listOf(
