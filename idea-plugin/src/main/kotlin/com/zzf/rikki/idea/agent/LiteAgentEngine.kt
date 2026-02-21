@@ -206,7 +206,12 @@ class LiteAgentEngine(
         try {
             conn.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
             if (conn.responseCode !in 200..299) {
-                return@withContext LlmResult("Error: HTTP ${conn.responseCode}", emptyList())
+                val errBody = try {
+                    conn.errorStream?.bufferedReader(StandardCharsets.UTF_8)?.readText()?.trim()?.take(400) ?: ""
+                } catch (_: Exception) { "" }
+                val msg = if (errBody.isNotBlank()) "Error: HTTP ${conn.responseCode} — $errBody"
+                          else "Error: HTTP ${conn.responseCode}"
+                return@withContext LlmResult(msg, emptyList())
             }
 
             val textBuf = StringBuilder()
