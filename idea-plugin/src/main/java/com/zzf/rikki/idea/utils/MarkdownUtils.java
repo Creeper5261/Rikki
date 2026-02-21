@@ -99,8 +99,7 @@ public class MarkdownUtils {
         String diffAddColor = colorToHex(diffAdd);
         String diffRemoveColor = colorToHex(diffRemove);
 
-        return "body { font-family: sans-serif; font-size: 13px; color: " + textColor + "; background: transparent; margin: 0; padding: 0; }" +
-               "body, p, li, span, div, h1, h2, h3, h4, h5, h6, td, th { overflow-wrap: anywhere; word-break: break-word; }" +
+        return "body { font-family: sans-serif; font-size: 13px; color: " + textColor + "; margin: 0; padding: 0; }" +
                "p, li, span, div, h1, h2, h3, h4, h5, h6 { color: " + textColor + "; }" +
                "h1 { font-size: 1.7em; font-weight: bold; margin-top: 12px; margin-bottom: 4px; }" +
                "h2 { font-size: 1.4em; font-weight: bold; margin-top: 10px; margin-bottom: 4px; }" +
@@ -109,10 +108,10 @@ public class MarkdownUtils {
                "h5, h6 { font-size: 1em; font-weight: bold; margin-top: 4px; margin-bottom: 2px; }" +
                "a { color: " + linkColor + "; text-decoration: none; }" +
                "code { background-color: " + codeBg + "; color: " + textColor + "; font-family: monospace; padding: 2px 4px; }" +
-               "pre { background-color: " + codeBg + "; color: " + textColor + "; padding: 8px; border: 1px solid " + borderColor + "; border-radius: 6px; white-space: pre-wrap; overflow-x: hidden; max-width: 100%; }" +
-               "pre code { background-color: transparent; padding: 0; }" +
-               "table { border-collapse: collapse; width: 100%; table-layout: fixed; max-width: 100%; }" +
-               "th, td { border: 1px solid " + borderColor + "; padding: 6px; text-align: left; overflow-wrap: anywhere; word-break: break-word; }" +
+               "pre { background-color: " + codeBg + "; color: " + textColor + "; padding: 8px; border: 1px solid " + borderColor + "; }" +
+               "pre code { background-color: " + codeBg + "; padding: 0; }" +
+               "table { width: 100%; }" +
+               "th, td { border: 1px solid " + borderColor + "; padding: 6px; text-align: left; }" +
                "th { background-color: " + codeBg + "; }" +
                "span.diff-add { color: " + diffAddColor + "; }" +
                "span.diff-remove { color: " + diffRemoveColor + "; }";
