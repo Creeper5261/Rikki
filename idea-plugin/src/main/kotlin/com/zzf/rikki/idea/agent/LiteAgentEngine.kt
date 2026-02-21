@@ -136,6 +136,8 @@ class LiteAgentEngine(
                 when {
                     text.startsWith("You:") ->
                         messages += mapOf("role" to "user",      "content" to text.removePrefix("You:").trim())
+                    text.startsWith("Agent:") ->
+                        messages += mapOf("role" to "assistant", "content" to text.removePrefix("Agent:").trim())
                     text.startsWith("Assistant:") ->
                         messages += mapOf("role" to "assistant", "content" to text.removePrefix("Assistant:").trim())
                 }
