@@ -3,7 +3,7 @@
     <name>Rikki Code Agent</name>
     <vendor email="zhengzhengfeng@outlook.com" url="https://github.com/Creeper5261/Rikki">Creeper5261</vendor>
 
-    <idea-version since-build="241" until-build="243.*"/>
+    <idea-version since-build="241"/>
 
     <description><![CDATA[
         Rikki is a lightweight AI coding assistant for JetBrains IDEs.<br><br>
