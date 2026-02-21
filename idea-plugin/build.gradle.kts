@@ -34,14 +34,6 @@ configurations.all {
 }
 
 dependencies {
-    implementation(project(":")) {
-        exclude(group = "com.fasterxml.jackson.core")
-        exclude(group = "org.springframework.boot")
-        exclude(group = "org.springframework.kafka")
-        exclude(group = "io.micrometer")
-        exclude(group = "org.slf4j")
-        exclude(group = "ch.qos.logback")
-    }
     implementation("com.fasterxml.jackson.core:jackson-databind:2.15.2")
     implementation("com.fasterxml.jackson.core:jackson-core:2.15.2")
     implementation("com.fasterxml.jackson.core:jackson-annotations:2.15.2")
