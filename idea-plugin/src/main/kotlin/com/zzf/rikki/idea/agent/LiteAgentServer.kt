@@ -30,7 +30,7 @@ class LiteAgentServer(private val project: Project) {
         server = srv
         port = srv.address.port
         // Point ChatPanel to this local server; disable pending diff workflow
-        System.setProperty("rikki.endpoint", "http://127.0.0.1:$port/api/agent/chat")
+        System.setProperty("rikki.endpoint", "http://127.0.0.1:$port/api/agent/chat/stream")
         System.setProperty("rikki.pending.enabled", "false")
     }
 
