@@ -120,7 +120,9 @@ class LiteAgentEngine(
                     val future = CompletableFuture<Boolean>()
                     confirmFutureRef?.set(future)
                     val approved = try {
-                        withContext(Dispatchers.IO) { future.get(120L, TimeUnit.SECONDS) }
+                        withContext(Dispatchers.IO) { future.get(1L, TimeUnit.HOURS) }
+                    } catch (ce: kotlinx.coroutines.CancellationException) {
+                        throw ce
                     } catch (_: Exception) { false }
                     confirmFutureRef?.set(null)
 

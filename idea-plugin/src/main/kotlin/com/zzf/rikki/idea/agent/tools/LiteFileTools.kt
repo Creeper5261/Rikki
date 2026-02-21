@@ -2,6 +2,8 @@ package com.zzf.rikki.idea.agent.tools
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.vfs.LocalFileSystem
 import java.io.File
 import java.nio.file.FileSystems
 import java.nio.file.Files
@@ -67,6 +69,7 @@ class LiteFileTools(private val mapper: ObjectMapper) {
         val file = resolve(workspaceRoot, pathStr)
         file.parentFile?.mkdirs()
         file.writeText(content, StandardCharsets.UTF_8)
+        refreshVfsSync(file.absolutePath)
         return "Written: $pathStr (${content.lines().size} lines)"
     }
 
@@ -84,6 +87,7 @@ class LiteFileTools(private val mapper: ObjectMapper) {
             if (oldString.isNotEmpty()) throw RuntimeException("File not found: $pathStr. To create, leave oldString empty.")
             file.parentFile?.mkdirs()
             file.writeText(newString, StandardCharsets.UTF_8)
+            refreshVfsSync(file.absolutePath)
             return "Created: $pathStr"
         }
 
@@ -100,6 +104,7 @@ class LiteFileTools(private val mapper: ObjectMapper) {
                       else original.replace(matches[0], newString)
 
         file.writeText(updated, StandardCharsets.UTF_8)
+        refreshVfsSync(file.absolutePath)
         return "Updated: $pathStr"
     }
 
@@ -137,6 +142,7 @@ class LiteFileTools(private val mapper: ObjectMapper) {
         val file = resolve(workspaceRoot, pathStr)
         if (!file.exists()) throw RuntimeException("File not found: $pathStr")
         file.delete()
+        refreshVfsSync(file.absolutePath)
         return "Deleted: $pathStr"
     }
 
@@ -237,6 +243,15 @@ class LiteFileTools(private val mapper: ObjectMapper) {
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    private fun refreshVfsSync(absPath: String) {
+        try {
+            val normalized = absPath.replace('\\', '/')
+            ApplicationManager.getApplication().invokeAndWait {
+                LocalFileSystem.getInstance().refreshAndFindFileByPath(normalized)?.refresh(false, false)
+            }
+        } catch (_: Exception) {}
+    }
 
     private fun resolve(workspaceRoot: String, path: String): File {
         val f = File(path)
