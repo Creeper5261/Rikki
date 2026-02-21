@@ -84,6 +84,9 @@ class LiteAgentEngine(
             // Add assistant turn to history
             val assistantMsg = mutableMapOf<String, Any?>("role" to "assistant")
             assistantMsg["content"] = result.text.ifBlank { null }
+            if (result.reasoningContent.isNotBlank()) {
+                assistantMsg["reasoning_content"] = result.reasoningContent
+            }
             if (result.toolCalls.isNotEmpty()) {
                 assistantMsg["tool_calls"] = result.toolCalls.map { tc ->
                     mapOf(
@@ -186,7 +189,7 @@ class LiteAgentEngine(
     // ── LLM streaming ────────────────────────────────────────────────────────
 
     data class ToolCallInfo(val id: String, val name: String, val argsRaw: String, val args: JsonNode)
-    data class LlmResult(val text: String, val toolCalls: List<ToolCallInfo>)
+    data class LlmResult(val text: String, val toolCalls: List<ToolCallInfo>, val reasoningContent: String = "")
 
     private suspend fun callLlmStreaming(
         messages: List<Map<String, Any?>>,
@@ -194,13 +197,15 @@ class LiteAgentEngine(
         msgId: String
     ): LlmResult = withContext(Dispatchers.IO) {
         val s = RikkiSettings.getInstance().state
-        if (s.apiKey.isBlank()) return@withContext LlmResult("Error: API key not configured.", emptyList())
+        val apiKey = s.currentApiKey()
+        if (apiKey.isBlank() && s.provider != "OLLAMA")
+            return@withContext LlmResult("Error: API key not configured.", emptyList())
 
         val model   = s.modelName.ifBlank { "deepseek-chat" }
-        val baseUrl = s.baseUrl.trimEnd('/')
+        val baseUrl = s.currentBaseUrl().trimEnd('/')
 
         val body = buildRequestBody(model, messages)
-        val conn = openConnection("$baseUrl/chat/completions", s.apiKey)
+        val conn = openConnection("$baseUrl/chat/completions", apiKey)
             ?: return@withContext LlmResult("Error: cannot connect to LLM endpoint.", emptyList())
 
         try {
@@ -214,7 +219,8 @@ class LiteAgentEngine(
                 return@withContext LlmResult(msg, emptyList())
             }
 
-            val textBuf = StringBuilder()
+            val textBuf      = StringBuilder()
+            val reasoningBuf = StringBuilder()
             // Accumulate streaming tool calls: index → (id, name, args)
             val tcAccum = mutableMapOf<Int, Triple<String, String, StringBuilder>>()
             var finishReason = ""
@@ -240,6 +246,12 @@ class LiteAgentEngine(
                             sseWriter.emitMessage(msgId, text)
                             textBuf.append(text)
                         }
+                    }
+
+                    // Reasoning delta (deepseek-reasoner / o-series)
+                    val reasoning = delta.path("reasoning_content")
+                    if (!reasoning.isNull && !reasoning.isMissingNode) {
+                        reasoningBuf.append(reasoning.asText(""))
                     }
 
                     // Tool call deltas
@@ -278,7 +290,8 @@ class LiteAgentEngine(
 
             LlmResult(
                 textBuf.toString(),
-                if (finishReason == "tool_calls" || toolCalls.isNotEmpty()) toolCalls else emptyList()
+                if (finishReason == "tool_calls" || toolCalls.isNotEmpty()) toolCalls else emptyList(),
+                reasoningBuf.toString()
             )
         } finally {
             conn.disconnect()

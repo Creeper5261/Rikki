@@ -38,13 +38,13 @@ object LiteLlmClient {
         onToken: suspend (String) -> Unit
     ) = withContext(Dispatchers.IO) {
         val settings = RikkiSettings.getInstance().state
-        if (settings.apiKey.isBlank()) return@withContext
+        if (settings.currentApiKey().isBlank() && settings.provider != "OLLAMA") return@withContext
 
         val model   = settings.completionModelName.ifBlank { settings.modelName }
-        val baseUrl = settings.baseUrl.trimEnd('/')
+        val baseUrl = settings.currentBaseUrl().trimEnd('/')
         val body    = buildBody(model, prefix, suffix, language)
 
-        val conn = openConnection("$baseUrl/chat/completions", settings.apiKey) ?: return@withContext
+        val conn = openConnection("$baseUrl/chat/completions", settings.currentApiKey()) ?: return@withContext
         try {
             conn.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
             if (conn.responseCode !in 200..299) return@withContext
