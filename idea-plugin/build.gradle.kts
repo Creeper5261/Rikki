@@ -69,6 +69,10 @@ tasks.buildSearchableOptions {
     enabled = false
 }
 
+tasks.runPluginVerifier {
+    ideVersions.set(listOf("IC-2024.1", "IC-2024.2", "IC-2024.3"))
+}
+
 tasks.runIde {
     jvmArgs("-Djb.vmOptionsFile=${project.file("src/main/resources/idea.vmoptions").absolutePath}")
 }
