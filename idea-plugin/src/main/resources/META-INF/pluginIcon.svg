@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5C7CF8"/>
+      <stop offset="1" stop-color="#3550E2"/>
+    </linearGradient>
+  </defs>
+  <!-- Background rounded square -->
+  <rect width="40" height="40" rx="9" fill="url(#g)"/>
+  <!-- Bold letter R in white strokes -->
+  <g stroke="white" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Vertical stem -->
+    <line x1="11" y1="9" x2="11" y2="31" stroke-width="5.5"/>
+    <!-- Bowl: top bar + right semicircle + bottom bar -->
+    <path d="M11 9 L18 9 A6.5 6.5 0 0 1 18 22 L11 22" stroke-width="4.5"/>
+    <!-- Diagonal leg -->
+    <line x1="15" y1="23" x2="29" y2="31" stroke-width="4.5"/>
+  </g>
+</svg>

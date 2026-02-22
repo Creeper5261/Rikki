@@ -6,22 +6,45 @@
     <idea-version since-build="241"/>
 
     <description><![CDATA[
-        Rikki is a lightweight AI coding assistant for JetBrains IDEs.<br><br>
-        <b>Features:</b>
+        Rikki is a lightweight AI coding assistant for JetBrains IDEs.<br>
+        No backend server required — connects directly to LLM APIs.<br><br>
+
+        <b>Chat Agent</b><br>
+        An AI panel that can read files, write and edit code, run terminal commands,
+        and perform Git operations. High-risk commands (file deletion, force-push, etc.)
+        always pause for your explicit Approve / Skip confirmation before executing.<br><br>
+
+        <b>Inline TAB Completion</b><br>
+        Ghost-text suggestions appear as you type; press TAB to accept.<br>
         <ul>
-            <li><b>Inline TAB completion</b> — ghost-text suggestions as you type, accepted with TAB</li>
-            <li><b>AI chat panel</b> — context-aware conversation with your codebase in a side tool window</li>
-            <li><b>OpenAI-compatible</b> — works with DeepSeek, OpenAI, local Ollama, or any compatible endpoint</li>
+            <li><b>FIM mode</b> (Fill-In-Middle) for DeepSeek and Ollama — sends prefix + suffix
+                directly to the model's dedicated completions endpoint for accurate in-place suggestions.</li>
+            <li><b>Chat-format fallback</b> for OpenAI, Gemini, Moonshot, and other providers.</li>
+            <li>Completion can use a <b>different provider, model, and API key</b> than the chat agent
+                — ideal for using a fast/cheap model for completions and a powerful model for chat.</li>
         </ul>
-        Configure your API key and base URL under <b>Settings → Tools → Rikki Code Agent</b>.
+
+        <b>Multi-Provider Support</b><br>
+        Built-in presets for DeepSeek, OpenAI (GPT), Anthropic (Claude), Google Gemini,
+        Moonshot / Kimi, Ollama (local, no key required), and fully custom endpoints.<br>
+        Each provider stores its own API key — switching provider automatically loads the correct key.<br><br>
+
+        <b>Setup</b><br>
+        Open <b>Settings → Tools → Rikki Code Agent</b>, choose your provider, enter the API key,
+        and select a model. For local use, choose Ollama — no API key needed.
     ]]></description>
 
     <change-notes><![CDATA[
-        <b>0.1.0</b>
+        <b>0.1.0</b> — Initial release
         <ul>
-            <li>Initial release: inline TAB completion and AI chat panel</li>
-            <li>OpenAI-compatible API with configurable base URL and model</li>
-            <li>Separate completion model setting (defaults to chat model)</li>
+            <li>AI chat panel with file read/write, terminal execution, and Git operations</li>
+            <li>High-risk command confirmation: agent pauses and waits for Approve / Skip</li>
+            <li>Inline TAB completion with FIM support (DeepSeek beta, Ollama) and chat-format
+                fallback (OpenAI, Gemini, Moonshot)</li>
+            <li>Per-provider API keys: DeepSeek, OpenAI, Anthropic, Gemini, Moonshot, Ollama, Custom</li>
+            <li>Independent completion provider — choose a different model/key/URL for completions</li>
+            <li>deepseek-reasoner (R1): reasoning_content carried in multi-turn history</li>
+            <li>OpenAI o1 / o3 / o4 dialect: developer role, max_completion_tokens, tools toggle</li>
         </ul>
     ]]></change-notes>
 
