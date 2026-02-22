@@ -3,6 +3,7 @@ package com.zzf.rikki.idea.settings
 import com.intellij.credentialStore.CredentialAttributes
 import com.intellij.credentialStore.generateServiceName
 import com.intellij.ide.passwordSafe.PasswordSafe
+import com.intellij.openapi.application.ApplicationManager
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -28,8 +29,18 @@ internal object RikkiCredentials {
     private val cache  = ConcurrentHashMap<String, String>()
     @Volatile private var loaded = false
 
-    /** Returns the cached API key for [key], or "" if not yet loaded / not set. */
-    fun get(key: String): String = cache[key.uppercase()] ?: ""
+    /**
+     * Returns the cached API key for [key], or "" if not set.
+     * If called from a background thread before [loadAll] has completed, triggers a blocking
+     * load so that the key is always available (e.g. when LiteAgentEngine starts immediately
+     * after IDE startup before the async loadAll finishes).
+     */
+    fun get(key: String): String {
+        if (!loaded && !ApplicationManager.getApplication().isDispatchThread) {
+            synchronized(this) { if (!loaded) loadAll() }
+        }
+        return cache[key.uppercase()] ?: ""
+    }
 
     /**
      * Persists [value] to PasswordSafe and updates the in-memory cache immediately.

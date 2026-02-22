@@ -4445,8 +4445,12 @@ final class ChatPanel {
 
                 @Override
                 public void mouseExited(MouseEvent e) {
-                    hover = false;
-                    repaint();
+                    // Only clear hover when mouse truly left the panel (not just moved to a child).
+                    Point pt = SwingUtilities.convertPoint(e.getComponent(), e.getPoint(), InlineToolRowPanel.this);
+                    if (!new Rectangle(0, 0, getWidth(), getHeight()).contains(pt)) {
+                        hover = false;
+                        repaint();
+                    }
                 }
             };
             addMouseListener(click);
@@ -4454,6 +4458,7 @@ final class ChatPanel {
             markerLabel.addMouseListener(click);
             summaryLabel.addMouseListener(click);
             metaLabel.addMouseListener(click);
+            eastPanel.addMouseListener(click);
 
             skipLabel.addMouseListener(new MouseAdapter() {
                 @Override
@@ -4880,7 +4885,11 @@ final class ChatPanel {
 
                 @Override
                 public void mouseExited(MouseEvent e) {
-                    setHeaderHover(false);
+                    // Only clear hover when mouse truly left the header panel.
+                    Point pt = SwingUtilities.convertPoint(e.getComponent(), e.getPoint(), headerPanel);
+                    if (!new Rectangle(0, 0, headerPanel.getWidth(), headerPanel.getHeight()).contains(pt)) {
+                        setHeaderHover(false);
+                    }
                 }
             };
             headerPanel.addMouseListener(toggle);
