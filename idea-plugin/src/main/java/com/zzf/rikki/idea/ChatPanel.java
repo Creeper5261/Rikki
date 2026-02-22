@@ -44,6 +44,7 @@ import org.jetbrains.annotations.Nullable;
 import com.zzf.rikki.core.event.EventStream;
 import com.zzf.rikki.core.tool.PendingChangesManager;
 import com.zzf.rikki.core.tools.FileSystemToolService;
+import com.zzf.rikki.idea.settings.RikkiSettingsConfigurable;
 import com.zzf.rikki.idea.utils.MarkdownUtils;
 
 import javax.swing.*;
@@ -533,7 +534,7 @@ final class ChatPanel {
 
     private void openSettingsDialogForCurrentSession() {
         ShowSettingsUtil.getInstance().showSettingsDialog(
-                project, "com.zzf.rikki.idea.settings.RikkiSettingsConfigurable");
+                project, RikkiSettingsConfigurable.class);
     }
     
     private void refreshSessionList() {
@@ -661,7 +662,7 @@ final class ChatPanel {
         searchWrap.setOpaque(false);
         historySearchField = new JTextField();
         historySearchField.setToolTipText("Search recent tasks");
-        historySearchField.putClientProperty("JTextField.placeholderText", "搜索最近任务");
+        historySearchField.putClientProperty("JTextField.placeholderText", "Search recent tasks");
         historySearchField.setBorder(BorderFactory.createCompoundBorder(
                 new RoundedLineBorder(UIUtil.getBoundsColor(), 12),
                 JBUI.Borders.empty(7, 11, 7, 11)
@@ -671,7 +672,7 @@ final class ChatPanel {
         JPanel filterRow = new JPanel(new BorderLayout());
         filterRow.setOpaque(false);
         filterRow.setBorder(JBUI.Borders.empty(6, 2, 2, 2));
-        JLabel filterLeft = new JLabel("所有任务 \u2304");
+        JLabel filterLeft = new JLabel("All tasks \u2304");
         filterLeft.setForeground(UIUtil.getLabelForeground());
         filterLeft.setFont(filterLeft.getFont().deriveFont(Font.BOLD, 12f));
         JLabel filterRight = new JLabel("\u25AD");
@@ -2713,30 +2714,30 @@ final class ChatPanel {
         Integer exitCode = firstInteger(state.exitCode, inferExitCodeFromText(state.error), inferExitCodeFromText(state.output));
         if (exitCode != null) {
             if (exitCode == 0) {
-                return "成功";
+                return "Success";
             }
-            return "退出码 " + exitCode;
+            return "Exit code " + exitCode;
         }
         String normalized = state.status == null ? "" : state.status.trim().toLowerCase();
         switch (normalized) {
             case "completed":
             case "success":
             case "ok":
-                return "成功";
+                return "Success";
             case "error":
             case "failed":
             case "failure":
-                return "失败";
+                return "Failure";
             case "awaiting_approval":
             case "needs_approval":
-                return "等待确认";
+                return "Pending";
             case "rejected":
             case "skipped":
-                return "已跳过";
+                return "Skipped";
             case "pending":
             case "running":
             case "retry":
-                return "运行中";
+                return "Running";
             default:
                 return normalized;
         }
@@ -4727,7 +4728,7 @@ final class ChatPanel {
             setLayout(new FlowLayout(FlowLayout.LEFT, 12, 0));
             setBorder(JBUI.Borders.empty(0, 2, 6, 2));
             textLabel = new ShimmerLabel();
-            textLabel.setText("正在思考");
+            textLabel.setText("Thinking...");
             textLabel.setForeground(UIUtil.getContextHelpForeground());
             textLabel.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL).deriveFont(Font.BOLD));
             add(textLabel);
@@ -6205,7 +6206,7 @@ final class ChatPanel {
             send.setEnabled(true);
             inputController.updateSendButtonMode(effectiveBusy);
             if (thinkingStatusPanel != null) {
-                String text = awaitingUserApproval ? "等待确认" : "正在思考";
+                String text = awaitingUserApproval ? "Pending" : "Thinking...";
                 thinkingStatusPanel.setVisible(effectiveBusy);
                 thinkingStatusPanel.setState(effectiveBusy, text);
             }
