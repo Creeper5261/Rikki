@@ -36,8 +36,10 @@ import com.intellij.ui.JBColor;
 import com.intellij.util.ui.JBUI;
 import com.intellij.openapi.editor.colors.EditorColorsManager;
 import com.intellij.openapi.editor.colors.EditorFontType;
+import com.intellij.icons.AllIcons;
 import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.ui.DialogWrapper;
+import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.ui.popup.JBPopup;
 import com.intellij.openapi.ui.popup.JBPopupFactory;
 import com.intellij.util.ui.UIUtil;
@@ -597,11 +599,28 @@ final class ChatPanel {
             JLabel age = new JLabel(formatSessionAge(session.createdAt));
             age.setForeground(UIUtil.getContextHelpForeground());
             age.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
+
+            JButton deleteBtn = createDeleteRowButton();
+            boolean[] skipOpen = {false};
+            deleteBtn.addMouseListener(new MouseAdapter() {
+                @Override public void mousePressed(MouseEvent e) { skipOpen[0] = true; }
+            });
+            deleteBtn.addActionListener(e -> confirmAndDeleteSession(session.id, () -> {
+                refreshSessionList();
+                rebuildConversationFromHistory();
+                refreshChatHeaderTitle();
+            }));
+            JPanel east = new JPanel(new BorderLayout(4, 0));
+            east.setOpaque(false);
+            east.add(age, BorderLayout.WEST);
+            east.add(deleteBtn, BorderLayout.EAST);
             item.add(itemTitle, BorderLayout.CENTER);
-            item.add(age, BorderLayout.EAST);
+            item.add(east, BorderLayout.EAST);
             item.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            item.setOnHoverCallbacks(() -> deleteBtn.setVisible(true), () -> deleteBtn.setVisible(false));
 
             installSessionRowInteraction(item, () -> {
+                if (skipOpen[0]) { skipOpen[0] = false; return; }
                 history.setCurrentSession(session.id);
                 currentSessionId = firstNonBlank(session.backendSessionId);
                 refreshSessionList();
@@ -756,11 +775,28 @@ final class ChatPanel {
             age.setForeground(UIUtil.getContextHelpForeground());
             age.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
 
+            JButton deleteBtn = createDeleteRowButton();
+            boolean[] skipOpen = {false};
+            deleteBtn.addMouseListener(new MouseAdapter() {
+                @Override public void mousePressed(MouseEvent e) { skipOpen[0] = true; }
+            });
+            deleteBtn.addActionListener(e -> confirmAndDeleteSession(session.id, () -> {
+                refreshHistoryBrowserList();
+                refreshSessionList();
+                rebuildConversationFromHistory();
+                refreshChatHeaderTitle();
+            }));
+            JPanel east = new JPanel(new BorderLayout(4, 0));
+            east.setOpaque(false);
+            east.add(age, BorderLayout.WEST);
+            east.add(deleteBtn, BorderLayout.EAST);
             item.add(itemTitle, BorderLayout.CENTER);
-            item.add(age, BorderLayout.EAST);
+            item.add(east, BorderLayout.EAST);
             item.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+            item.setOnHoverCallbacks(() -> deleteBtn.setVisible(true), () -> deleteBtn.setVisible(false));
 
             installSessionRowInteraction(item, () -> {
+                if (skipOpen[0]) { skipOpen[0] = false; return; }
                 history.setCurrentSession(session.id);
                 currentSessionId = firstNonBlank(session.backendSessionId);
                 rebuildConversationFromHistory();
@@ -888,6 +924,34 @@ final class ChatPanel {
             }
         }
         return true;
+    }
+
+    private JButton createDeleteRowButton() {
+        JButton btn = new JButton(AllIcons.General.Remove);
+        btn.setBorderPainted(false);
+        btn.setContentAreaFilled(false);
+        btn.setFocusPainted(false);
+        btn.setOpaque(false);
+        btn.setMargin(JBUI.emptyInsets());
+        btn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        btn.setToolTipText("Delete conversation");
+        btn.setVisible(false);
+        return btn;
+    }
+
+    private void confirmAndDeleteSession(String sessionId, Runnable onDeleted) {
+        int result = Messages.showOkCancelDialog(
+            project,
+            "Are you sure you want to delete this conversation? This cannot be undone.",
+            "Delete Conversation",
+            "Delete",
+            "Cancel",
+            Messages.getWarningIcon()
+        );
+        if (result == Messages.OK) {
+            history.deleteSession(sessionId);
+            if (onDeleted != null) onDeleted.run();
+        }
     }
 
     private JButton createHeaderIconButton(String text, String tooltip) {
@@ -4529,9 +4593,16 @@ final class ChatPanel {
     private static class SessionListRowPanel extends JPanel {
         private boolean hover;
         private boolean selected;
+        private Runnable onHoverIn;
+        private Runnable onHoverOut;
 
         SessionListRowPanel() {
             setOpaque(false);
+        }
+
+        void setOnHoverCallbacks(Runnable onHoverIn, Runnable onHoverOut) {
+            this.onHoverIn = onHoverIn;
+            this.onHoverOut = onHoverOut;
         }
 
         void setSelectedRow(boolean selected) {
@@ -4545,6 +4616,8 @@ final class ChatPanel {
             }
             this.hover = hover;
             repaint();
+            if (hover && onHoverIn != null) onHoverIn.run();
+            else if (!hover && onHoverOut != null) onHoverOut.run();
         }
 
         @Override
