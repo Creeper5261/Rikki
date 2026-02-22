@@ -33,13 +33,28 @@ configurations.all {
     }
 }
 
+// Kotlin stdlib and Jackson are bundled inside IntelliJ Platform (util-8.jar /
+// lib-client.jar). Exclude them from the packaged plugin to avoid shipping
+// ~3.5 MB of duplicate JARs.
+configurations.runtimeClasspath {
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk7")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk8")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-common")
+    exclude(group = "com.fasterxml.jackson.core")
+}
+
 dependencies {
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.15.2")
-    implementation("com.fasterxml.jackson.core:jackson-core:2.15.2")
-    implementation("com.fasterxml.jackson.core:jackson-annotations:2.15.2")
+    // Jackson is provided by the IntelliJ Platform (lib-client.jar, 2.15.x).
+    // Use compileOnly so code compiles against it but the JARs are not bundled.
+    compileOnly("com.fasterxml.jackson.core:jackson-databind:2.15.2")
+    compileOnly("com.fasterxml.jackson.core:jackson-core:2.15.2")
+    compileOnly("com.fasterxml.jackson.core:jackson-annotations:2.15.2")
+    // commonmark is NOT bundled by IntelliJ — keep as implementation.
     implementation("org.commonmark:commonmark:0.21.0")
     implementation("org.commonmark:commonmark-ext-gfm-tables:0.21.0")
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testImplementation("com.fasterxml.jackson.core:jackson-databind:2.15.2")
 }
 
 intellij {
