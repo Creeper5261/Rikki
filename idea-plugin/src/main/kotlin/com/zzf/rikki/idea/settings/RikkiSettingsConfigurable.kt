@@ -263,15 +263,7 @@ class RikkiSettingsConfigurable : Configurable {
         ((completionModelCombo.editor?.item as? String)?.trim()
             ?: (completionModelCombo.selectedItem as? String)?.trim() ?: "")
 
-    private fun savedChatKeyFor(s: RikkiSettings.State, p: ChatProvider): String = when (p) {
-        ChatProvider.DEEPSEEK  -> s.apiKeyDeepseek
-        ChatProvider.OPENAI    -> s.apiKeyOpenai
-        ChatProvider.ANTHROPIC -> s.apiKeyAnthropic
-        ChatProvider.GEMINI    -> s.apiKeyGemini
-        ChatProvider.MOONSHOT  -> s.apiKeyMoonshot
-        ChatProvider.OLLAMA    -> s.apiKeyOllama
-        ChatProvider.CUSTOM    -> s.apiKeyCustom
-    }
+    private fun savedChatKeyFor(p: ChatProvider): String = RikkiCredentials.get(p.name)
 
     // ── Configurable: isModified ───────────────────────────────────────────────
 
@@ -284,14 +276,14 @@ class RikkiSettingsConfigurable : Configurable {
         if (s.provider != currentChatProvider.name) return true
         if (currentChatModelText() != s.modelName) return true
         if (chatBaseUrlField.text.trim().trimEnd('/') != s.customBaseUrl) return true
-        if (ChatProvider.values().any { p -> (snap[p] ?: "") != savedChatKeyFor(s, p) }) return true
+        if (ChatProvider.values().any { p -> (snap[p] ?: "") != savedChatKeyFor(p) }) return true
 
         // Completion
         if (completionBox.isSelected != s.completionEnabled) return true
         val cpStr = if (currentCompletionProvider == CompletionProvider.SAME_AS_CHAT) "" else currentCompletionProvider.name
         if (s.completionProvider != cpStr) return true
         val cpKey = if (currentCompletionProvider == CompletionProvider.SAME_AS_CHAT) "" else String(completionApiKeyField.password)
-        if (s.completionApiKeyOverride != cpKey) return true
+        if (RikkiCredentials.get("COMPLETION_OVERRIDE") != cpKey) return true
         if (currentCompletionModelText() != s.completionModelName) return true
         val cpUrl = if (currentCompletionProvider.urlEditable) completionBaseUrlField.text.trim() else ""
         if (s.completionCustomBaseUrl != cpUrl) return true
@@ -309,23 +301,25 @@ class RikkiSettingsConfigurable : Configurable {
         s.provider      = currentChatProvider.name
         s.modelName     = currentChatModelText()
         s.customBaseUrl = chatBaseUrlField.text.trim().trimEnd('/')
-        s.apiKeyDeepseek  = chatApiKeyCache[ChatProvider.DEEPSEEK]  ?: ""
-        s.apiKeyOpenai    = chatApiKeyCache[ChatProvider.OPENAI]    ?: ""
-        s.apiKeyAnthropic = chatApiKeyCache[ChatProvider.ANTHROPIC] ?: ""
-        s.apiKeyGemini    = chatApiKeyCache[ChatProvider.GEMINI]    ?: ""
-        s.apiKeyMoonshot  = chatApiKeyCache[ChatProvider.MOONSHOT]  ?: ""
-        s.apiKeyOllama    = chatApiKeyCache[ChatProvider.OLLAMA]    ?: ""
-        s.apiKeyCustom    = chatApiKeyCache[ChatProvider.CUSTOM]    ?: ""
+        // Persist each provider's key to PasswordSafe
+        RikkiCredentials.set("DEEPSEEK",  chatApiKeyCache[ChatProvider.DEEPSEEK]  ?: "")
+        RikkiCredentials.set("OPENAI",    chatApiKeyCache[ChatProvider.OPENAI]    ?: "")
+        RikkiCredentials.set("ANTHROPIC", chatApiKeyCache[ChatProvider.ANTHROPIC] ?: "")
+        RikkiCredentials.set("GEMINI",    chatApiKeyCache[ChatProvider.GEMINI]    ?: "")
+        RikkiCredentials.set("MOONSHOT",  chatApiKeyCache[ChatProvider.MOONSHOT]  ?: "")
+        RikkiCredentials.set("OLLAMA",    chatApiKeyCache[ChatProvider.OLLAMA]    ?: "")
+        RikkiCredentials.set("CUSTOM",    chatApiKeyCache[ChatProvider.CUSTOM]    ?: "")
 
         // Completion
         s.completionEnabled = completionBox.isSelected
         s.completionProvider = if (currentCompletionProvider == CompletionProvider.SAME_AS_CHAT) ""
                                else currentCompletionProvider.name
-        s.completionApiKeyOverride = if (currentCompletionProvider == CompletionProvider.SAME_AS_CHAT) ""
-                                     else String(completionApiKeyField.password)
-        s.completionModelName      = currentCompletionModelText()
-        s.completionCustomBaseUrl  = if (currentCompletionProvider.urlEditable)
-                                         completionBaseUrlField.text.trim() else ""
+        val completionKey = if (currentCompletionProvider == CompletionProvider.SAME_AS_CHAT) ""
+                            else String(completionApiKeyField.password)
+        RikkiCredentials.set("COMPLETION_OVERRIDE", completionKey)
+        s.completionModelName     = currentCompletionModelText()
+        s.completionCustomBaseUrl = if (currentCompletionProvider.urlEditable)
+                                        completionBaseUrlField.text.trim() else ""
     }
 
     // ── Configurable: reset ────────────────────────────────────────────────────
@@ -336,13 +330,14 @@ class RikkiSettingsConfigurable : Configurable {
         // ── Chat ───────────────────────────────────────────────────────────────
         currentChatProvider = ChatProvider.fromName(s.provider)
 
-        chatApiKeyCache[ChatProvider.DEEPSEEK]  = s.apiKeyDeepseek
-        chatApiKeyCache[ChatProvider.OPENAI]    = s.apiKeyOpenai
-        chatApiKeyCache[ChatProvider.ANTHROPIC] = s.apiKeyAnthropic
-        chatApiKeyCache[ChatProvider.GEMINI]    = s.apiKeyGemini
-        chatApiKeyCache[ChatProvider.MOONSHOT]  = s.apiKeyMoonshot
-        chatApiKeyCache[ChatProvider.OLLAMA]    = s.apiKeyOllama
-        chatApiKeyCache[ChatProvider.CUSTOM]    = s.apiKeyCustom
+        // Load all keys fresh from PasswordSafe into the in-memory UI cache
+        chatApiKeyCache[ChatProvider.DEEPSEEK]  = RikkiCredentials.get("DEEPSEEK")
+        chatApiKeyCache[ChatProvider.OPENAI]    = RikkiCredentials.get("OPENAI")
+        chatApiKeyCache[ChatProvider.ANTHROPIC] = RikkiCredentials.get("ANTHROPIC")
+        chatApiKeyCache[ChatProvider.GEMINI]    = RikkiCredentials.get("GEMINI")
+        chatApiKeyCache[ChatProvider.MOONSHOT]  = RikkiCredentials.get("MOONSHOT")
+        chatApiKeyCache[ChatProvider.OLLAMA]    = RikkiCredentials.get("OLLAMA")
+        chatApiKeyCache[ChatProvider.CUSTOM]    = RikkiCredentials.get("CUSTOM")
 
         val chatUrlEditable = currentChatProvider == ChatProvider.CUSTOM || currentChatProvider == ChatProvider.OLLAMA
         chatBaseUrlField.text      = if (chatUrlEditable) s.customBaseUrl else currentChatProvider.url
@@ -366,7 +361,7 @@ class RikkiSettingsConfigurable : Configurable {
 
         // Restore saved key and model (after applyCompletionProviderToUi which may clear them)
         if (currentCompletionProvider != CompletionProvider.SAME_AS_CHAT) {
-            completionApiKeyField.text = s.completionApiKeyOverride
+            completionApiKeyField.text = RikkiCredentials.get("COMPLETION_OVERRIDE")
         }
         // Restore custom URL if editable
         if (currentCompletionProvider.urlEditable && s.completionCustomBaseUrl.isNotBlank()) {

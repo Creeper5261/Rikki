@@ -24,43 +24,33 @@ class RikkiSettings : PersistentStateComponent<RikkiSettings.State> {
         var completionProvider: String = "",
         /** Empty = same as chat model. */
         var completionModelName: String = "",
-        /** Empty = use chat provider's API key. */
-        var completionApiKeyOverride: String = "",
         /** Custom base URL for completion; only relevant for OLLAMA / CUSTOM. */
-        var completionCustomBaseUrl: String = "",
+        var completionCustomBaseUrl: String = ""
 
-        // ── Per-provider API keys (chat) ───────────────────────────────────────
-        var apiKeyDeepseek: String  = "",
-        var apiKeyOpenai: String    = "",
-        var apiKeyAnthropic: String = "",
-        var apiKeyGemini: String    = "",
-        var apiKeyMoonshot: String  = "",
-        var apiKeyOllama: String    = "",
-        var apiKeyCustom: String    = ""
+        // API keys are NOT stored here — they live in PasswordSafe via RikkiCredentials.
     ) {
         // ── Chat helpers ───────────────────────────────────────────────────────
 
-        fun currentApiKey(): String = apiKeyFor(provider)
+        fun currentApiKey(): String = RikkiCredentials.get(provider)
 
         fun currentBaseUrl(): String = chatBaseUrlFor(provider, customBaseUrl)
 
         // ── Completion helpers ─────────────────────────────────────────────────
 
-        /** Effective provider for completion (falls back to chat provider when empty). */
         fun completionEffectiveProvider(): String = completionProvider.ifBlank { provider }
 
-        /** Effective API key for completion. Uses override if set, otherwise the
-         *  chat key that belongs to the effective completion provider. */
-        fun completionEffectiveApiKey(): String =
-            completionApiKeyOverride.ifBlank { apiKeyFor(completionEffectiveProvider()) }
+        /**
+         * Effective API key for completion.
+         * If the user stored a per-completion override key, use it;
+         * otherwise fall back to the chat provider's key.
+         */
+        fun completionEffectiveApiKey(): String {
+            val override = RikkiCredentials.get("COMPLETION_OVERRIDE")
+            return override.ifBlank { RikkiCredentials.get(completionEffectiveProvider()) }
+        }
 
-        /** Effective model for completion (falls back to chat model when empty). */
         fun completionEffectiveModel(): String = completionModelName.ifBlank { modelName }
 
-        /**
-         * Base URL for the completion endpoint.
-         * DeepSeek FIM requires the `/beta` base URL (distinct from the chat `/v1`).
-         */
         fun completionEffectiveBaseUrl(): String {
             val p = completionEffectiveProvider()
             val custom = completionCustomBaseUrl.ifBlank {
@@ -77,25 +67,10 @@ class RikkiSettings : PersistentStateComponent<RikkiSettings.State> {
             }
         }
 
-        /**
-         * True when the effective completion provider uses the legacy FIM
-         * `/completions` endpoint (DeepSeek beta, Ollama).
-         * False → use `/chat/completions` (OpenAI, Gemini, Moonshot, …).
-         */
         fun completionUsesFim(): Boolean =
             completionEffectiveProvider() in listOf("DEEPSEEK", "OLLAMA")
 
         // ── Private helpers ────────────────────────────────────────────────────
-
-        private fun apiKeyFor(prov: String): String = when (prov) {
-            "DEEPSEEK"  -> apiKeyDeepseek
-            "OPENAI"    -> apiKeyOpenai
-            "ANTHROPIC" -> apiKeyAnthropic
-            "GEMINI"    -> apiKeyGemini
-            "MOONSHOT"  -> apiKeyMoonshot
-            "OLLAMA"    -> apiKeyOllama
-            else        -> apiKeyCustom
-        }
 
         private fun chatBaseUrlFor(prov: String, customUrl: String): String = when (prov) {
             "DEEPSEEK"  -> "https://api.deepseek.com/v1"
@@ -114,6 +89,11 @@ class RikkiSettings : PersistentStateComponent<RikkiSettings.State> {
 
     override fun loadState(state: State) {
         myState = state
+        // Prime the in-memory credential cache on a background thread so API keys
+        // are available before the user opens Settings for the first time.
+        ApplicationManager.getApplication().executeOnPooledThread {
+            RikkiCredentials.loadAll()
+        }
     }
 
     companion object {

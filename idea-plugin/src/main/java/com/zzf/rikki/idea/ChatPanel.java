@@ -107,7 +107,11 @@ final class ChatPanel {
     private static final String DECISION_ALWAYS_ALLOW_NON_DESTRUCTIVE = "always_allow_non_destructive";
     private static final String MARKDOWN_SOURCE_CLIENT_KEY = "rikki.markdown.source";
     private static final Pattern EXIT_CODE_PATTERN = Pattern.compile("(?i)exit\\s*code\\s*(\\d+)");
-    private static final ExecutorService IDE_CONTEXT_EXECUTOR = Executors.newCachedThreadPool(r -> new Thread(r, "rikki-ide-context"));
+    private static final ExecutorService IDE_CONTEXT_EXECUTOR = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "rikki-ide-context");
+        t.setDaemon(true);
+        return t;
+    });
     
     private final JSplitPane splitPane;
     private final JPanel leftPanel; 
