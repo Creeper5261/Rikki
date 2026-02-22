@@ -9,7 +9,9 @@ import javax.swing.*
 
 class RikkiSettingsConfigurable : Configurable {
 
-    private enum class Provider(
+    // ── Chat provider enum ─────────────────────────────────────────────────────
+
+    private enum class ChatProvider(
         val label: String,
         val url: String,
         val defaultModel: String,
@@ -66,152 +68,312 @@ class RikkiSettingsConfigurable : Configurable {
         }
     }
 
-    private var panel: JPanel? = null
-    private var currentProvider: Provider = Provider.DEEPSEEK
+    // ── Completion provider enum ───────────────────────────────────────────────
+    // Recommended models here are fast/cheap options; FIM providers use the
+    // /completions endpoint, others use /chat/completions.
 
-    private val apiKeyField     = JBPasswordField()
-    private val providerCombo   = JComboBox<Provider>()
-    private val baseUrlField    = JBTextField()
-    private val modelCombo      = JComboBox<String>()
-    private val completionBox   = JCheckBox("Enable inline TAB completion")
-    private val completionModel = JBTextField()
+    private enum class CompletionProvider(
+        val label: String,
+        val baseUrl: String,
+        val defaultModel: String,
+        val models: List<String>,
+        /** Editable URL field (OLLAMA/CUSTOM override). */
+        val urlEditable: Boolean = false
+    ) {
+        SAME_AS_CHAT(
+            "Same as Chat Provider",
+            "",
+            "",
+            emptyList()
+        ),
+        DEEPSEEK(
+            "DeepSeek  [FIM, beta endpoint]",
+            "https://api.deepseek.com/beta",
+            "deepseek-chat",
+            listOf("deepseek-chat")
+        ),
+        OPENAI(
+            "OpenAI  [chat format]",
+            "https://api.openai.com/v1",
+            "gpt-4.1-nano",
+            listOf("gpt-4.1-nano", "gpt-4.1-mini", "gpt-4o-mini")
+        ),
+        ANTHROPIC(
+            "Anthropic (Claude) *",
+            "https://api.anthropic.com/v1",
+            "claude-haiku-4-5-20251001",
+            listOf("claude-haiku-4-5-20251001", "claude-3-5-haiku-20241022")
+        ),
+        GEMINI(
+            "Google (Gemini)  [chat format]",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-2.0-flash-lite",
+            listOf("gemini-2.0-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash")
+        ),
+        MOONSHOT(
+            "Moonshot (Kimi)  [chat format]",
+            "https://api.moonshot.cn/v1",
+            "moonshot-v1-8k",
+            listOf("moonshot-v1-8k", "moonshot-v1-32k")
+        ),
+        OLLAMA(
+            "Ollama  [FIM, local]",
+            "http://localhost:11434/v1",
+            "qwen2.5-coder:7b",
+            listOf("qwen2.5-coder:7b", "qwen2.5-coder:14b", "qwen2.5-coder:32b", "codellama"),
+            urlEditable = true
+        ),
+        CUSTOM(
+            "Custom",
+            "",
+            "",
+            emptyList(),
+            urlEditable = true
+        );
 
-    /** In-memory API key cache keyed by provider — populated on reset(), flushed on apply(). */
-    private val apiKeyCache = mutableMapOf<Provider, String>()
+        companion object {
+            fun fromName(name: String): CompletionProvider =
+                values().firstOrNull { it.name == name } ?: SAME_AS_CHAT
+        }
+    }
+
+    // ── UI fields — Chat ───────────────────────────────────────────────────────
+
+    private var panel: JPanel?         = null
+    private var currentChatProvider: ChatProvider = ChatProvider.DEEPSEEK
+
+    private val chatApiKeyField   = JBPasswordField()
+    private val chatProviderCombo = JComboBox<ChatProvider>()
+    private val chatBaseUrlField  = JBTextField()
+    private val chatModelCombo    = JComboBox<String>()
+
+    /** In-memory cache for chat API keys (keyed by provider). */
+    private val chatApiKeyCache = mutableMapOf<ChatProvider, String>()
+
+    // ── UI fields — Completion ─────────────────────────────────────────────────
+
+    private var currentCompletionProvider: CompletionProvider = CompletionProvider.SAME_AS_CHAT
+
+    private val completionBox          = JCheckBox("Enable inline TAB completion")
+    private val completionProviderCombo = JComboBox<CompletionProvider>()
+    private val completionApiKeyField  = JBPasswordField()
+    private val completionModelCombo   = JComboBox<String>()
+    private val completionBaseUrlField = JBTextField()
+
+    // ── Configurable contract ──────────────────────────────────────────────────
 
     override fun getDisplayName() = "Rikki Code Agent"
 
     override fun createComponent(): JComponent {
-        Provider.values().forEach { providerCombo.addItem(it) }
-        providerCombo.renderer = object : DefaultListCellRenderer() {
-            override fun getListCellRendererComponent(
-                list: JList<*>, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean
-            ) = super.getListCellRendererComponent(
-                list, (value as? Provider)?.label ?: value, index, isSelected, cellHasFocus
-            )
+        // ── Chat provider combo ────────────────────────────────────────────────
+        ChatProvider.values().forEach { chatProviderCombo.addItem(it) }
+        chatProviderCombo.renderer = labelRenderer { (it as? ChatProvider)?.label }
+        chatModelCombo.isEditable = true
+
+        chatProviderCombo.addActionListener {
+            val p = chatProviderCombo.selectedItem as? ChatProvider ?: return@addActionListener
+            if (p == currentChatProvider) return@addActionListener
+
+            chatApiKeyCache[currentChatProvider] = String(chatApiKeyField.password)
+            currentChatProvider = p
+
+            chatApiKeyField.text = chatApiKeyCache[p] ?: ""
+            if (p != ChatProvider.CUSTOM) chatBaseUrlField.text = p.url
+            val urlEditable = p == ChatProvider.CUSTOM || p == ChatProvider.OLLAMA
+            chatBaseUrlField.isEnabled  = urlEditable
+            chatBaseUrlField.isEditable = urlEditable
+            rebuildChatModelCombo(p, p.defaultModel)
         }
 
-        modelCombo.isEditable = true
+        // ── Completion provider combo ──────────────────────────────────────────
+        CompletionProvider.values().forEach { completionProviderCombo.addItem(it) }
+        completionProviderCombo.renderer = labelRenderer { (it as? CompletionProvider)?.label }
+        completionModelCombo.isEditable = true
 
-        providerCombo.addActionListener {
-            val p = providerCombo.selectedItem as? Provider ?: return@addActionListener
-            if (p == currentProvider) return@addActionListener
-
-            // Persist current key before switching
-            apiKeyCache[currentProvider] = String(apiKeyField.password)
-            currentProvider = p
-
-            // Restore key for new provider (empty if never entered)
-            apiKeyField.text = apiKeyCache[p] ?: ""
-
-            // Update URL
-            if (p != Provider.CUSTOM) baseUrlField.text = p.url
-            val urlEditable = p == Provider.CUSTOM || p == Provider.OLLAMA
-            baseUrlField.isEnabled  = urlEditable
-            baseUrlField.isEditable = urlEditable
-
-            // Rebuild model dropdown
-            rebuildModelCombo(p, p.defaultModel)
+        completionProviderCombo.addActionListener {
+            val p = completionProviderCombo.selectedItem as? CompletionProvider ?: return@addActionListener
+            if (p == currentCompletionProvider) return@addActionListener
+            currentCompletionProvider = p
+            applyCompletionProviderToUi(p)
         }
 
+        // ── Layout ─────────────────────────────────────────────────────────────
         panel = FormBuilder.createFormBuilder()
-            .addLabeledComponent(JBLabel("API Key:"),    apiKeyField,   true)
-            .addLabeledComponent(JBLabel("Provider:"),   providerCombo, true)
-            .addLabeledComponent(JBLabel("Base URL:"),   baseUrlField,  true)
-            .addLabeledComponent(JBLabel("Chat model:"), modelCombo,    true)
+            // Chat section
+            .addLabeledComponent(JBLabel("Provider:"),   chatProviderCombo, true)
+            .addLabeledComponent(JBLabel("API Key:"),    chatApiKeyField,   true)
+            .addLabeledComponent(JBLabel("Base URL:"),   chatBaseUrlField,  true)
+            .addLabeledComponent(JBLabel("Chat model:"), chatModelCombo,    true)
             .addSeparator()
+            // Completion section
             .addComponent(completionBox)
+            .addLabeledComponent(JBLabel("Completion provider:"), completionProviderCombo, true)
             .addLabeledComponent(
-                JBLabel("Completion model (empty = same as chat):"),
-                completionModel, true
+                JBLabel("Completion API key:"),
+                completionApiKeyField, true
             )
+            .addLabeledComponent(JBLabel("Completion model:"),    completionModelCombo,    true)
+            .addLabeledComponent(JBLabel("Completion base URL:"), completionBaseUrlField,  true)
             .addComponentFillVertically(JPanel(), 0)
             .panel
         reset()
         return panel!!
     }
 
-    private fun rebuildModelCombo(provider: Provider, selectedModel: String) {
-        modelCombo.removeAllItems()
-        provider.models.forEach { modelCombo.addItem(it) }
-        modelCombo.selectedItem = selectedModel
-        // If not in list, set as editable text
-        if (modelCombo.selectedIndex < 0) modelCombo.selectedItem = selectedModel
+    // ── Helpers ────────────────────────────────────────────────────────────────
+
+    private fun labelRenderer(getText: (Any?) -> String?) = object : DefaultListCellRenderer() {
+        override fun getListCellRendererComponent(
+            list: JList<*>, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean
+        ) = super.getListCellRendererComponent(list, getText(value) ?: value, index, isSelected, cellHasFocus)
     }
 
-    private fun currentModelText(): String =
-        ((modelCombo.editor?.item as? String)?.trim() ?: (modelCombo.selectedItem as? String)?.trim() ?: "")
-
-    private fun savedKeyFor(s: RikkiSettings.State, p: Provider): String = when (p) {
-        Provider.DEEPSEEK  -> s.apiKeyDeepseek
-        Provider.OPENAI    -> s.apiKeyOpenai
-        Provider.ANTHROPIC -> s.apiKeyAnthropic
-        Provider.GEMINI    -> s.apiKeyGemini
-        Provider.MOONSHOT  -> s.apiKeyMoonshot
-        Provider.OLLAMA    -> s.apiKeyOllama
-        Provider.CUSTOM    -> s.apiKeyCustom
+    private fun rebuildChatModelCombo(provider: ChatProvider, selectedModel: String) {
+        chatModelCombo.removeAllItems()
+        provider.models.forEach { chatModelCombo.addItem(it) }
+        chatModelCombo.selectedItem = selectedModel
+        if (chatModelCombo.selectedIndex < 0) chatModelCombo.selectedItem = selectedModel
     }
+
+    private fun rebuildCompletionModelCombo(provider: CompletionProvider, selectedModel: String) {
+        completionModelCombo.removeAllItems()
+        provider.models.forEach { completionModelCombo.addItem(it) }
+        completionModelCombo.selectedItem = selectedModel
+        if (completionModelCombo.selectedIndex < 0) completionModelCombo.selectedItem = selectedModel
+    }
+
+    private fun applyCompletionProviderToUi(p: CompletionProvider) {
+        val isSameAsChat = p == CompletionProvider.SAME_AS_CHAT
+        completionApiKeyField.isEnabled  = !isSameAsChat
+        completionApiKeyField.isEditable = !isSameAsChat
+        if (isSameAsChat) completionApiKeyField.text = ""
+
+        completionBaseUrlField.isEnabled  = p.urlEditable
+        completionBaseUrlField.isEditable = p.urlEditable
+        if (!p.urlEditable) completionBaseUrlField.text = p.baseUrl
+
+        rebuildCompletionModelCombo(p, if (isSameAsChat) "" else p.defaultModel)
+    }
+
+    private fun currentChatModelText(): String =
+        ((chatModelCombo.editor?.item as? String)?.trim()
+            ?: (chatModelCombo.selectedItem as? String)?.trim() ?: "")
+
+    private fun currentCompletionModelText(): String =
+        ((completionModelCombo.editor?.item as? String)?.trim()
+            ?: (completionModelCombo.selectedItem as? String)?.trim() ?: "")
+
+    private fun savedChatKeyFor(s: RikkiSettings.State, p: ChatProvider): String = when (p) {
+        ChatProvider.DEEPSEEK  -> s.apiKeyDeepseek
+        ChatProvider.OPENAI    -> s.apiKeyOpenai
+        ChatProvider.ANTHROPIC -> s.apiKeyAnthropic
+        ChatProvider.GEMINI    -> s.apiKeyGemini
+        ChatProvider.MOONSHOT  -> s.apiKeyMoonshot
+        ChatProvider.OLLAMA    -> s.apiKeyOllama
+        ChatProvider.CUSTOM    -> s.apiKeyCustom
+    }
+
+    // ── Configurable: isModified ───────────────────────────────────────────────
 
     override fun isModified(): Boolean {
         val s = RikkiSettings.getInstance().state
-        // Snapshot current field into a temp cache without mutating apiKeyCache
-        val snap = apiKeyCache.toMutableMap()
-        snap[currentProvider] = String(apiKeyField.password)
 
-        if (s.provider != currentProvider.name) return true
-        if (currentModelText() != s.modelName) return true
-        if (baseUrlField.text.trim().trimEnd('/') != s.customBaseUrl) return true
+        // Chat
+        val snap = chatApiKeyCache.toMutableMap()
+        snap[currentChatProvider] = String(chatApiKeyField.password)
+        if (s.provider != currentChatProvider.name) return true
+        if (currentChatModelText() != s.modelName) return true
+        if (chatBaseUrlField.text.trim().trimEnd('/') != s.customBaseUrl) return true
+        if (ChatProvider.values().any { p -> (snap[p] ?: "") != savedChatKeyFor(s, p) }) return true
+
+        // Completion
         if (completionBox.isSelected != s.completionEnabled) return true
-        if (completionModel.text.trim() != s.completionModelName) return true
-        return Provider.values().any { p -> (snap[p] ?: "") != savedKeyFor(s, p) }
+        val cpStr = if (currentCompletionProvider == CompletionProvider.SAME_AS_CHAT) "" else currentCompletionProvider.name
+        if (s.completionProvider != cpStr) return true
+        val cpKey = if (currentCompletionProvider == CompletionProvider.SAME_AS_CHAT) "" else String(completionApiKeyField.password)
+        if (s.completionApiKeyOverride != cpKey) return true
+        if (currentCompletionModelText() != s.completionModelName) return true
+        val cpUrl = if (currentCompletionProvider.urlEditable) completionBaseUrlField.text.trim() else ""
+        if (s.completionCustomBaseUrl != cpUrl) return true
+
+        return false
     }
+
+    // ── Configurable: apply ────────────────────────────────────────────────────
 
     override fun apply() {
-        apiKeyCache[currentProvider] = String(apiKeyField.password)
+        chatApiKeyCache[currentChatProvider] = String(chatApiKeyField.password)
         val s = RikkiSettings.getInstance().state
-        s.provider            = currentProvider.name
-        s.modelName           = currentModelText()
-        s.customBaseUrl       = baseUrlField.text.trim().trimEnd('/')
-        s.completionEnabled   = completionBox.isSelected
-        s.completionModelName = completionModel.text.trim()
-        s.apiKeyDeepseek      = apiKeyCache[Provider.DEEPSEEK]  ?: ""
-        s.apiKeyOpenai        = apiKeyCache[Provider.OPENAI]    ?: ""
-        s.apiKeyAnthropic     = apiKeyCache[Provider.ANTHROPIC] ?: ""
-        s.apiKeyGemini        = apiKeyCache[Provider.GEMINI]    ?: ""
-        s.apiKeyMoonshot      = apiKeyCache[Provider.MOONSHOT]  ?: ""
-        s.apiKeyOllama        = apiKeyCache[Provider.OLLAMA]    ?: ""
-        s.apiKeyCustom        = apiKeyCache[Provider.CUSTOM]    ?: ""
+
+        // Chat
+        s.provider      = currentChatProvider.name
+        s.modelName     = currentChatModelText()
+        s.customBaseUrl = chatBaseUrlField.text.trim().trimEnd('/')
+        s.apiKeyDeepseek  = chatApiKeyCache[ChatProvider.DEEPSEEK]  ?: ""
+        s.apiKeyOpenai    = chatApiKeyCache[ChatProvider.OPENAI]    ?: ""
+        s.apiKeyAnthropic = chatApiKeyCache[ChatProvider.ANTHROPIC] ?: ""
+        s.apiKeyGemini    = chatApiKeyCache[ChatProvider.GEMINI]    ?: ""
+        s.apiKeyMoonshot  = chatApiKeyCache[ChatProvider.MOONSHOT]  ?: ""
+        s.apiKeyOllama    = chatApiKeyCache[ChatProvider.OLLAMA]    ?: ""
+        s.apiKeyCustom    = chatApiKeyCache[ChatProvider.CUSTOM]    ?: ""
+
+        // Completion
+        s.completionEnabled = completionBox.isSelected
+        s.completionProvider = if (currentCompletionProvider == CompletionProvider.SAME_AS_CHAT) ""
+                               else currentCompletionProvider.name
+        s.completionApiKeyOverride = if (currentCompletionProvider == CompletionProvider.SAME_AS_CHAT) ""
+                                     else String(completionApiKeyField.password)
+        s.completionModelName      = currentCompletionModelText()
+        s.completionCustomBaseUrl  = if (currentCompletionProvider.urlEditable)
+                                         completionBaseUrlField.text.trim() else ""
     }
+
+    // ── Configurable: reset ────────────────────────────────────────────────────
 
     override fun reset() {
         val s = RikkiSettings.getInstance().state
-        currentProvider = Provider.fromName(s.provider)
 
-        // Load all saved keys into cache
-        apiKeyCache[Provider.DEEPSEEK]  = s.apiKeyDeepseek
-        apiKeyCache[Provider.OPENAI]    = s.apiKeyOpenai
-        apiKeyCache[Provider.ANTHROPIC] = s.apiKeyAnthropic
-        apiKeyCache[Provider.GEMINI]    = s.apiKeyGemini
-        apiKeyCache[Provider.MOONSHOT]  = s.apiKeyMoonshot
-        apiKeyCache[Provider.OLLAMA]    = s.apiKeyOllama
-        apiKeyCache[Provider.CUSTOM]    = s.apiKeyCustom
+        // ── Chat ───────────────────────────────────────────────────────────────
+        currentChatProvider = ChatProvider.fromName(s.provider)
 
+        chatApiKeyCache[ChatProvider.DEEPSEEK]  = s.apiKeyDeepseek
+        chatApiKeyCache[ChatProvider.OPENAI]    = s.apiKeyOpenai
+        chatApiKeyCache[ChatProvider.ANTHROPIC] = s.apiKeyAnthropic
+        chatApiKeyCache[ChatProvider.GEMINI]    = s.apiKeyGemini
+        chatApiKeyCache[ChatProvider.MOONSHOT]  = s.apiKeyMoonshot
+        chatApiKeyCache[ChatProvider.OLLAMA]    = s.apiKeyOllama
+        chatApiKeyCache[ChatProvider.CUSTOM]    = s.apiKeyCustom
+
+        val chatUrlEditable = currentChatProvider == ChatProvider.CUSTOM || currentChatProvider == ChatProvider.OLLAMA
+        chatBaseUrlField.text      = if (chatUrlEditable) s.customBaseUrl else currentChatProvider.url
+        chatBaseUrlField.isEnabled  = chatUrlEditable
+        chatBaseUrlField.isEditable = chatUrlEditable
+
+        rebuildChatModelCombo(currentChatProvider, s.modelName)
+        // Set combo last so listener's early-return (p == currentChatProvider) fires
+        chatProviderCombo.selectedItem = currentChatProvider
+        chatApiKeyField.text = chatApiKeyCache[currentChatProvider] ?: ""
+
+        // ── Completion ─────────────────────────────────────────────────────────
         completionBox.isSelected = s.completionEnabled
-        completionModel.text     = s.completionModelName
 
-        // Set URL
-        val urlEditable = currentProvider == Provider.CUSTOM || currentProvider == Provider.OLLAMA
-        baseUrlField.text = if (urlEditable) s.customBaseUrl else currentProvider.url
-        baseUrlField.isEnabled  = urlEditable
-        baseUrlField.isEditable = urlEditable
+        currentCompletionProvider = CompletionProvider.fromName(
+            s.completionProvider.ifBlank { "SAME_AS_CHAT" }
+        )
+        completionProviderCombo.selectedItem = currentCompletionProvider
 
-        // Rebuild model combo with saved model selected
-        rebuildModelCombo(currentProvider, s.modelName)
+        applyCompletionProviderToUi(currentCompletionProvider)
 
-        // Set provider combo last (listener checks p == currentProvider and returns early)
-        providerCombo.selectedItem = currentProvider
-
-        // Restore API key for current provider
-        apiKeyField.text = apiKeyCache[currentProvider] ?: ""
+        // Restore saved key and model (after applyCompletionProviderToUi which may clear them)
+        if (currentCompletionProvider != CompletionProvider.SAME_AS_CHAT) {
+            completionApiKeyField.text = s.completionApiKeyOverride
+        }
+        // Restore custom URL if editable
+        if (currentCompletionProvider.urlEditable && s.completionCustomBaseUrl.isNotBlank()) {
+            completionBaseUrlField.text = s.completionCustomBaseUrl
+        }
+        // Restore saved completion model (override the default set by applyCompletionProviderToUi)
+        completionModelCombo.selectedItem = s.completionModelName
+        if (completionModelCombo.selectedIndex < 0) completionModelCombo.selectedItem = s.completionModelName
     }
 }

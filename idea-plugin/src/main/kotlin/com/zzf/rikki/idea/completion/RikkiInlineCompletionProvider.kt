@@ -39,7 +39,10 @@ class RikkiInlineCompletionProvider : DebouncedInlineCompletionProvider() {
 
     override fun isEnabled(event: InlineCompletionEvent): Boolean {
         val s = RikkiSettings.getInstance().state
-        if (!s.completionEnabled || (s.currentApiKey().isBlank() && s.provider != "OLLAMA")) return false
+        if (!s.completionEnabled) return false
+        val key  = s.completionEffectiveApiKey()
+        val prov = s.completionEffectiveProvider()
+        if (key.isBlank() && prov != "OLLAMA") return false
         return event is InlineCompletionEvent.DocumentChange ||
                event is InlineCompletionEvent.DirectCall
     }
