@@ -22,13 +22,13 @@ Built-in presets for DeepSeek, OpenAI, Google Gemini, Moonshot / Kimi, Ollama (l
 
 ## Requirements
 
-- JetBrains IDE 2024.1 or later (IntelliJ IDEA, PyCharm, GoLand, etc.)
+- IntelliJ IDEA 2024.1 or later
 - An API key from a supported LLM provider, or a locally running Ollama instance
 
 ## Setup
 
-1. Download `idea-plugin-0.1.0.zip` from this repository.
-2. In your JetBrains IDE, go to **Settings → Plugins → ⚙ → Install Plugin from Disk**, and select the downloaded file.
+1. Download `idea-plugin-0.1.0.zip` from the [Releases](https://github.com/Creeper5261/Rikki/releases) page.
+2. In IntelliJ IDEA, go to **Settings → Plugins → ⚙ → Install Plugin from Disk**, and select the downloaded file.
 3. Open **Settings → Tools → Rikki Code Agent**.
 4. Select a provider, enter the API key, and choose a model.
 5. For local use, select **Ollama** — no API key is required.
