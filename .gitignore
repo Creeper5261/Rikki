@@ -42,4 +42,3 @@ bin/
 .DS_Store
 logs/
 .code-agent/
-idea-plugin-*.zip
