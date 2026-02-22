@@ -1257,6 +1257,7 @@ final class ChatPanel {
                         ui.messagePanel.add(Box.createVerticalStrut(5), 1);
                         ui.messagePanel.revalidate();
                         ui.messagePanel.repaint();
+                        thoughtPanel.autoExpand(); // auto-expand while streaming
                     }
                     if (ui.thoughtPanel != null && !delta.isEmpty()) {
                         ui.thoughtPanel.appendContent(delta, true);
@@ -1268,6 +1269,9 @@ final class ChatPanel {
                         return;
                     }
                     ui.thinkingOpen = false;
+                    if (ui.thoughtPanel != null) {
+                        ui.thoughtPanel.autoCollapse(); // auto-collapse when reasoning ends
+                    }
                     flushDeferredAnswer(ui);
                     persistAssistantUiSnapshot(ui);
                 } else if ("message".equals(event)) {
@@ -3437,10 +3441,14 @@ final class ChatPanel {
         }
         
         conversationList.add(messagePanel);
-        
+
         conversationList.revalidate();
         conversationList.repaint();
-        scrollToBottom();
+        if (isUser) {
+            scrollToBottom();       // user sends → always jump to bottom
+        } else {
+            scrollToBottomSmart();  // assistant bubble → only if already near bottom
+        }
         return ui;
     }
 
@@ -6584,6 +6592,7 @@ final class ChatPanel {
         private final String title;
         private boolean collapsible = true;
         private boolean expanded = false;
+        private boolean manuallyExpanded = false;
         private String contentText = "";
         
         CollapsiblePanel(String title, String contentText, boolean animate) {
@@ -6642,7 +6651,9 @@ final class ChatPanel {
                 if (!collapsible) {
                     return;
                 }
-                setExpanded(!expanded);
+                boolean next = !expanded;
+                manuallyExpanded = next; // track user intent: true=user opened, false=user closed
+                setExpanded(next);
             });
             
             add(toggleBtn, BorderLayout.NORTH);
@@ -6680,6 +6691,21 @@ final class ChatPanel {
             toggleBtn.setText((collapsible ? (expanded ? "v " : "> ") : "") + title);
             revalidate();
             repaint();
+        }
+
+        /** Called when streaming starts — auto-expands and resets manual-expand state. */
+        void autoExpand() {
+            manuallyExpanded = false;
+            setExpanded(true);
+            scrollToBottomSmart();
+        }
+
+        /** Called when streaming ends — collapses only if the user has not manually expanded. */
+        void autoCollapse() {
+            if (!manuallyExpanded) {
+                setExpanded(false);
+                scrollToBottomSmart();
+            }
         }
 
         void setCollapsible(boolean collapsible) {
