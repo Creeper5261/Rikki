@@ -13,9 +13,13 @@ import com.intellij.openapi.util.TextRange
 import com.zzf.rikki.idea.llm.LiteLlmClient
 import com.zzf.rikki.idea.settings.RikkiSettings
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -78,8 +82,13 @@ class RikkiInlineCompletionProvider : DebouncedInlineCompletionProvider() {
         request: InlineCompletionRequest
     ): InlineCompletionSuggestion {
         val ctx = readAction {
-            val doc    = request.document
-            val offset = request.startOffset
+            val doc   = request.document
+            // Read the live caret position (after the debounce has elapsed) rather than
+            // request.startOffset. For DocumentChange events, startOffset is captured at
+            // event time when the caret may not yet have advanced past the just-inserted
+            // character, causing that character to be excluded from the prefix and then
+            // echoed back at the start of the LLM's completion.
+            val offset = request.editor.caretModel.primaryCaret.offset
             val total  = doc.textLength
             Context(
                 prefix   = doc.getText(TextRange(maxOf(0, offset - PREFIX_LIMIT), offset)),
@@ -96,24 +105,37 @@ class RikkiInlineCompletionProvider : DebouncedInlineCompletionProvider() {
         LOG.info("Rikki calling LLM, language=${ctx.language}")
 
         return InlineCompletionSingleSuggestion.build { _ ->
-            val buf = StringBuilder()
+            // A Channel bridges the IO dispatcher (where tokens stream in) and the flow's
+            // coroutine context (where emit must be called). Tokens are emitted progressively
+            // so that ghost text appears as soon as the first token arrives rather than after
+            // the entire completion finishes streaming.
+            val channel = Channel<String>(Channel.UNLIMITED)
             try {
-                LiteLlmClient.streamCompletion(
-                    prefix   = ctx.prefix,
-                    suffix   = ctx.suffix,
-                    language = ctx.language,
-                    onToken  = { token -> buf.append(token) }
-                )
+                coroutineScope {
+                    launch(Dispatchers.IO) {
+                        try {
+                            LiteLlmClient.streamCompletion(
+                                prefix   = ctx.prefix,
+                                suffix   = ctx.suffix,
+                                language = ctx.language,
+                                onToken  = { token -> if (token.isNotEmpty()) channel.send(token) }
+                            )
+                        } catch (e: Exception) {
+                            if (e is CancellationException) throw e  // never swallow
+                            // network / parse errors: close the channel with what we have
+                        } finally {
+                            channel.close()
+                        }
+                    }
+                    // Emit in the flow's coroutine context — no context-invariant violation
+                    for (token in channel) {
+                        currentCoroutineContext().ensureActive()
+                        emit(InlineCompletionGrayTextElement(token))
+                    }
+                }
             } catch (ce: CancellationException) {
-                throw ce  // MUST rethrow — never swallow CancellationException in coroutines
-            } catch (_: Exception) {
-                // ignore network/IO errors; use whatever tokens arrived before the error
-            }
-            val text = buf.toString().trimEnd()
-            LOG.info("Rikki completion result length=${text.length}")
-            if (text.isNotEmpty()) {
-                emit(InlineCompletionGrayTextElement(text))
-            }
+                throw ce
+            } catch (_: Exception) { /* ignore */ }
         }
     }
 
