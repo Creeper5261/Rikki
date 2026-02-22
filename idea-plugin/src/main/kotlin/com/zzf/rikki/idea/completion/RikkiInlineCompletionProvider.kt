@@ -7,19 +7,15 @@ import com.intellij.codeInsight.inline.completion.InlineCompletionRequest
 import com.intellij.codeInsight.inline.completion.elements.InlineCompletionGrayTextElement
 import com.intellij.codeInsight.inline.completion.suggestion.InlineCompletionSingleSuggestion
 import com.intellij.codeInsight.inline.completion.suggestion.InlineCompletionSuggestion
-import com.intellij.openapi.application.readAction
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.util.TextRange
 import com.zzf.rikki.idea.llm.LiteLlmClient
 import com.zzf.rikki.idea.settings.RikkiSettings
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 
@@ -53,15 +49,13 @@ class RikkiInlineCompletionProvider : DebouncedInlineCompletionProvider() {
 
     /**
      * Called by IntelliJ 2025.1+ directly (replaces getSuggestionDebounced in their refactored API).
-     * Also called on 2024.1 if the framework ever dispatches getSuggestion() first.
-     * We add our own 350ms debounce; the coroutine is cancelled by the framework on the next
-     * keystroke, so early-exit is safe.
+     * We add our own 350ms debounce here; the coroutine is cancelled by the framework on the next
+     * keystroke so early-exit is safe.
      */
     override suspend fun getSuggestion(
         request: InlineCompletionRequest
     ): InlineCompletionSuggestion {
         LOG.info("Rikki getSuggestion called")
-        // Manual debounce: yields to cancellation if user keeps typing
         delay(350)
         currentCoroutineContext().ensureActive()
         return doGetSuggestion(request)
@@ -81,13 +75,19 @@ class RikkiInlineCompletionProvider : DebouncedInlineCompletionProvider() {
     private suspend fun doGetSuggestion(
         request: InlineCompletionRequest
     ): InlineCompletionSuggestion {
-        val ctx = readAction {
-            val doc   = request.document
+        // Use ReadAction.compute (a plain blocking read-lock, not a smart-mode read action).
+        //
+        // The Kotlin-suspend `com.intellij.openapi.application.readAction` was changed in
+        // IntelliJ 2023.2+ to also wait for smart mode (i.e. project indexing). After the
+        // user finishes typing the IDE triggers incremental re-indexing, so a smart readAction
+        // could block for several seconds — exactly the latency users observe. ReadAction.compute
+        // only waits for any in-progress write action to finish (normally <10 ms) and then runs.
+        val ctx = ReadAction.compute<Context, Throwable> {
+            val doc    = request.document
             // Read the live caret position (after the debounce has elapsed) rather than
-            // request.startOffset. For DocumentChange events, startOffset is captured at
-            // event time when the caret may not yet have advanced past the just-inserted
-            // character, causing that character to be excluded from the prefix and then
-            // echoed back at the start of the LLM's completion.
+            // request.startOffset, which is captured at event time before the caret has
+            // advanced past the just-inserted character. Using it would omit that character
+            // from the prefix and cause it to be echoed back at the start of the completion.
             val offset = request.editor.caretModel.primaryCaret.offset
             val total  = doc.textLength
             Context(
@@ -105,37 +105,24 @@ class RikkiInlineCompletionProvider : DebouncedInlineCompletionProvider() {
         LOG.info("Rikki calling LLM, language=${ctx.language}")
 
         return InlineCompletionSingleSuggestion.build { _ ->
-            // A Channel bridges the IO dispatcher (where tokens stream in) and the flow's
-            // coroutine context (where emit must be called). Tokens are emitted progressively
-            // so that ghost text appears as soon as the first token arrives rather than after
-            // the entire completion finishes streaming.
-            val channel = Channel<String>(Channel.UNLIMITED)
+            val buf = StringBuilder()
             try {
-                coroutineScope {
-                    launch(Dispatchers.IO) {
-                        try {
-                            LiteLlmClient.streamCompletion(
-                                prefix   = ctx.prefix,
-                                suffix   = ctx.suffix,
-                                language = ctx.language,
-                                onToken  = { token -> if (token.isNotEmpty()) channel.send(token) }
-                            )
-                        } catch (e: Exception) {
-                            if (e is CancellationException) throw e  // never swallow
-                            // network / parse errors: close the channel with what we have
-                        } finally {
-                            channel.close()
-                        }
-                    }
-                    // Emit in the flow's coroutine context — no context-invariant violation
-                    for (token in channel) {
-                        currentCoroutineContext().ensureActive()
-                        emit(InlineCompletionGrayTextElement(token))
-                    }
-                }
+                LiteLlmClient.streamCompletion(
+                    prefix   = ctx.prefix,
+                    suffix   = ctx.suffix,
+                    language = ctx.language,
+                    onToken  = { token -> buf.append(token) }
+                )
             } catch (ce: CancellationException) {
-                throw ce
-            } catch (_: Exception) { /* ignore */ }
+                throw ce  // MUST rethrow — never swallow CancellationException in coroutines
+            } catch (_: Exception) {
+                // ignore network/IO errors; use whatever tokens arrived before the error
+            }
+            val text = buf.toString().trimEnd()
+            LOG.info("Rikki completion result length=${text.length}")
+            if (text.isNotEmpty()) {
+                emit(InlineCompletionGrayTextElement(text))
+            }
         }
     }
 
