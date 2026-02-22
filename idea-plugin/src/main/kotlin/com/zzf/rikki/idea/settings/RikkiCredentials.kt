@@ -22,7 +22,7 @@ internal object RikkiCredentials {
 
     /** All provider keys that are stored independently. */
     private val PROVIDERS = listOf(
-        "DEEPSEEK", "OPENAI", "ANTHROPIC", "GEMINI", "MOONSHOT", "OLLAMA", "CUSTOM",
+        "DEEPSEEK", "OPENAI", "GEMINI", "MOONSHOT", "OLLAMA", "CUSTOM",
         "COMPLETION_OVERRIDE"
     )
 

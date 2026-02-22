@@ -59,7 +59,6 @@ class RikkiSettings : PersistentStateComponent<RikkiSettings.State> {
             return when (p) {
                 "DEEPSEEK"  -> "https://api.deepseek.com/beta"
                 "OPENAI"    -> "https://api.openai.com/v1"
-                "ANTHROPIC" -> "https://api.anthropic.com/v1"
                 "GEMINI"    -> "https://generativelanguage.googleapis.com/v1beta/openai"
                 "MOONSHOT"  -> "https://api.moonshot.cn/v1"
                 "OLLAMA"    -> custom.ifBlank { "http://localhost:11434/v1" }
@@ -75,7 +74,6 @@ class RikkiSettings : PersistentStateComponent<RikkiSettings.State> {
         private fun chatBaseUrlFor(prov: String, customUrl: String): String = when (prov) {
             "DEEPSEEK"  -> "https://api.deepseek.com/v1"
             "OPENAI"    -> "https://api.openai.com/v1"
-            "ANTHROPIC" -> "https://api.anthropic.com/v1"
             "GEMINI"    -> "https://generativelanguage.googleapis.com/v1beta/openai"
             "MOONSHOT"  -> "https://api.moonshot.cn/v1"
             "OLLAMA"    -> customUrl.ifBlank { "http://localhost:11434/v1" }

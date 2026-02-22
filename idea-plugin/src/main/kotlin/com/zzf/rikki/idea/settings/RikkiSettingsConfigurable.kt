@@ -29,13 +29,6 @@ class RikkiSettingsConfigurable : Configurable {
             "gpt-4o",
             listOf("gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini", "o3", "o3-mini", "o4-mini")
         ),
-        ANTHROPIC(
-            "Anthropic (Claude) *",
-            "https://api.anthropic.com/v1",
-            "claude-opus-4-6",
-            listOf("claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001",
-                   "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022")
-        ),
         GEMINI(
             "Google (Gemini)",
             "https://generativelanguage.googleapis.com/v1beta/openai",
@@ -97,12 +90,6 @@ class RikkiSettingsConfigurable : Configurable {
             "https://api.openai.com/v1",
             "gpt-4.1-nano",
             listOf("gpt-4.1-nano", "gpt-4.1-mini", "gpt-4o-mini")
-        ),
-        ANTHROPIC(
-            "Anthropic (Claude) *",
-            "https://api.anthropic.com/v1",
-            "claude-haiku-4-5-20251001",
-            listOf("claude-haiku-4-5-20251001", "claude-3-5-haiku-20241022")
         ),
         GEMINI(
             "Google (Gemini)  [chat format]",
@@ -304,7 +291,6 @@ class RikkiSettingsConfigurable : Configurable {
         // Persist each provider's key to PasswordSafe
         RikkiCredentials.set("DEEPSEEK",  chatApiKeyCache[ChatProvider.DEEPSEEK]  ?: "")
         RikkiCredentials.set("OPENAI",    chatApiKeyCache[ChatProvider.OPENAI]    ?: "")
-        RikkiCredentials.set("ANTHROPIC", chatApiKeyCache[ChatProvider.ANTHROPIC] ?: "")
         RikkiCredentials.set("GEMINI",    chatApiKeyCache[ChatProvider.GEMINI]    ?: "")
         RikkiCredentials.set("MOONSHOT",  chatApiKeyCache[ChatProvider.MOONSHOT]  ?: "")
         RikkiCredentials.set("OLLAMA",    chatApiKeyCache[ChatProvider.OLLAMA]    ?: "")
@@ -333,7 +319,6 @@ class RikkiSettingsConfigurable : Configurable {
         // Load all keys fresh from PasswordSafe into the in-memory UI cache
         chatApiKeyCache[ChatProvider.DEEPSEEK]  = RikkiCredentials.get("DEEPSEEK")
         chatApiKeyCache[ChatProvider.OPENAI]    = RikkiCredentials.get("OPENAI")
-        chatApiKeyCache[ChatProvider.ANTHROPIC] = RikkiCredentials.get("ANTHROPIC")
         chatApiKeyCache[ChatProvider.GEMINI]    = RikkiCredentials.get("GEMINI")
         chatApiKeyCache[ChatProvider.MOONSHOT]  = RikkiCredentials.get("MOONSHOT")
         chatApiKeyCache[ChatProvider.OLLAMA]    = RikkiCredentials.get("OLLAMA")
