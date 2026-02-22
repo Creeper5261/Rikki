@@ -86,12 +86,12 @@ object LiteLlmClient {
         }
     }
 
-    private fun buildFimBody(model: String, prefix: String, suffix: String): String =
+    internal fun buildFimBody(model: String, prefix: String, suffix: String): String =
         """{"model":"${model.escapeJson()}","stream":true,"max_tokens":128,"temperature":0.0,""" +
         """"prompt":"${prefix.escapeJson()}","suffix":"${suffix.escapeJson()}"}"""
 
     /** Extracts text from a FIM streaming chunk: `choices[0].text`. */
-    private fun extractFimText(json: String): String? {
+    internal fun extractFimText(json: String): String? {
         val key   = "\"text\":\""
         val start = json.indexOf(key).takeIf { it >= 0 }?.plus(key.length) ?: return null
         return extractEscapedString(json, start).ifEmpty { null }
@@ -128,7 +128,7 @@ object LiteLlmClient {
         }
     }
 
-    private fun buildChatBody(model: String, prefix: String, suffix: String, language: String): String {
+    internal fun buildChatBody(model: String, prefix: String, suffix: String, language: String): String {
         val user = "Language: ${language.escapeJson()}\\n\\n${prefix.escapeJson()}<|CURSOR|>${suffix.escapeJson()}"
         return """{"model":"${model.escapeJson()}","stream":true,"max_tokens":128,"temperature":0.1,""" +
                """"messages":[{"role":"system","content":"${CHAT_SYSTEM_PROMPT.escapeJson()}"},""" +
@@ -136,7 +136,7 @@ object LiteLlmClient {
     }
 
     /** Extracts content from a chat streaming delta: `choices[0].delta.content`. */
-    private fun extractChatContent(json: String): String? {
+    internal fun extractChatContent(json: String): String? {
         if (json.contains("\"content\":null")) return null
         val key   = "\"content\":\""
         val start = json.indexOf(key).takeIf { it >= 0 }?.plus(key.length) ?: return null
@@ -157,7 +157,7 @@ object LiteLlmClient {
     } catch (_: Exception) { null }
 
     /** Reads a JSON-escaped string starting at [start], stopping at the closing `"`. */
-    private fun extractEscapedString(json: String, start: Int): String {
+    internal fun extractEscapedString(json: String, start: Int): String {
         val sb = StringBuilder()
         var i  = start
         while (i < json.length) {

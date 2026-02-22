@@ -34,6 +34,8 @@ import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
 import com.intellij.ui.JBColor;
 import com.intellij.util.ui.JBUI;
+import com.intellij.openapi.editor.colors.EditorColorsManager;
+import com.intellij.openapi.editor.colors.EditorFontType;
 import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.popup.JBPopup;
@@ -56,7 +58,10 @@ import java.awt.event.MouseEvent;
 import java.awt.event.ComponentAdapter;
 import java.awt.event.ComponentEvent;
 import java.awt.event.HierarchyEvent;
+import java.awt.geom.Arc2D;
 import java.awt.geom.Ellipse2D;
+import java.awt.geom.Line2D;
+import java.awt.geom.Path2D;
 import java.beans.PropertyChangeListener;
 import java.lang.reflect.Method;
 import java.net.URI;
@@ -307,7 +312,7 @@ final class ChatPanel {
 
         JPanel navRight = new JPanel(new FlowLayout(FlowLayout.RIGHT, 6, 0));
         navRight.setOpaque(false);
-        historyNavButton = createTopNavIconButton("\u21BA", "History");
+        historyNavButton = createTopNavIconButton(new TablerHistoryIcon(18), "History");
         historyNavButton.addActionListener(e -> openHistoryBrowserPopup(historyNavButton));
         settingsNavButton = createTopNavIconButton("\u2699", "Agent settings");
         settingsNavButton.addActionListener(e -> openSettingsDialogForCurrentSession());
@@ -467,7 +472,7 @@ final class ChatPanel {
             if (project.isDisposed()) {
                 return;
             }
-            ToolWindow toolWindow = ToolWindowManager.getInstance(project).getToolWindow("RIKKI");
+            ToolWindow toolWindow = ToolWindowManager.getInstance(project).getToolWindow("Rikki");
             if (toolWindow != null && toolWindow.isVisible()) {
                 toolWindow.hide(null);
             }
@@ -929,6 +934,36 @@ final class ChatPanel {
         return button;
     }
 
+    private JButton createTopNavIconButton(Icon icon, String tooltip) {
+        JButton button = new JButton();
+        button.setIcon(icon);
+        button.setToolTipText(tooltip);
+        button.setBorderPainted(false);
+        button.setContentAreaFilled(false);
+        button.setOpaque(false);
+        button.setFocusable(false);
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        button.setMargin(JBUI.emptyInsets());
+        button.setPreferredSize(new Dimension(28, 28));
+        button.setMinimumSize(new Dimension(28, 28));
+        button.setMaximumSize(new Dimension(28, 28));
+        button.setHorizontalAlignment(SwingConstants.CENTER);
+        button.setVerticalAlignment(SwingConstants.CENTER);
+        applyTopNavButtonTheme(button, false);
+        button.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseEntered(MouseEvent e) {
+                applyTopNavButtonTheme(button, true);
+            }
+
+            @Override
+            public void mouseExited(MouseEvent e) {
+                applyTopNavButtonTheme(button, false);
+            }
+        });
+        return button;
+    }
+
     private void applyTopNavButtonTheme(JButton button, boolean hovered) {
         if (button == null) {
             return;
@@ -1152,7 +1187,7 @@ final class ChatPanel {
                     ui.thinkingOpen = true;
 
                     if (ui.thoughtPanel == null && ui.messagePanel != null) {
-                        CollapsiblePanel thoughtPanel = new CollapsiblePanel("Thinking Process", "", true);
+                        CollapsiblePanel thoughtPanel = new CollapsiblePanel("Thought", "", true);
                         ui.thoughtPanel = thoughtPanel;
                         ui.messagePanel.add(thoughtPanel, 0);
                         ui.messagePanel.add(Box.createVerticalStrut(5), 1);
@@ -1330,6 +1365,9 @@ final class ChatPanel {
             callID = "__tool_event_" + (++ui.toolEventSeq);
         }
         String toolName = node.path("tool").asText("tool");
+        if ("tool_result".equals(event) && !"tool".equals(toolName) && !toolName.isBlank()) {
+            ui.executedToolNames.add(toolName);
+        }
         ToolActivityState state = resolveToolActivity(ui, callID, toolName);
         JsonNode argsNode = node.path("args");
         if (argsNode != null && !argsNode.isMissingNode() && !argsNode.isNull()) {
@@ -3048,7 +3086,7 @@ final class ChatPanel {
                     setMarkdownContent(ui.answerPane, ui.answerBuffer.toString());
                 }
                 if (history != null && !ui.historyCommitted && ui.answerBuffer.length() > 0) {
-                    history.appendLine("Agent: " + ui.answerBuffer);
+                    history.appendLine("Agent: " + ui.answerBuffer.toString());
                     ui.historyCommitted = true;
                 }
                 ui.streamFinished = true;
@@ -3303,7 +3341,7 @@ final class ChatPanel {
             boolean hasThought = response != null && response.thought != null && !response.thought.isEmpty();
             if (hasThought) {
                 String initialThought = response.thought;
-                CollapsiblePanel thoughtPanel = new CollapsiblePanel("Thinking Process", initialThought, animate);
+                CollapsiblePanel thoughtPanel = new CollapsiblePanel("Thought", initialThought, animate);
                 messagePanel.add(thoughtPanel);
                 messagePanel.add(Box.createVerticalStrut(5));
                 ui.thoughtPanel = thoughtPanel;
@@ -4678,6 +4716,19 @@ final class ChatPanel {
         }
 
         @Override
+        public void addNotify() {
+            super.addNotify();
+            if (shimmerActive && (shimmerTimer == null || !shimmerTimer.isRunning())) {
+                shimmerTimer = new Timer(40, e -> {
+                    phase += 0.04f;
+                    if (phase > 1f) phase = 0f;
+                    repaint();
+                });
+                shimmerTimer.start();
+            }
+        }
+
+        @Override
         protected void paintComponent(Graphics g) {
             String text = getText();
             if (!shimmerActive || text == null || text.isEmpty() || text.startsWith("<html")) {
@@ -4846,11 +4897,9 @@ final class ChatPanel {
             detailArea.setLineWrap(false);
             detailArea.setWrapStyleWord(false);
             detailArea.setOpaque(false);
-            detailArea.setBackground(UIUtil.getTextFieldBackground());
             detailArea.setForeground(UIUtil.getLabelForeground());
             detailArea.setBorder(JBUI.Borders.empty(0));
-            Font currentFont = detailArea.getFont();
-            detailArea.setFont(new Font(Font.MONOSPACED, currentFont.getStyle(), currentFont.getSize()));
+            detailArea.setFont(resolveDetailAreaFont());
 
             detailScroll = new JBScrollPane(detailArea);
             detailScroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
@@ -4865,8 +4914,8 @@ final class ChatPanel {
 
             RoundedPanel detailCard = new RoundedPanel(
                     14,
-                    UIUtil.getTextFieldBackground(),
-                    UIUtil.getBoundsColor()
+                    UIUtil::getTextFieldBackground,
+                    UIUtil::getBoundsColor
             );
             detailCard.setLayout(new BorderLayout(0, 4));
             detailCard.setBorder(JBUI.Borders.empty(8, 10, 6, 10));
@@ -5177,6 +5226,26 @@ final class ChatPanel {
             revalidate();
             repaint();
         }
+
+        @Override
+        public void updateUI() {
+            super.updateUI();
+            if (detailArea != null) {
+                detailArea.setForeground(UIUtil.getLabelForeground());
+                detailArea.setFont(resolveDetailAreaFont());
+            }
+        }
+
+        private static Font resolveDetailAreaFont() {
+            try {
+                return EditorColorsManager.getInstance()
+                        .getGlobalScheme()
+                        .getFont(EditorFontType.PLAIN)
+                        .deriveFont((float) JBUI.scaleFontSize(12f));
+            } catch (Exception ignored) {
+                return new Font(Font.MONOSPACED, Font.PLAIN, JBUI.scaleFontSize(12f));
+            }
+        }
     }
 
     private static class AgentMessageUI {
@@ -5193,6 +5262,7 @@ final class ChatPanel {
         Set<String> appliedChangeFingerprints = new LinkedHashSet<>();
         Set<String> undoneSessionChangeKeys = new LinkedHashSet<>();
         int toolEventSeq;
+        List<String> executedToolNames = new ArrayList<>();
         StringBuilder answerBuffer = new StringBuilder();
         StringBuilder deferredAnswerBuffer = new StringBuilder();
         String lastAppendedChunk = "";
@@ -6438,23 +6508,30 @@ final class ChatPanel {
             this.title = title;
             this.contentText = contentText == null ? "" : contentText;
             setLayout(new BorderLayout());
-            setBorder(BorderFactory.createLineBorder(JBColor.border()));
-            
+            setOpaque(false);
+            setBorder(JBUI.Borders.empty(2, 0, 4, 0));
+
             toggleBtn = new JButton("> " + title);
             toggleBtn.setHorizontalAlignment(SwingConstants.LEFT);
             toggleBtn.setBorderPainted(false);
             toggleBtn.setContentAreaFilled(false);
             toggleBtn.setFocusPainted(false);
+            toggleBtn.setOpaque(false);
+            toggleBtn.setForeground(UIUtil.getContextHelpForeground());
+            toggleBtn.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
             toggleBtn.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            
+
             contentPanel = new JPanel(new BorderLayout());
+            contentPanel.setOpaque(false);
+            contentPanel.setBorder(JBUI.Borders.emptyLeft(12));
             textArea = new JTextArea();
             textArea.setLineWrap(true);
             textArea.setWrapStyleWord(true);
             textArea.setEditable(false);
-            textArea.setBackground(UIUtil.getTextFieldBackground());
-            textArea.setForeground(UIUtil.getLabelForeground());
-            textArea.setBorder(JBUI.Borders.empty(5));
+            textArea.setOpaque(false);
+            textArea.setForeground(UIUtil.getContextHelpForeground());
+            textArea.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
+            textArea.setBorder(JBUI.Borders.empty(2, 0, 2, 0));
             
             if (animate) {
                 
@@ -6529,5 +6606,63 @@ final class ChatPanel {
             toggleBtn.setCursor(collapsible ? Cursor.getPredefinedCursor(Cursor.HAND_CURSOR) : Cursor.getDefaultCursor());
             setExpanded(expanded);
         }
+    }
+
+    // ── Tabler "History" icon — redrawn in Java2D from the MIT-licensed SVG ──
+    // Source: https://tabler.io/icons  (MIT License)
+    // Original viewBox: 0 0 24 24, stroke-width=2, stroke-linecap/join=round
+    //
+    // Paths:
+    //   M12 8 l0 4 l2 2          → clock hands
+    //   M3.05 11 a9 9 0 1 1 .5 4 → large clockwise arc (most of the clock circle)
+    //   m-.5 5 v-5 h5            → undo arrow at bottom-left
+    private static final class TablerHistoryIcon implements Icon {
+        private final int size;
+
+        TablerHistoryIcon(int size) {
+            this.size = size;
+        }
+
+        @Override
+        public void paintIcon(Component c, Graphics g, int x, int y) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+
+                // Use the button's foreground (set by applyTopNavButtonTheme — respects dark/light)
+                g2.setColor(c != null ? c.getForeground() : Color.GRAY);
+                g2.translate(x, y);
+
+                // Scale from the SVG's 24×24 coordinate space to our icon size
+                double scale = size / 24.0;
+                g2.scale(scale, scale);
+
+                BasicStroke round = new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
+                g2.setStroke(round);
+
+                // ── Clock circle (large clockwise arc) ───────────────────────
+                // Arc from (3.05, 11) to (3.55, 15), radius=9, centre=(12,12).
+                // Java2D start angle=173.6°, extent=-334° (clockwise = negative).
+                g2.draw(new Arc2D.Double(3, 3, 18, 18, 173.6, -334.0, Arc2D.OPEN));
+
+                // ── Clock hands (M12 8 l0 4 l2 2) ────────────────────────────
+                g2.draw(new Line2D.Double(12, 8, 12, 12));
+                g2.draw(new Line2D.Double(12, 12, 14, 14));
+
+                // ── Undo arrow (m-.5 5 v-5 h5 from arc end (3.55,15)) ────────
+                // Absolute coords: (3.05,20) → (3.05,15) → (8.05,15)
+                Path2D.Double arrow = new Path2D.Double();
+                arrow.moveTo(3.05, 20);
+                arrow.lineTo(3.05, 15);
+                arrow.lineTo(8.05, 15);
+                g2.draw(arrow);
+            } finally {
+                g2.dispose();
+            }
+        }
+
+        @Override public int getIconWidth()  { return size; }
+        @Override public int getIconHeight() { return size; }
     }
 }

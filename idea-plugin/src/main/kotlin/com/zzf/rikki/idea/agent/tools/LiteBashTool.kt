@@ -26,8 +26,11 @@ class LiteBashTool {
             .directory(workdir)
             .redirectErrorStream(true)
 
-        // Propagate current env
+        // Propagate current env, then force UTF-8 for subprocess output
         pb.environment().putAll(System.getenv())
+        pb.environment()["LANG"]             = "en_US.UTF-8"
+        pb.environment()["LC_ALL"]           = "en_US.UTF-8"
+        pb.environment()["PYTHONIOENCODING"] = "utf-8"
 
         val proc = pb.start()
 
@@ -63,6 +66,7 @@ class LiteBashTool {
             skipped  -> "(Skipped by user - command was interrupted)\n$truncated".trimEnd()
             timedOut -> "(Command timed out after ${timeoutMs}ms)\n$truncated".trimEnd()
             proc.exitValue() != 0 -> "Command failed with exit code ${proc.exitValue()}: $command\n$truncated"
+            truncated.isBlank() -> "(no output)"
             else -> truncated
         }
     }

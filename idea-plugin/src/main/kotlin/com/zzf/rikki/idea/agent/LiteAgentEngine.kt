@@ -28,6 +28,52 @@ class LiteAgentEngine(
     companion object {
         private const val MAX_STEPS = 120
         private const val MAX_OUTPUT = 8_000
+
+        /**
+         * Returns capabilities for the given provider + model combination.
+         * Sources:
+         *  - DeepSeek: https://api-docs.deepseek.com/guides/thinking_mode
+         *  - OpenAI o1: https://platform.openai.com/docs/guides/reasoning
+         *  - OpenAI o3/o4: https://platform.openai.com/docs/models
+         */
+        internal fun detectCapabilities(provider: String, model: String): ModelCapabilities {
+            val m = model.trim().lowercase()
+            return when {
+                // ── DeepSeek R1: exposes reasoning_content in streaming delta ─────
+                m == "deepseek-reasoner" ->
+                    ModelCapabilities(hasReasoningContent = true)
+
+                // ── OpenAI o1 / o1-mini / o1-preview ─────────────────────────────
+                // Requires: developer role, temperature=1, max_completion_tokens,
+                // does NOT support function calling (tools).
+                provider == "OPENAI" && (m == "o1" || m == "o1-mini" || m == "o1-preview") ->
+                    ModelCapabilities(
+                        systemRole          = "developer",
+                        temperatureFixed    = 1.0,
+                        maxTokensKey        = "max_completion_tokens",
+                        supportsTools       = false
+                    )
+
+                // ── OpenAI o3 / o4 series ─────────────────────────────────────────
+                // Full tool support; max_tokens is deprecated, use max_completion_tokens.
+                provider == "OPENAI" && (m.startsWith("o3") || m.startsWith("o4")) ->
+                    ModelCapabilities(maxTokensKey = "max_completion_tokens")
+
+                // ── Everything else: standard OpenAI-compatible behaviour ─────────
+                else -> ModelCapabilities()
+            }
+        }
+
+        /**
+         * Parses a history line into a (role, content) pair.
+         * Returns null if the line does not start with a recognised prefix.
+         */
+        internal fun parseHistoryLine(text: String): Pair<String, String>? = when {
+            text.startsWith("You:")       -> "user"      to text.removePrefix("You:").trim()
+            text.startsWith("Agent:")     -> "assistant" to text.removePrefix("Agent:").trim()
+            text.startsWith("Assistant:") -> "assistant" to text.removePrefix("Assistant:").trim()
+            else                          -> null
+        }
     }
 
     // ── Model capabilities ────────────────────────────────────────────────────
@@ -60,41 +106,6 @@ class LiteAgentEngine(
         val supportsTools: Boolean      = true,
         val hasReasoningContent: Boolean = false
     )
-
-    /**
-     * Returns capabilities for the given provider + model combination.
-     * Sources:
-     *  - DeepSeek: https://api-docs.deepseek.com/guides/thinking_mode
-     *  - OpenAI o1: https://platform.openai.com/docs/guides/reasoning
-     *  - OpenAI o3/o4: https://platform.openai.com/docs/models
-     */
-    private fun detectCapabilities(provider: String, model: String): ModelCapabilities {
-        val m = model.trim().lowercase()
-        return when {
-            // ── DeepSeek R1: exposes reasoning_content in streaming delta ─────
-            m == "deepseek-reasoner" ->
-                ModelCapabilities(hasReasoningContent = true)
-
-            // ── OpenAI o1 / o1-mini / o1-preview ─────────────────────────────
-            // Requires: developer role, temperature=1, max_completion_tokens,
-            // does NOT support function calling (tools).
-            provider == "OPENAI" && (m == "o1" || m == "o1-mini" || m == "o1-preview") ->
-                ModelCapabilities(
-                    systemRole          = "developer",
-                    temperatureFixed    = 1.0,
-                    maxTokensKey        = "max_completion_tokens",
-                    supportsTools       = false
-                )
-
-            // ── OpenAI o3 / o4 series ─────────────────────────────────────────
-            // Full tool support; max_tokens is deprecated, use max_completion_tokens.
-            provider == "OPENAI" && (m.startsWith("o3") || m.startsWith("o4")) ->
-                ModelCapabilities(maxTokensKey = "max_completion_tokens")
-
-            // ── Everything else: standard OpenAI-compatible behaviour ─────────
-            else -> ModelCapabilities()
-        }
-    }
 
     // ── Agent loop ────────────────────────────────────────────────────────────
 
@@ -133,14 +144,8 @@ class LiteAgentEngine(
             for (line in history) {
                 val text = line.asText("").trim()
                 if (text.isBlank()) continue
-                when {
-                    text.startsWith("You:") ->
-                        messages += mapOf("role" to "user",      "content" to text.removePrefix("You:").trim())
-                    text.startsWith("Agent:") ->
-                        messages += mapOf("role" to "assistant", "content" to text.removePrefix("Agent:").trim())
-                    text.startsWith("Assistant:") ->
-                        messages += mapOf("role" to "assistant", "content" to text.removePrefix("Assistant:").trim())
-                }
+                val (role, content) = parseHistoryLine(text) ?: continue
+                messages += mapOf("role" to role, "content" to content)
             }
         }
         messages += mapOf("role" to "user", "content" to goal)
@@ -317,10 +322,14 @@ class LiteAgentEngine(
                         }
                     }
 
-                    // Reasoning content — only replayed in history when caps.hasReasoningContent
+                    // Reasoning content — stream to frontend and replay in history
                     val reasoning = delta.path("reasoning_content")
                     if (!reasoning.isNull && !reasoning.isMissingNode) {
-                        reasoningBuf.append(reasoning.asText(""))
+                        val rd = reasoning.asText("")
+                        if (rd.isNotEmpty()) {
+                            sseWriter.emitThought(msgId, rd)
+                            reasoningBuf.append(rd)
+                        }
                     }
 
                     // Tool call deltas
@@ -348,6 +357,8 @@ class LiteAgentEngine(
                     if (!fr.isNull && !fr.isMissingNode) finishReason = fr.asText("")
                 }
             }
+
+            if (reasoningBuf.isNotEmpty()) sseWriter.emitThoughtEnd(msgId)
 
             val toolCalls = tcAccum.entries.sortedBy { it.key }.mapNotNull { (_, triple) ->
                 val (id, name, argsBuf) = triple
@@ -426,6 +437,8 @@ You are an interactive assistant that helps users with software engineering task
 - Run tool calls in parallel when outputs are independent; otherwise run sequentially.
 
 ## Workflow
+- For complex or multi-step tasks, use the todo_write tool to break the work into clear steps before starting. Update each item's status (in_progress → completed) as you work through them.
+- When making tool calls, do not include any text in your response — only call the tools. Reserve text for the final step after all tool calls are complete.
 - Default to doing the work without asking questions.
 - Only ask when truly blocked after checking relevant context.
 - Be concise and friendly.

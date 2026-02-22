@@ -55,6 +55,17 @@ internal object RikkiCredentials {
     /** True once [loadAll] has completed at least once. */
     fun isLoaded(): Boolean = loaded
 
+    /** For unit tests only. Populates the in-memory cache directly, bypassing PasswordSafe. */
+    internal fun injectForTest(key: String, value: String) {
+        cache[key.uppercase()] = value
+    }
+
+    /** For unit tests only. Clears the in-memory cache and resets the loaded flag. */
+    internal fun clearForTest() {
+        cache.clear()
+        loaded = false
+    }
+
     private fun attrs(key: String) =
         CredentialAttributes(generateServiceName(SERVICE, key))
 }

@@ -8,6 +8,7 @@ import com.intellij.util.ui.UIUtil;
 
 import javax.swing.*;
 import java.awt.*;
+import java.awt.geom.Arc2D;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.ArrayList;
@@ -157,42 +158,30 @@ final class TodoPanel extends JPanel {
         row.setMaximumSize(new Dimension(Integer.MAX_VALUE, JBUI.scale(22)));
 
         // Status icon
-        String icon  = iconFor(todo.status);
-        Color  color = colorFor(todo.status);
-        JLabel iconLabel = new JLabel(icon);
-        iconLabel.setForeground(color);
-        iconLabel.setFont(iconLabel.getFont().deriveFont(JBUI.scaleFontSize(12f)));
+        Color color = colorFor(todo.status);
+        JLabel iconLabel;
+        if ("in_progress".equals(todo.status)) {
+            iconLabel = new JLabel(new InProgressIcon(JBUI.scale(12), color));
+        } else {
+            iconLabel = new JLabel(iconFor(todo.status));
+            iconLabel.setForeground(color);
+            iconLabel.setFont(iconLabel.getFont().deriveFont(JBUI.scaleFontSize(12f)));
+        }
         iconLabel.setPreferredSize(new Dimension(JBUI.scale(16), JBUI.scale(18)));
 
         // Content text
-        JLabel contentLabel = new JLabel(todo.content);
-        contentLabel.setForeground(
-                "completed".equals(todo.status) || "cancelled".equals(todo.status)
-                        ? JBColor.GRAY
-                        : UIUtil.getLabelForeground()
-        );
+        JLabel contentLabel = new JLabel();
+        boolean done = "completed".equals(todo.status) || "cancelled".equals(todo.status);
+        contentLabel.setForeground(done ? JBColor.GRAY : UIUtil.getLabelForeground());
         if ("completed".equals(todo.status)) {
-            Font f = contentLabel.getFont();
-            // Strikethrough via HTML
             contentLabel.setText("<html><strike>" + escapeHtml(todo.content) + "</strike></html>");
+        } else {
+            contentLabel.setText(todo.content);
         }
         contentLabel.setFont(contentLabel.getFont().deriveFont(JBUI.scaleFontSize(11f)));
 
-        // Priority badge for high-priority pending/in-progress items
-        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
-        right.setOpaque(false);
-        if ("high".equals(todo.priority)
-                && !"completed".equals(todo.status)
-                && !"cancelled".equals(todo.status)) {
-            JLabel badge = new JLabel("!");
-            badge.setForeground(new JBColor(new Color(0xCF222E), new Color(0xF47067)));
-            badge.setFont(badge.getFont().deriveFont(Font.BOLD, JBUI.scaleFontSize(10f)));
-            right.add(badge);
-        }
-
         row.add(iconLabel, BorderLayout.WEST);
         row.add(contentLabel, BorderLayout.CENTER);
-        row.add(right, BorderLayout.EAST);
         return row;
     }
 
@@ -236,5 +225,40 @@ final class TodoPanel extends JPanel {
             this.status   = status != null ? status : "pending";
             this.priority = priority != null ? priority : "medium";
         }
+    }
+
+    // ── In-progress spinner icon ──────────────────────────────────────────
+
+    /**
+     * Paints a 3/4-circle open arc to represent an item that is currently
+     * being worked on.  Uses Java2D so it renders crisply at any DPI.
+     */
+    private static final class InProgressIcon implements Icon {
+        private final int size;
+        private final Color color;
+
+        InProgressIcon(int size, Color color) {
+            this.size  = size;
+            this.color = color;
+        }
+
+        @Override
+        public void paintIcon(Component c, Graphics g, int x, int y) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(color != null ? color : (c != null ? c.getForeground() : Color.GRAY));
+                float pad = 1f;
+                float s   = size - 2f * pad;
+                // 270° open arc (3/4 ring), gap at bottom-right; starts at top (90°)
+                g2.setStroke(new BasicStroke(1.6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                g2.draw(new Arc2D.Float(x + pad, y + pad, s, s, 90, 270, Arc2D.OPEN));
+            } finally {
+                g2.dispose();
+            }
+        }
+
+        @Override public int getIconWidth()  { return size; }
+        @Override public int getIconHeight() { return size; }
     }
 }

@@ -176,10 +176,10 @@ class LiteToolRegistry(private val project: Project, private val mapper: ObjectM
                         "items" to mapOf(
                             "type" to "object",
                             "properties" to mapOf(
-                                "id"       to mapOf("type" to "string"),
-                                "content"  to mapOf("type" to "string"),
-                                "status"   to mapOf("type" to "string"),
-                                "priority" to mapOf("type" to "string")
+                                "id"       to mapOf("type" to "string", "description" to "Unique identifier for this item"),
+                                "content"  to mapOf("type" to "string", "description" to "Task description text (required)"),
+                                "status"   to mapOf("type" to "string", "enum" to listOf("pending", "in_progress", "completed"), "description" to "Task status"),
+                                "priority" to mapOf("type" to "string", "enum" to listOf("high", "medium", "low"), "description" to "Task priority")
                             ),
                             "required" to listOf("content", "status")
                         )

@@ -37,10 +37,14 @@ class LiteTodoTools(private val mapper: ObjectMapper) {
 
         val todos = buildList {
             for (item in todosNode) {
+                // Accept 'content' (canonical) or 'title'/'description' as fallbacks
+                val content = item.path("content").asText("").ifBlank {
+                    item.path("title").asText("").ifBlank { item.path("description").asText("") }
+                }
                 add(
                     TodoItem(
                         id       = item.path("id").asText("").ifBlank { UUID.randomUUID().toString() },
-                        content  = item.path("content").asText(""),
+                        content  = content,
                         status   = item.path("status").asText("pending"),
                         priority = item.path("priority").asText("medium")
                     )

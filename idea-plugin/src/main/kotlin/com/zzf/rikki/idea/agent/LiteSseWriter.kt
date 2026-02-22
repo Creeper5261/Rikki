@@ -30,6 +30,12 @@ class LiteSseWriter(outputStream: OutputStream) {
     fun emitMessage(msgId: String, delta: String) =
         emit("message", mapOf("id" to msgId, "delta" to delta))
 
+    fun emitThought(msgId: String, delta: String) =
+        emit("thought", mapOf("messageID" to msgId, "reasoning_delta" to delta))
+
+    fun emitThoughtEnd(msgId: String) =
+        emit("thought_end", mapOf("messageID" to msgId))
+
     fun emitToolCall(
         partId: String, tool: String, callId: String, msgId: String,
         state: String, title: String, args: Any
