@@ -1,0 +1,408 @@
+2026-02-25 01:12:54,694 - INFO - Environment image sweb.env.py.x86_64.764c21123474adcba1e003:latest found for sphinx-doc__sphinx-8627
+Building instance image sweb.eval.x86_64.sphinx-doc__sphinx-8627:latest for sphinx-doc__sphinx-8627
+2026-02-25 01:14:16,697 - INFO - Creating container for sphinx-doc__sphinx-8627...
+2026-02-25 01:14:16,825 - INFO - Container for sphinx-doc__sphinx-8627 created: 1fbb6cbb52a7c522c1776594245f17cbb3fa03f290fc7a1942a523b7ad9243ff
+2026-02-25 01:14:17,025 - INFO - Container for sphinx-doc__sphinx-8627 started: 1fbb6cbb52a7c522c1776594245f17cbb3fa03f290fc7a1942a523b7ad9243ff
+2026-02-25 01:14:17,033 - INFO - Intermediate patch for sphinx-doc__sphinx-8627 written to logs/run_evaluation/rikki-swe-lite-20260223_230946-harness12-rerun3/rikki-deepseek-reasoner/sphinx-doc__sphinx-8627/patch.diff, now applying to container...
+2026-02-25 01:14:17,244 - INFO - >>>>> Applied Patch:
+/tmp/patch.diff:21: trailing whitespace.
+    
+Checking patch sphinx/util/typing.py...
+Applied patch sphinx/util/typing.py cleanly.
+warning: 1 line adds whitespace errors.
+
+2026-02-25 01:14:17,452 - INFO - Git diff before:
+diff --git a/sphinx/util/typing.py b/sphinx/util/typing.py
+index 2d4f67bba..f5bcc946b 100644
+--- a/sphinx/util/typing.py
++++ b/sphinx/util/typing.py
+@@ -34,6 +34,51 @@ if False:
+     from typing import Type  # NOQA # for python3.5.1
+ 
+ 
++# Helper functions for resolving incorrect __module__ attributes
++import builtins
++import sys
++
++_MODULE_CACHE = {}  # type: Dict[type, str]
++
++def _is_real_builtin(cls: type) -> bool:
++    """Check if cls is a real built-in type (defined in builtins module)."""
++    return hasattr(builtins, cls.__name__) and getattr(builtins, cls.__name__) is cls
++
++def _get_real_module(cls: type) -> str:
++    """Get the correct public module name for a class.
++    
++    This handles classes with incorrect __module__ attribute (e.g., struct.Struct
++    has __module__ == 'builtins' in Python <3.9, or '_struct' in Python >=3.9).
++    """
++    module = cls.__module__
++    if module in ('builtins', '__builtin__'):
++        if _is_real_builtin(cls):
++            return module
++        # Not a real built-in, try to find the real module
++        cached = _MODULE_CACHE.get(cls)
++        if cached is not None:
++            return cached
++        # Search through loaded modules for a module that exports this class
++        for modname, mod in sys.modules.items():
++            if modname == 'builtins' or modname == '__builtin__':
++                continue
++            try:
++                if getattr(mod, cls.__name__, None) is cls:
++                    _MODULE_CACHE[cls] = modname
++                    return modname
++            except Exception:
++                # Ignore any errors when accessing module attributes
++                pass
++        # Fallback: keep original module
++        _MODULE_CACHE[cls] = module
++        return module
++    elif module == '_struct':
++        # map internal _struct module to public struct module
++        return 'struct'
++    else:
++        return module
++
++
+ # An entry of Directive.option_spec
+ DirectiveOption = Callable[[str], Any]
+ 
+@@ -96,7 +141,8 @@ def restify(cls: Optional["Type"]) -> str:
+         return '...'
+     elif inspect.isNewType(cls):
+         return ':class:`%s`' % cls.__name__
+-    elif cls.__module__ in ('__builtin__', 'builtins'):
++    real_module = _get_real_module(cls)
++    if real_module in ('__builtin__', 'builtins') and _is_real_builtin(cls):
+         return ':class:`%s`' % cls.__name__
+     else:
+         if sys.version_info >= (3, 7):  # py37+
+@@ -108,9 +154,10 @@ def restify(cls: Optional["Type"]) -> str:
+ def _restify_py37(cls: Optional["Type"]) -> str:
+     """Convert python class to a reST reference."""
+     from sphinx.util import inspect  # lazy loading
++    module = _get_real_module(cls)
+ 
+     if (inspect.isgenericalias(cls) and
+-            cls.__module__ == 'typing' and cls.__origin__ is Union):
++            module == 'typing' and cls.__origin__ is Union):
+         # Union
+         if len(cls.__args__) > 1 and cls.__args__[-1] is NoneType:
+             if len(cls.__args__) > 2:
+@@ -123,10 +170,10 @@ def _restify_py37(cls: Optional["Type"]) -> str:
+             return ':obj:`Union`\\ [%s]' % args
+     elif inspect.isgenericalias(cls):
+         if getattr(cls, '_name', None):
+-            if cls.__module__ == 'typing':
++            if module == 'typing':
+                 text = ':class:`%s`' % cls._name
+             else:
+-                text = ':class:`%s.%s`' % (cls.__module__, cls._name)
++                text = ':class:`%s.%s`' % (module, cls._name)
+         else:
+             text = restify(cls.__origin__)
+ 
+@@ -135,7 +182,7 @@ def _restify_py37(cls: Optional["Type"]) -> str:
+         elif all(is_system_TypeVar(a) for a in cls.__args__):
+             # Suppress arguments if all system defined TypeVars (ex. Dict[KT, VT])
+             pass
+-        elif cls.__module__ == 'typing' and cls._name == 'Callable':
++        elif module == 'typing' and cls._name == 'Callable':
+             args = ', '.join(restify(a) for a in cls.__args__[:-1])
+             text += r"\ [[%s], %s]" % (args, restify(cls.__args__[-1]))
+         elif cls.__args__:
+@@ -143,25 +190,25 @@ def _restify_py37(cls: Optional["Type"]) -> str:
+ 
+         return text
+     elif hasattr(cls, '__qualname__'):
+-        if cls.__module__ == 'typing':
++        if module == 'typing':
+             return ':class:`%s`' % cls.__qualname__
+         else:
+-            return ':class:`%s.%s`' % (cls.__module__, cls.__qualname__)
++            return ':class:`%s.%s`' % (module, cls.__qualname__)
+     elif hasattr(cls, '_name'):
+         # SpecialForm
+-        if cls.__module__ == 'typing':
++        if module == 'typing':
+             return ':obj:`%s`' % cls._name
+         else:
+-            return ':obj:`%s.%s`' % (cls.__module__, cls._name)
++            return ':obj:`%s.%s`' % (module, cls._name)
+     elif isinstance(cls, ForwardRef):
+         return ':class:`%s`' % cls.__forward_arg__
+     else:
+         # not a class (ex. TypeVar)
+-        return ':obj:`%s.%s`' % (cls.__module__, cls.__name__)
++        return ':obj:`%s.%s`' % (module, cls.__name__)
+ 
+ 
+ def _restify_py36(cls: Optional["Type"]) -> str:
+-    module = getattr(cls, '__module__', None)
++    module = _get_real_module(cls)
+     if module == 'typing':
+         if getattr(cls, '_name', None):
+             qualname = cls._name
+@@ -260,25 +307,25 @@ def _restify_py36(cls: Optional["Type"]) -> str:
+         else:
+             return ':class:`%s`' % qualname
+     elif hasattr(cls, '__qualname__'):
+-        if cls.__module__ == 'typing':
++        if module == 'typing':
+             return ':class:`%s`' % cls.__qualname__
+         else:
+-            return ':class:`%s.%s`' % (cls.__module__, cls.__qualname__)
++            return ':class:`%s.%s`' % (module, cls.__qualname__)
+     elif hasattr(cls, '_name'):
+         # SpecialForm
+-        if cls.__module__ == 'typing':
++        if module == 'typing':
+             return ':obj:`%s`' % cls._name
+         else:
+-            return ':obj:`%s.%s`' % (cls.__module__, cls._name)
++            return ':obj:`%s.%s`' % (module, cls._name)
+     elif hasattr(cls, '__name__'):
+         # not a class (ex. TypeVar)
+-        return ':obj:`%s.%s`' % (cls.__module__, cls.__name__)
++        return ':obj:`%s.%s`' % (module, cls.__name__)
+     else:
+         # others (ex. Any)
+-        if cls.__module__ == 'typing':
++        if module == 'typing':
+             return ':obj:`%s`' % qualname
+         else:
+-            return ':obj:`%s.%s`' % (cls.__module__, qualname)
++            return ':obj:`%s.%s`' % (module, qualname)
+ 
+ 
+ def stringify(annotation: Any) -> str:
+@@ -301,7 +348,7 @@ def stringify(annotation: Any) -> str:
+     elif annotation is NoneType:
+         return 'None'
+     elif (getattr(annotation, '__module__', None) == 'builtins' and
+-          hasattr(annotation, '__qualname__')):
++          hasattr(annotation, '__qualname__') and _is_real_builtin(annotation)):
+         return annotation.__qualname__
+     elif annotation is Ellipsis:
+         return '...'
+@@ -314,7 +361,7 @@ def stringify(annotation: Any) -> str:
+ 
+ def _stringify_py37(annotation: Any) -> str:
+     """stringify() for py37+."""
+-    module = getattr(annotation, '__module__', None)
++    module = _get_real_module(annotation)
+     if module == 'typing':
+         if getattr(annotation, '_name', None):
+             qualname = annotation._name
+@@ -366,7 +413,7 @@ def _stringify_py37(annotation: Any) -> str:
+ 
+ def _stringify_py36(annotation: Any) -> str:
+     """stringify() for py35 and py36."""
+-    module = getattr(annotation, '__module__', None)
++    module = _get_real_module(annotation)
+     if module == 'typing':
+         if getattr(annotation, '_name', None):
+             qualname = annotation._name
+2026-02-25 01:14:17,456 - INFO - Eval script for sphinx-doc__sphinx-8627 written to logs/run_evaluation/rikki-swe-lite-20260223_230946-harness12-rerun3/rikki-deepseek-reasoner/sphinx-doc__sphinx-8627/eval.sh; copying to container...
+2026-02-25 01:14:20,487 - INFO - Test runtime: 2.93 seconds
+2026-02-25 01:14:20,498 - INFO - Test output for sphinx-doc__sphinx-8627 written to logs/run_evaluation/rikki-swe-lite-20260223_230946-harness12-rerun3/rikki-deepseek-reasoner/sphinx-doc__sphinx-8627/test_output.txt
+2026-02-25 01:14:20,577 - INFO - Git diff after:
+diff --git a/sphinx/util/typing.py b/sphinx/util/typing.py
+index 2d4f67bba..f5bcc946b 100644
+--- a/sphinx/util/typing.py
++++ b/sphinx/util/typing.py
+@@ -34,6 +34,51 @@ if False:
+     from typing import Type  # NOQA # for python3.5.1
+ 
+ 
++# Helper functions for resolving incorrect __module__ attributes
++import builtins
++import sys
++
++_MODULE_CACHE = {}  # type: Dict[type, str]
++
++def _is_real_builtin(cls: type) -> bool:
++    """Check if cls is a real built-in type (defined in builtins module)."""
++    return hasattr(builtins, cls.__name__) and getattr(builtins, cls.__name__) is cls
++
++def _get_real_module(cls: type) -> str:
++    """Get the correct public module name for a class.
++    
++    This handles classes with incorrect __module__ attribute (e.g., struct.Struct
++    has __module__ == 'builtins' in Python <3.9, or '_struct' in Python >=3.9).
++    """
++    module = cls.__module__
++    if module in ('builtins', '__builtin__'):
++        if _is_real_builtin(cls):
++            return module
++        # Not a real built-in, try to find the real module
++        cached = _MODULE_CACHE.get(cls)
++        if cached is not None:
++            return cached
++        # Search through loaded modules for a module that exports this class
++        for modname, mod in sys.modules.items():
++            if modname == 'builtins' or modname == '__builtin__':
++                continue
++            try:
++                if getattr(mod, cls.__name__, None) is cls:
++                    _MODULE_CACHE[cls] = modname
++                    return modname
++            except Exception:
++                # Ignore any errors when accessing module attributes
++                pass
++        # Fallback: keep original module
++        _MODULE_CACHE[cls] = module
++        return module
++    elif module == '_struct':
++        # map internal _struct module to public struct module
++        return 'struct'
++    else:
++        return module
++
++
+ # An entry of Directive.option_spec
+ DirectiveOption = Callable[[str], Any]
+ 
+@@ -96,7 +141,8 @@ def restify(cls: Optional["Type"]) -> str:
+         return '...'
+     elif inspect.isNewType(cls):
+         return ':class:`%s`' % cls.__name__
+-    elif cls.__module__ in ('__builtin__', 'builtins'):
++    real_module = _get_real_module(cls)
++    if real_module in ('__builtin__', 'builtins') and _is_real_builtin(cls):
+         return ':class:`%s`' % cls.__name__
+     else:
+         if sys.version_info >= (3, 7):  # py37+
+@@ -108,9 +154,10 @@ def restify(cls: Optional["Type"]) -> str:
+ def _restify_py37(cls: Optional["Type"]) -> str:
+     """Convert python class to a reST reference."""
+     from sphinx.util import inspect  # lazy loading
++    module = _get_real_module(cls)
+ 
+     if (inspect.isgenericalias(cls) and
+-            cls.__module__ == 'typing' and cls.__origin__ is Union):
++            module == 'typing' and cls.__origin__ is Union):
+         # Union
+         if len(cls.__args__) > 1 and cls.__args__[-1] is NoneType:
+             if len(cls.__args__) > 2:
+@@ -123,10 +170,10 @@ def _restify_py37(cls: Optional["Type"]) -> str:
+             return ':obj:`Union`\\ [%s]' % args
+     elif inspect.isgenericalias(cls):
+         if getattr(cls, '_name', None):
+-            if cls.__module__ == 'typing':
++            if module == 'typing':
+                 text = ':class:`%s`' % cls._name
+             else:
+-                text = ':class:`%s.%s`' % (cls.__module__, cls._name)
++                text = ':class:`%s.%s`' % (module, cls._name)
+         else:
+             text = restify(cls.__origin__)
+ 
+@@ -135,7 +182,7 @@ def _restify_py37(cls: Optional["Type"]) -> str:
+         elif all(is_system_TypeVar(a) for a in cls.__args__):
+             # Suppress arguments if all system defined TypeVars (ex. Dict[KT, VT])
+             pass
+-        elif cls.__module__ == 'typing' and cls._name == 'Callable':
++        elif module == 'typing' and cls._name == 'Callable':
+             args = ', '.join(restify(a) for a in cls.__args__[:-1])
+             text += r"\ [[%s], %s]" % (args, restify(cls.__args__[-1]))
+         elif cls.__args__:
+@@ -143,25 +190,25 @@ def _restify_py37(cls: Optional["Type"]) -> str:
+ 
+         return text
+     elif hasattr(cls, '__qualname__'):
+-        if cls.__module__ == 'typing':
++        if module == 'typing':
+             return ':class:`%s`' % cls.__qualname__
+         else:
+-            return ':class:`%s.%s`' % (cls.__module__, cls.__qualname__)
++            return ':class:`%s.%s`' % (module, cls.__qualname__)
+     elif hasattr(cls, '_name'):
+         # SpecialForm
+-        if cls.__module__ == 'typing':
++        if module == 'typing':
+             return ':obj:`%s`' % cls._name
+         else:
+-            return ':obj:`%s.%s`' % (cls.__module__, cls._name)
++            return ':obj:`%s.%s`' % (module, cls._name)
+     elif isinstance(cls, ForwardRef):
+         return ':class:`%s`' % cls.__forward_arg__
+     else:
+         # not a class (ex. TypeVar)
+-        return ':obj:`%s.%s`' % (cls.__module__, cls.__name__)
++        return ':obj:`%s.%s`' % (module, cls.__name__)
+ 
+ 
+ def _restify_py36(cls: Optional["Type"]) -> str:
+-    module = getattr(cls, '__module__', None)
++    module = _get_real_module(cls)
+     if module == 'typing':
+         if getattr(cls, '_name', None):
+             qualname = cls._name
+@@ -260,25 +307,25 @@ def _restify_py36(cls: Optional["Type"]) -> str:
+         else:
+             return ':class:`%s`' % qualname
+     elif hasattr(cls, '__qualname__'):
+-        if cls.__module__ == 'typing':
++        if module == 'typing':
+             return ':class:`%s`' % cls.__qualname__
+         else:
+-            return ':class:`%s.%s`' % (cls.__module__, cls.__qualname__)
++            return ':class:`%s.%s`' % (module, cls.__qualname__)
+     elif hasattr(cls, '_name'):
+         # SpecialForm
+-        if cls.__module__ == 'typing':
++        if module == 'typing':
+             return ':obj:`%s`' % cls._name
+         else:
+-            return ':obj:`%s.%s`' % (cls.__module__, cls._name)
++            return ':obj:`%s.%s`' % (module, cls._name)
+     elif hasattr(cls, '__name__'):
+         # not a class (ex. TypeVar)
+-        return ':obj:`%s.%s`' % (cls.__module__, cls.__name__)
++        return ':obj:`%s.%s`' % (module, cls.__name__)
+     else:
+         # others (ex. Any)
+-        if cls.__module__ == 'typing':
++        if module == 'typing':
+             return ':obj:`%s`' % qualname
+         else:
+-            return ':obj:`%s.%s`' % (cls.__module__, qualname)
++            return ':obj:`%s.%s`' % (module, qualname)
+ 
+ 
+ def stringify(annotation: Any) -> str:
+@@ -301,7 +348,7 @@ def stringify(annotation: Any) -> str:
+     elif annotation is NoneType:
+         return 'None'
+     elif (getattr(annotation, '__module__', None) == 'builtins' and
+-          hasattr(annotation, '__qualname__')):
++          hasattr(annotation, '__qualname__') and _is_real_builtin(annotation)):
+         return annotation.__qualname__
+     elif annotation is Ellipsis:
+         return '...'
+@@ -314,7 +361,7 @@ def stringify(annotation: Any) -> str:
+ 
+ def _stringify_py37(annotation: Any) -> str:
+     """stringify() for py37+."""
+-    module = getattr(annotation, '__module__', None)
++    module = _get_real_module(annotation)
+     if module == 'typing':
+         if getattr(annotation, '_name', None):
+             qualname = annotation._name
+@@ -366,7 +413,7 @@ def _stringify_py37(annotation: Any) -> str:
+ 
+ def _stringify_py36(annotation: Any) -> str:
+     """stringify() for py35 and py36."""
+-    module = getattr(annotation, '__module__', None)
++    module = _get_real_module(annotation)
+     if module == 'typing':
+         if getattr(annotation, '_name', None):
+             qualname = annotation._name
+2026-02-25 01:14:20,578 - INFO - Grading answer for sphinx-doc__sphinx-8627...
+2026-02-25 01:14:20,588 - INFO - report: {'sphinx-doc__sphinx-8627': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/test_util_typing.py::test_restify', 'tests/test_util_typing.py::test_stringify'], 'failure': []}, 'PASS_TO_PASS': {'success': ['tests/test_util_typing.py::test_restify_type_hints_containers', 'tests/test_util_typing.py::test_restify_type_hints_Callable', 'tests/test_util_typing.py::test_restify_type_hints_Union', 'tests/test_util_typing.py::test_restify_type_hints_typevars', 'tests/test_util_typing.py::test_restify_type_hints_custom_class', 'tests/test_util_typing.py::test_restify_type_hints_alias', 'tests/test_util_typing.py::test_restify_type_ForwardRef', 'tests/test_util_typing.py::test_restify_broken_type_hints', 'tests/test_util_typing.py::test_stringify_type_hints_containers', 'tests/test_util_typing.py::test_stringify_type_hints_string', 'tests/test_util_typing.py::test_stringify_type_hints_Callable', 'tests/test_util_typing.py::test_stringify_type_hints_Union', 'tests/test_util_typing.py::test_stringify_type_hints_typevars', 'tests/test_util_typing.py::test_stringify_type_hints_custom_class', 'tests/test_util_typing.py::test_stringify_type_hints_alias', 'tests/test_util_typing.py::test_stringify_broken_type_hints'], 'failure': ['tests/test_util_typing.py::test_stringify_Annotated']}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sphinx-doc__sphinx-8627: resolved: False
+2026-02-25 01:14:20,591 - INFO - Attempting to stop container sweb.eval.sphinx-doc__sphinx-8627.rikki-swe-lite-20260223_230946-harness12-rerun3...
+2026-02-25 01:14:35,803 - INFO - Attempting to remove container sweb.eval.sphinx-doc__sphinx-8627.rikki-swe-lite-20260223_230946-harness12-rerun3...
+2026-02-25 01:14:35,837 - INFO - Container sweb.eval.sphinx-doc__sphinx-8627.rikki-swe-lite-20260223_230946-harness12-rerun3 removed.

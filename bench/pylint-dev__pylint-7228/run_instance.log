@@ -1,0 +1,203 @@
+2026-02-23 21:52:40,915 - INFO - Creating container for pylint-dev__pylint-7228...
+2026-02-23 21:52:48,944 - INFO - Container for pylint-dev__pylint-7228 created: 8dfef262d36fe8332d78b41ebf7ab040c5f7ff80ea798826a21ff05bc9df8bf4
+2026-02-23 21:52:49,210 - INFO - Container for pylint-dev__pylint-7228 started: 8dfef262d36fe8332d78b41ebf7ab040c5f7ff80ea798826a21ff05bc9df8bf4
+2026-02-23 21:52:49,214 - INFO - Intermediate patch for pylint-dev__pylint-7228 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/pylint-dev__pylint-7228/patch.diff, now applying to container...
+2026-02-23 21:52:49,410 - INFO - >>>>> Applied Patch:
+Checking patch pylint/config/argument.py...
+Checking patch pylint/config/option.py...
+Applied patch pylint/config/argument.py cleanly.
+Applied patch pylint/config/option.py cleanly.
+
+2026-02-23 21:52:49,659 - INFO - Git diff before:
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 3c2951517..8662a43e3 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -99,11 +99,21 @@ def _py_version_transformer(value: str) -> tuple[int, ...]:
+     return version
+ 
+ 
++def _compile_regex(pattern: str) -> Pattern[str]:
++    """Compile a regex pattern, raising argparse.ArgumentTypeError on error."""
++    try:
++        return re.compile(pattern)
++    except re.error as e:
++        raise argparse.ArgumentTypeError(
++            f"Invalid regex pattern {pattern!r}: {e}"
++        ) from e
++
++
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+     for pattern in _csv_transformer(value):
+-        patterns.append(re.compile(pattern))
++        patterns.append(_compile_regex(pattern))
+     return patterns
+ 
+ 
+@@ -112,7 +122,7 @@ def _regexp_paths_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     patterns: list[Pattern[str]] = []
+     for pattern in _csv_transformer(value):
+         patterns.append(
+-            re.compile(
++            _compile_regex(
+                 str(pathlib.PureWindowsPath(pattern)).replace("\\", "\\\\")
+                 + "|"
+                 + pathlib.PureWindowsPath(pattern).as_posix()
+@@ -130,7 +140,7 @@ _TYPE_TRANSFORMERS: dict[str, Callable[[str], _ArgumentTypes]] = {
+     "non_empty_string": _non_empty_string_transformer,
+     "path": _path_transformer,
+     "py_version": _py_version_transformer,
+-    "regexp": re.compile,
++    "regexp": _compile_regex,
+     "regexp_csv": _regexp_csv_transfomer,
+     "regexp_paths_csv": _regexp_paths_csv_transfomer,
+     "string": pylint_utils._unquote,
+diff --git a/pylint/config/option.py b/pylint/config/option.py
+index 5043fe765..53c8f7767 100644
+--- a/pylint/config/option.py
++++ b/pylint/config/option.py
+@@ -23,7 +23,12 @@ def _csv_validator(_, name, value):
+ def _regexp_validator(_, name, value):
+     if hasattr(value, "pattern"):
+         return value
+-    return re.compile(value)
++    try:
++        return re.compile(value)
++    except re.error as e:
++        raise optparse.OptionValueError(
++            f"Invalid regex pattern {value!r}: {e}"
++        ) from e
+ 
+ 
+ # pylint: disable=unused-argument
+@@ -38,13 +43,12 @@ def _regexp_paths_csv_validator(
+         return value
+     patterns = []
+     for val in _csv_validator(_, name, value):
+-        patterns.append(
+-            re.compile(
+-                str(pathlib.PureWindowsPath(val)).replace("\\", "\\\\")
+-                + "|"
+-                + pathlib.PureWindowsPath(val).as_posix()
+-            )
++        pattern = (
++            str(pathlib.PureWindowsPath(val)).replace("\\", "\\\\")
++            + "|"
++            + pathlib.PureWindowsPath(val).as_posix()
+         )
++        patterns.append(_regexp_validator(_, name, pattern))
+     return patterns
+ 
+ 
+@@ -103,7 +107,7 @@ VALIDATORS = {
+     "string": utils._unquote,
+     "int": int,
+     "float": float,
+-    "regexp": lambda pattern: re.compile(pattern or ""),
++    "regexp": _regexp_validator,
+     "regexp_csv": _regexp_csv_validator,
+     "regexp_paths_csv": _regexp_paths_csv_validator,
+     "csv": _csv_validator,
+2026-02-23 21:52:49,664 - INFO - Eval script for pylint-dev__pylint-7228 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/pylint-dev__pylint-7228/eval.sh; copying to container...
+2026-02-23 21:52:57,367 - INFO - Test runtime: 7.61 seconds
+2026-02-23 21:52:57,372 - INFO - Test output for pylint-dev__pylint-7228 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/pylint-dev__pylint-7228/test_output.txt
+2026-02-23 21:52:57,482 - INFO - Git diff after:
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 3c2951517..8662a43e3 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -99,11 +99,21 @@ def _py_version_transformer(value: str) -> tuple[int, ...]:
+     return version
+ 
+ 
++def _compile_regex(pattern: str) -> Pattern[str]:
++    """Compile a regex pattern, raising argparse.ArgumentTypeError on error."""
++    try:
++        return re.compile(pattern)
++    except re.error as e:
++        raise argparse.ArgumentTypeError(
++            f"Invalid regex pattern {pattern!r}: {e}"
++        ) from e
++
++
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+     for pattern in _csv_transformer(value):
+-        patterns.append(re.compile(pattern))
++        patterns.append(_compile_regex(pattern))
+     return patterns
+ 
+ 
+@@ -112,7 +122,7 @@ def _regexp_paths_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     patterns: list[Pattern[str]] = []
+     for pattern in _csv_transformer(value):
+         patterns.append(
+-            re.compile(
++            _compile_regex(
+                 str(pathlib.PureWindowsPath(pattern)).replace("\\", "\\\\")
+                 + "|"
+                 + pathlib.PureWindowsPath(pattern).as_posix()
+@@ -130,7 +140,7 @@ _TYPE_TRANSFORMERS: dict[str, Callable[[str], _ArgumentTypes]] = {
+     "non_empty_string": _non_empty_string_transformer,
+     "path": _path_transformer,
+     "py_version": _py_version_transformer,
+-    "regexp": re.compile,
++    "regexp": _compile_regex,
+     "regexp_csv": _regexp_csv_transfomer,
+     "regexp_paths_csv": _regexp_paths_csv_transfomer,
+     "string": pylint_utils._unquote,
+diff --git a/pylint/config/option.py b/pylint/config/option.py
+index 5043fe765..53c8f7767 100644
+--- a/pylint/config/option.py
++++ b/pylint/config/option.py
+@@ -23,7 +23,12 @@ def _csv_validator(_, name, value):
+ def _regexp_validator(_, name, value):
+     if hasattr(value, "pattern"):
+         return value
+-    return re.compile(value)
++    try:
++        return re.compile(value)
++    except re.error as e:
++        raise optparse.OptionValueError(
++            f"Invalid regex pattern {value!r}: {e}"
++        ) from e
+ 
+ 
+ # pylint: disable=unused-argument
+@@ -38,13 +43,12 @@ def _regexp_paths_csv_validator(
+         return value
+     patterns = []
+     for val in _csv_validator(_, name, value):
+-        patterns.append(
+-            re.compile(
+-                str(pathlib.PureWindowsPath(val)).replace("\\", "\\\\")
+-                + "|"
+-                + pathlib.PureWindowsPath(val).as_posix()
+-            )
++        pattern = (
++            str(pathlib.PureWindowsPath(val)).replace("\\", "\\\\")
++            + "|"
++            + pathlib.PureWindowsPath(val).as_posix()
+         )
++        patterns.append(_regexp_validator(_, name, pattern))
+     return patterns
+ 
+ 
+@@ -103,7 +107,7 @@ VALIDATORS = {
+     "string": utils._unquote,
+     "int": int,
+     "float": float,
+-    "regexp": lambda pattern: re.compile(pattern or ""),
++    "regexp": _regexp_validator,
+     "regexp_csv": _regexp_csv_validator,
+     "regexp_paths_csv": _regexp_paths_csv_validator,
+     "csv": _csv_validator,
+2026-02-23 21:52:57,483 - INFO - Grading answer for pylint-dev__pylint-7228...
+2026-02-23 21:52:57,493 - INFO - report: {'pylint-dev__pylint-7228': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['tests/config/test_config.py::test_regex_error', 'tests/config/test_config.py::test_csv_regex_error']}, 'PASS_TO_PASS': {'success': ['tests/config/test_config.py::test_can_read_toml_env_variable', 'tests/config/test_config.py::test_unknown_message_id', 'tests/config/test_config.py::test_unknown_option_name', 'tests/config/test_config.py::test_unknown_short_option_name', 'tests/config/test_config.py::test_unknown_confidence', 'tests/config/test_config.py::test_empty_confidence', 'tests/config/test_config.py::test_unknown_yes_no', 'tests/config/test_config.py::test_unknown_py_version', 'tests/config/test_config.py::test_short_verbose', 'tests/config/test_config.py::test_argument_separator'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pylint-dev__pylint-7228: resolved: False
+2026-02-23 21:52:57,496 - INFO - Attempting to stop container sweb.eval.pylint-dev__pylint-7228.rikki-swe-lite-20260223_155834...
+2026-02-23 21:53:12,779 - INFO - Attempting to remove container sweb.eval.pylint-dev__pylint-7228.rikki-swe-lite-20260223_155834...
+2026-02-23 21:53:12,818 - INFO - Container sweb.eval.pylint-dev__pylint-7228.rikki-swe-lite-20260223_155834 removed.

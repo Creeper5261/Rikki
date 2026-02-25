@@ -1,0 +1,21 @@
+{
+    "instance_id": "pylint-dev__pylint-7228",
+    "selected": {
+        "instance_id": "pylint-dev__pylint-7228",
+        "has_report": true,
+        "resolved": false,
+        "patch_exists": true,
+        "patch_applied": true,
+        "patch_diff_exists": true,
+        "patch_diff_size": 3270,
+        "run_log_exists": true,
+        "eval_sh_exists": true,
+        "test_output_exists": true,
+        "p2p_success": 10,
+        "p2p_failure": 0,
+        "p2p_total": 10,
+        "f2p_success": 0,
+        "f2p_failure": 2,
+        "f2p_total": 2
+    }
+}

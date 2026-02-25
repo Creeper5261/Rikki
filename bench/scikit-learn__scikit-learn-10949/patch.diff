@@ -1,0 +1,45 @@
+diff --git a/sklearn/utils/validation.py b/sklearn/utils/validation.py
+index fe1f7236e..efe62a6b1 100644
+--- a/sklearn/utils/validation.py
++++ b/sklearn/utils/validation.py
+@@ -465,6 +465,15 @@ def check_array(array, accept_sparse=False, accept_large_sparse=True,
+     if not hasattr(dtype_orig, 'kind'):
+         # not a data type (e.g. a column named dtype in a pandas DataFrame)
+         dtype_orig = None
++    if warn_on_dtype and dtype_orig is None:
++        # For array-like objects without a dtype attribute, attempt to get
++        # the original dtype from the array (excluding sparse matrices).
++        if not sp.issparse(array):
++            try:
++                dtype_orig = np.asarray(array, dtype=None, order=None).dtype
++            except (TypeError, ValueError):
++                # unable to determine dtype
++                pass
+ 
+     if dtype_numeric:
+         if dtype_orig is not None and dtype_orig.kind == "O":
+@@ -573,10 +582,20 @@ def check_array(array, accept_sparse=False, accept_large_sparse=True,
+                              % (n_features, shape_repr, ensure_min_features,
+                                 context))
+ 
+-    if warn_on_dtype and dtype_orig is not None and array.dtype != dtype_orig:
+-        msg = ("Data with input dtype %s was converted to %s%s."
+-               % (dtype_orig, array.dtype, context))
+-        warnings.warn(msg, DataConversionWarning)
++    if warn_on_dtype:
++        if dtype_orig is None:
++            # For array-like objects without a dtype attribute, attempt to get
++            # the original dtype from the original array.
++            if not sp.issparse(array_orig):
++                try:
++                    dtype_orig = np.asarray(array_orig, dtype=None, order=None).dtype
++                except (TypeError, ValueError):
++                    # unable to determine dtype
++                    dtype_orig = None
++        if dtype_orig is not None and array.dtype != dtype_orig:
++            msg = ("Data with input dtype %s was converted to %s%s."
++                   % (dtype_orig, array.dtype, context))
++            warnings.warn(msg, DataConversionWarning)
+ 
+     if copy and np.may_share_memory(array, array_orig):
+         array = np.array(array, dtype=dtype, order=order)

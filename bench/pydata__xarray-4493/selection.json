@@ -1,0 +1,21 @@
+{
+    "instance_id": "pydata__xarray-4493",
+    "selected": {
+        "instance_id": "pydata__xarray-4493",
+        "has_report": true,
+        "resolved": false,
+        "patch_exists": true,
+        "patch_applied": true,
+        "patch_diff_exists": true,
+        "patch_diff_size": 453,
+        "run_log_exists": true,
+        "eval_sh_exists": true,
+        "test_output_exists": true,
+        "p2p_success": 1689,
+        "p2p_failure": 0,
+        "p2p_total": 1689,
+        "f2p_success": 0,
+        "f2p_failure": 1,
+        "f2p_total": 1
+    }
+}

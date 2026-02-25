@@ -1,0 +1,109 @@
+2026-02-25 19:24:41,100 - INFO - Environment image sweb.env.py.x86_64.c3d5426e71acc908b5e9f9:latest found for pylint-dev__pylint-5859
+Building instance image sweb.eval.x86_64.pylint-dev__pylint-5859:latest for pylint-dev__pylint-5859
+2026-02-25 19:25:13,957 - INFO - Creating container for pylint-dev__pylint-5859...
+2026-02-25 19:25:14,059 - INFO - Container for pylint-dev__pylint-5859 created: a29692188c714f883b2a141c2644e839949e4891613052967b1d98917b5b893f
+2026-02-25 19:25:14,245 - INFO - Container for pylint-dev__pylint-5859 started: a29692188c714f883b2a141c2644e839949e4891613052967b1d98917b5b893f
+2026-02-25 19:25:14,254 - INFO - Intermediate patch for pylint-dev__pylint-5859 written to logs/run_evaluation/rikki-swe-lite-20260225_183522-harness2/rikki-deepseek-reasoner/pylint-dev__pylint-5859/patch.diff, now applying to container...
+2026-02-25 19:25:14,441 - INFO - >>>>> Applied Patch:
+Checking patch pylint/checkers/misc.py...
+Checking patch tests/checkers/unittest_misc.py...
+Checking patch tests/conftest.py...
+Applied patch pylint/checkers/misc.py cleanly.
+Applied patch tests/checkers/unittest_misc.py cleanly.
+Applied patch tests/conftest.py cleanly.
+
+2026-02-25 19:25:14,650 - INFO - Git diff before:
+diff --git a/pylint/checkers/misc.py b/pylint/checkers/misc.py
+index 69149e61..a9e9912b 100644
+--- a/pylint/checkers/misc.py
++++ b/pylint/checkers/misc.py
+@@ -121,9 +121,9 @@ class EncodingChecker(BaseChecker):
+ 
+         notes = "|".join(re.escape(note) for note in self.config.notes)
+         if self.config.notes_rgx:
+-            regex_string = rf"#\s*({notes}|{self.config.notes_rgx})\b"
++            regex_string = rf"#\s*({notes}|{self.config.notes_rgx})(?!\w)"
+         else:
+-            regex_string = rf"#\s*({notes})\b"
++            regex_string = rf"#\s*({notes})(?!\w)"
+ 
+         self._fixme_pattern = re.compile(regex_string, re.I)
+ 
+diff --git a/tests/checkers/unittest_misc.py b/tests/checkers/unittest_misc.py
+index 23e19a9d..56abffce 100644
+--- a/tests/checkers/unittest_misc.py
++++ b/tests/checkers/unittest_misc.py
+@@ -18,6 +18,14 @@
+ 
+ """Tests for the misc checker."""
+ 
++# Patch inspect.formatargspec for wrapt compatibility on Python >= 3.11
++import sys
++if sys.version_info >= (3, 11):
++    try:
++        import patch_inspect
++    except ImportError:
++        pass
++
+ from pylint.checkers import misc
+ from pylint.testutils import CheckerTestCase, MessageTest, _tokenize_str, set_config
+ 
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 1f2347a1..6a661545 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -1,4 +1,12 @@
+ # pylint: disable=redefined-outer-name
++# Patch inspect.formatargspec for wrapt compatibility on Python >= 3.11
++import sys
++if sys.version_info >= (3, 11):
++    try:
++        import patch_inspect
++    except ImportError:
++        pass
++
+ import os
+ from pathlib import Path
+2026-02-25 19:25:14,654 - INFO - Eval script for pylint-dev__pylint-5859 written to logs/run_evaluation/rikki-swe-lite-20260225_183522-harness2/rikki-deepseek-reasoner/pylint-dev__pylint-5859/eval.sh; copying to container...
+2026-02-25 19:25:17,585 - INFO - Test runtime: 2.83 seconds
+2026-02-25 19:25:17,590 - INFO - Test output for pylint-dev__pylint-5859 written to logs/run_evaluation/rikki-swe-lite-20260225_183522-harness2/rikki-deepseek-reasoner/pylint-dev__pylint-5859/test_output.txt
+2026-02-25 19:25:17,686 - INFO - Git diff after:
+diff --git a/pylint/checkers/misc.py b/pylint/checkers/misc.py
+index 69149e61..a9e9912b 100644
+--- a/pylint/checkers/misc.py
++++ b/pylint/checkers/misc.py
+@@ -121,9 +121,9 @@ class EncodingChecker(BaseChecker):
+ 
+         notes = "|".join(re.escape(note) for note in self.config.notes)
+         if self.config.notes_rgx:
+-            regex_string = rf"#\s*({notes}|{self.config.notes_rgx})\b"
++            regex_string = rf"#\s*({notes}|{self.config.notes_rgx})(?!\w)"
+         else:
+-            regex_string = rf"#\s*({notes})\b"
++            regex_string = rf"#\s*({notes})(?!\w)"
+ 
+         self._fixme_pattern = re.compile(regex_string, re.I)
+ 
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 1f2347a1..6a661545 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -1,4 +1,12 @@
+ # pylint: disable=redefined-outer-name
++# Patch inspect.formatargspec for wrapt compatibility on Python >= 3.11
++import sys
++if sys.version_info >= (3, 11):
++    try:
++        import patch_inspect
++    except ImportError:
++        pass
++
+ import os
+ from pathlib import Path
+2026-02-25 19:25:17,686 - INFO - Git diff changed after running eval script
+2026-02-25 19:25:17,686 - INFO - Grading answer for pylint-dev__pylint-5859...
+2026-02-25 19:25:17,690 - INFO - report: {'pylint-dev__pylint-5859': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/checkers/unittest_misc.py::TestFixme::test_non_alphanumeric_codetag'], 'failure': []}, 'PASS_TO_PASS': {'success': ['tests/checkers/unittest_misc.py::TestFixme::test_fixme_with_message', 'tests/checkers/unittest_misc.py::TestFixme::test_todo_without_message', 'tests/checkers/unittest_misc.py::TestFixme::test_xxx_without_space', 'tests/checkers/unittest_misc.py::TestFixme::test_xxx_middle', 'tests/checkers/unittest_misc.py::TestFixme::test_without_space_fixme', 'tests/checkers/unittest_misc.py::TestFixme::test_absent_codetag', 'tests/checkers/unittest_misc.py::TestFixme::test_other_present_codetag', 'tests/checkers/unittest_misc.py::TestFixme::test_issue_2321_should_not_trigger', 'tests/checkers/unittest_misc.py::TestFixme::test_issue_2321_should_trigger', 'tests/checkers/unittest_misc.py::TestFixme::test_dont_trigger_on_todoist'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pylint-dev__pylint-5859: resolved: True
+2026-02-25 19:25:17,698 - INFO - Attempting to stop container sweb.eval.pylint-dev__pylint-5859.rikki-swe-lite-20260225_183522-harness2...
+2026-02-25 19:25:32,949 - INFO - Attempting to remove container sweb.eval.pylint-dev__pylint-5859.rikki-swe-lite-20260225_183522-harness2...
+2026-02-25 19:25:32,986 - INFO - Container sweb.eval.pylint-dev__pylint-5859.rikki-swe-lite-20260225_183522-harness2 removed.

@@ -1,0 +1,81 @@
+2026-02-23 21:08:38,591 - INFO - Creating container for django__django-10924...
+2026-02-23 21:08:49,863 - INFO - Container for django__django-10924 created: e777cb7595c785d18b4582a73428842391e887c6972ed055b2038e07f8a9abc1
+2026-02-23 21:08:50,115 - INFO - Container for django__django-10924 started: e777cb7595c785d18b4582a73428842391e887c6972ed055b2038e07f8a9abc1
+2026-02-23 21:08:50,119 - INFO - Intermediate patch for django__django-10924 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/django__django-10924/patch.diff, now applying to container...
+2026-02-23 21:08:50,336 - INFO - >>>>> Applied Patch:
+Checking patch django/forms/fields.py...
+Checking patch tests/forms_tests/field_tests/test_filepathfield.py...
+Applied patch django/forms/fields.py cleanly.
+Applied patch tests/forms_tests/field_tests/test_filepathfield.py cleanly.
+
+2026-02-23 21:08:51,692 - INFO - Git diff before:
+diff --git a/django/forms/fields.py b/django/forms/fields.py
+index a977256525..1016d461a2 100644
+--- a/django/forms/fields.py
++++ b/django/forms/fields.py
+@@ -1078,6 +1078,8 @@ class MultiValueField(Field):
+ class FilePathField(ChoiceField):
+     def __init__(self, path, *, match=None, recursive=False, allow_files=True,
+                  allow_folders=False, **kwargs):
++        if callable(path):
++            path = path()
+         self.path, self.match, self.recursive = path, match, recursive
+         self.allow_files, self.allow_folders = allow_files, allow_folders
+         super().__init__(choices=(), **kwargs)
+diff --git a/tests/forms_tests/field_tests/test_filepathfield.py b/tests/forms_tests/field_tests/test_filepathfield.py
+index 44f6aff521..203b83294b 100644
+--- a/tests/forms_tests/field_tests/test_filepathfield.py
++++ b/tests/forms_tests/field_tests/test_filepathfield.py
+@@ -97,3 +97,12 @@ class FilePathFieldTest(SimpleTestCase):
+             ('/filepathfield_test_dir/j', 'j'),
+             ('/filepathfield_test_dir/c/f', 'c/f'),
+         ])
++
++    def test_callable_path(self):
++        def get_path():
++            return self.path
++        f = FilePathField(path=get_path)
++        expected = [
++            ('/filepathfield_test_dir/README', 'README'),
++        ] + self.expected_choices[:4]
++        self.assertChoices(f, expected)
+2026-02-23 21:08:51,698 - INFO - Eval script for django__django-10924 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/django__django-10924/eval.sh; copying to container...
+2026-02-23 21:08:58,172 - INFO - Test runtime: 6.35 seconds
+2026-02-23 21:08:58,179 - INFO - Test output for django__django-10924 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/django__django-10924/test_output.txt
+2026-02-23 21:08:58,275 - INFO - Git diff after:
+diff --git a/django/forms/fields.py b/django/forms/fields.py
+index a977256525..1016d461a2 100644
+--- a/django/forms/fields.py
++++ b/django/forms/fields.py
+@@ -1078,6 +1078,8 @@ class MultiValueField(Field):
+ class FilePathField(ChoiceField):
+     def __init__(self, path, *, match=None, recursive=False, allow_files=True,
+                  allow_folders=False, **kwargs):
++        if callable(path):
++            path = path()
+         self.path, self.match, self.recursive = path, match, recursive
+         self.allow_files, self.allow_folders = allow_files, allow_folders
+         super().__init__(choices=(), **kwargs)
+diff --git a/tests/forms_tests/field_tests/test_filepathfield.py b/tests/forms_tests/field_tests/test_filepathfield.py
+index 44f6aff521..203b83294b 100644
+--- a/tests/forms_tests/field_tests/test_filepathfield.py
++++ b/tests/forms_tests/field_tests/test_filepathfield.py
+@@ -97,3 +97,12 @@ class FilePathFieldTest(SimpleTestCase):
+             ('/filepathfield_test_dir/j', 'j'),
+             ('/filepathfield_test_dir/c/f', 'c/f'),
+         ])
++
++    def test_callable_path(self):
++        def get_path():
++            return self.path
++        f = FilePathField(path=get_path)
++        expected = [
++            ('/filepathfield_test_dir/README', 'README'),
++        ] + self.expected_choices[:4]
++        self.assertChoices(f, expected)
+2026-02-23 21:08:58,275 - INFO - Grading answer for django__django-10924...
+2026-02-23 21:08:58,289 - INFO - report: {'django__django-10924': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_callable_path (model_fields.test_filepathfield.FilePathFieldTests)'], 'failure': []}, 'PASS_TO_PASS': {'success': ['test_path (model_fields.test_filepathfield.FilePathFieldTests)'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for django__django-10924: resolved: True
+2026-02-23 21:08:58,292 - INFO - Attempting to stop container sweb.eval.django__django-10924.rikki-swe-lite-20260223_155834...
+2026-02-23 21:09:13,674 - INFO - Attempting to remove container sweb.eval.django__django-10924.rikki-swe-lite-20260223_155834...
+2026-02-23 21:09:13,724 - INFO - Container sweb.eval.django__django-10924.rikki-swe-lite-20260223_155834 removed.

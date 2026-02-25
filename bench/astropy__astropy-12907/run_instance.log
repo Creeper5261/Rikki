@@ -1,0 +1,75 @@
+2026-02-23 21:01:53,583 - INFO - Creating container for astropy__astropy-12907...
+2026-02-23 21:02:03,039 - INFO - Container for astropy__astropy-12907 created: 1859ea185014418bfee9341f9e1495c071fb72d485b2f00f3fdfdf72919f8734
+2026-02-23 21:02:03,966 - INFO - Container for astropy__astropy-12907 started: 1859ea185014418bfee9341f9e1495c071fb72d485b2f00f3fdfdf72919f8734
+2026-02-23 21:02:03,982 - INFO - Intermediate patch for astropy__astropy-12907 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/astropy__astropy-12907/patch.diff, now applying to container...
+2026-02-23 21:02:04,279 - INFO - >>>>> Applied Patch:
+Checking patch astropy/modeling/separable.py...
+Applied patch astropy/modeling/separable.py cleanly.
+
+2026-02-23 21:02:04,712 - INFO - Git diff before:
+diff --git a/astropy/modeling/separable.py b/astropy/modeling/separable.py
+index a308e2729..962eda02c 100644
+--- a/astropy/modeling/separable.py
++++ b/astropy/modeling/separable.py
+@@ -199,6 +199,15 @@ def _coord_matrix(model, pos, noutp):
+         else:
+             mat[-model.n_outputs:, -model.n_inputs:] = m
+         return mat
++    if isinstance(model, CompoundModel):
++        # Compute separability matrix for the compound model
++        cmat = _separable(model)  # shape (model.n_outputs, model.n_inputs)
++        mat = np.zeros((noutp, model.n_inputs))
++        if pos == 'left':
++            mat[:model.n_outputs, :model.n_inputs] = cmat
++        else:
++            mat[-model.n_outputs:, -model.n_inputs:] = cmat
++        return mat
+     if not model.separable:
+         # this does not work for more than 2 coordinates
+         mat = np.zeros((noutp, model.n_inputs))
+@@ -242,7 +251,7 @@ def _cstack(left, right):
+         cright = _coord_matrix(right, 'right', noutp)
+     else:
+         cright = np.zeros((noutp, right.shape[1]))
+-        cright[-right.shape[0]:, -right.shape[1]:] = 1
++        cright[-right.shape[0]:, -right.shape[1]:] = right
+ 
+     return np.hstack([cleft, cright])
+2026-02-23 21:02:04,722 - INFO - Eval script for astropy__astropy-12907 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/astropy__astropy-12907/eval.sh; copying to container...
+2026-02-23 21:02:56,855 - INFO - Test runtime: 51.99 seconds
+2026-02-23 21:02:56,865 - INFO - Test output for astropy__astropy-12907 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/astropy__astropy-12907/test_output.txt
+2026-02-23 21:02:56,960 - INFO - Git diff after:
+diff --git a/astropy/modeling/separable.py b/astropy/modeling/separable.py
+index a308e2729..962eda02c 100644
+--- a/astropy/modeling/separable.py
++++ b/astropy/modeling/separable.py
+@@ -199,6 +199,15 @@ def _coord_matrix(model, pos, noutp):
+         else:
+             mat[-model.n_outputs:, -model.n_inputs:] = m
+         return mat
++    if isinstance(model, CompoundModel):
++        # Compute separability matrix for the compound model
++        cmat = _separable(model)  # shape (model.n_outputs, model.n_inputs)
++        mat = np.zeros((noutp, model.n_inputs))
++        if pos == 'left':
++            mat[:model.n_outputs, :model.n_inputs] = cmat
++        else:
++            mat[-model.n_outputs:, -model.n_inputs:] = cmat
++        return mat
+     if not model.separable:
+         # this does not work for more than 2 coordinates
+         mat = np.zeros((noutp, model.n_inputs))
+@@ -242,7 +251,7 @@ def _cstack(left, right):
+         cright = _coord_matrix(right, 'right', noutp)
+     else:
+         cright = np.zeros((noutp, right.shape[1]))
+-        cright[-right.shape[0]:, -right.shape[1]:] = 1
++        cright[-right.shape[0]:, -right.shape[1]:] = right
+ 
+     return np.hstack([cleft, cright])
+2026-02-23 21:02:56,961 - INFO - Grading answer for astropy__astropy-12907...
+2026-02-23 21:02:56,986 - INFO - report: {'astropy__astropy-12907': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'tests_status': {'FAIL_TO_PASS': {'success': ['astropy/modeling/tests/test_separable.py::test_separable[compound_model6-result6]', 'astropy/modeling/tests/test_separable.py::test_separable[compound_model9-result9]'], 'failure': []}, 'PASS_TO_PASS': {'success': ['astropy/modeling/tests/test_separable.py::test_coord_matrix', 'astropy/modeling/tests/test_separable.py::test_cdot', 'astropy/modeling/tests/test_separable.py::test_cstack', 'astropy/modeling/tests/test_separable.py::test_arith_oper', 'astropy/modeling/tests/test_separable.py::test_separable[compound_model0-result0]', 'astropy/modeling/tests/test_separable.py::test_separable[compound_model1-result1]', 'astropy/modeling/tests/test_separable.py::test_separable[compound_model2-result2]', 'astropy/modeling/tests/test_separable.py::test_separable[compound_model3-result3]', 'astropy/modeling/tests/test_separable.py::test_separable[compound_model4-result4]', 'astropy/modeling/tests/test_separable.py::test_separable[compound_model5-result5]', 'astropy/modeling/tests/test_separable.py::test_separable[compound_model7-result7]', 'astropy/modeling/tests/test_separable.py::test_separable[compound_model8-result8]', 'astropy/modeling/tests/test_separable.py::test_custom_model_separable'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for astropy__astropy-12907: resolved: True
+2026-02-23 21:02:56,992 - INFO - Attempting to stop container sweb.eval.astropy__astropy-12907.rikki-swe-lite-20260223_155834...
+2026-02-23 21:03:12,364 - INFO - Attempting to remove container sweb.eval.astropy__astropy-12907.rikki-swe-lite-20260223_155834...
+2026-02-23 21:03:12,418 - INFO - Container sweb.eval.astropy__astropy-12907.rikki-swe-lite-20260223_155834 removed.

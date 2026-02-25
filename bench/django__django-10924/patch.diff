@@ -1,0 +1,30 @@
+diff --git a/django/forms/fields.py b/django/forms/fields.py
+index a977256525..1016d461a2 100644
+--- a/django/forms/fields.py
++++ b/django/forms/fields.py
+@@ -1078,6 +1078,8 @@ class MultiValueField(Field):
+ class FilePathField(ChoiceField):
+     def __init__(self, path, *, match=None, recursive=False, allow_files=True,
+                  allow_folders=False, **kwargs):
++        if callable(path):
++            path = path()
+         self.path, self.match, self.recursive = path, match, recursive
+         self.allow_files, self.allow_folders = allow_files, allow_folders
+         super().__init__(choices=(), **kwargs)
+diff --git a/tests/forms_tests/field_tests/test_filepathfield.py b/tests/forms_tests/field_tests/test_filepathfield.py
+index 44f6aff521..203b83294b 100644
+--- a/tests/forms_tests/field_tests/test_filepathfield.py
++++ b/tests/forms_tests/field_tests/test_filepathfield.py
+@@ -97,3 +97,12 @@ class FilePathFieldTest(SimpleTestCase):
+             ('/filepathfield_test_dir/j', 'j'),
+             ('/filepathfield_test_dir/c/f', 'c/f'),
+         ])
++
++    def test_callable_path(self):
++        def get_path():
++            return self.path
++        f = FilePathField(path=get_path)
++        expected = [
++            ('/filepathfield_test_dir/README', 'README'),
++        ] + self.expected_choices[:4]
++        self.assertChoices(f, expected)

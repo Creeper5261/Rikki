@@ -1,0 +1,52 @@
+diff --git a/xarray/core/concat.py b/xarray/core/concat.py
+index ecae2566..c3c370f5 100644
+--- a/xarray/core/concat.py
++++ b/xarray/core/concat.py
+@@ -1,3 +1,4 @@
++import numpy as np
+ import pandas as pd
+ 
+ from . import dtypes, utils
+@@ -310,17 +311,33 @@ def _dataset_concat(
+     result_vars = {}
+     if variables_to_merge:
+         to_merge = {var: [] for var in variables_to_merge}
+-
++        template_vars = {}
++        
+         for ds in datasets:
+-            absent_merge_vars = variables_to_merge - set(ds.variables)
+-            if absent_merge_vars:
+-                raise ValueError(
+-                    "variables %r are present in some datasets but not others. "
+-                    % absent_merge_vars
+-                )
+-
+             for var in variables_to_merge:
+-                to_merge[var].append(ds.variables[var])
++                if var in ds.variables:
++                    if var not in template_vars:
++                        template_vars[var] = ds.variables[var]
++        
++        for ds in datasets:
++            for var in variables_to_merge:
++                if var in ds.variables:
++                    to_merge[var].append(ds.variables[var])
++                else:
++                    template_var = template_vars[var]
++                    if fill_value is dtypes.NA:
++                        var_fill_value = dtypes.get_fill_value(template_var.dtype)
++                    else:
++                        var_fill_value = fill_value
++                    dims = template_var.dims
++                    shape = tuple(ds.dims[d] for d in dims)
++                    placeholder = Variable(
++                        dims, 
++                        np.full(shape, var_fill_value, dtype=template_var.dtype),
++                        attrs=template_var.attrs,
++                        encoding=template_var.encoding,
++                    )
++                    to_merge[var].append(placeholder)
+ 
+         for var in variables_to_merge:
+             result_vars[var] = unique_variable(

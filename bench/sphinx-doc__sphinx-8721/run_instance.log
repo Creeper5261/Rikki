@@ -1,0 +1,49 @@
+2026-02-23 22:06:28,703 - INFO - Creating container for sphinx-doc__sphinx-8721...
+2026-02-23 22:06:32,524 - INFO - Container for sphinx-doc__sphinx-8721 created: 1ed54c6e328a84bf12098b834952d41c57d28f00a5b2721365765802cb80f0cc
+2026-02-23 22:06:32,810 - INFO - Container for sphinx-doc__sphinx-8721 started: 1ed54c6e328a84bf12098b834952d41c57d28f00a5b2721365765802cb80f0cc
+2026-02-23 22:06:32,814 - INFO - Intermediate patch for sphinx-doc__sphinx-8721 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/sphinx-doc__sphinx-8721/patch.diff, now applying to container...
+2026-02-23 22:06:33,075 - INFO - >>>>> Applied Patch:
+Checking patch sphinx/ext/viewcode.py...
+Applied patch sphinx/ext/viewcode.py cleanly.
+
+2026-02-23 22:06:33,794 - INFO - Git diff before:
+diff --git a/sphinx/ext/viewcode.py b/sphinx/ext/viewcode.py
+index a7d52a91c..f695df142 100644
+--- a/sphinx/ext/viewcode.py
++++ b/sphinx/ext/viewcode.py
+@@ -180,6 +180,10 @@ def should_generate_module_page(app: Sphinx, modname: str) -> bool:
+ 
+ def collect_pages(app: Sphinx) -> Generator[Tuple[str, Dict[str, Any], str], None, None]:
+     env = app.builder.env
++    if app.builder.name == "singlehtml":
++        return
++    if app.builder.name.startswith("epub") and not env.config.viewcode_enable_epub:
++        return
+     if not hasattr(env, '_viewcode_modules'):
+         return
+     highlighter = app.builder.highlighter  # type: ignore
+2026-02-23 22:06:33,798 - INFO - Eval script for sphinx-doc__sphinx-8721 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/sphinx-doc__sphinx-8721/eval.sh; copying to container...
+2026-02-23 22:06:42,035 - INFO - Test runtime: 8.12 seconds
+2026-02-23 22:06:42,039 - INFO - Test output for sphinx-doc__sphinx-8721 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/sphinx-doc__sphinx-8721/test_output.txt
+2026-02-23 22:06:42,127 - INFO - Git diff after:
+diff --git a/sphinx/ext/viewcode.py b/sphinx/ext/viewcode.py
+index a7d52a91c..f695df142 100644
+--- a/sphinx/ext/viewcode.py
++++ b/sphinx/ext/viewcode.py
+@@ -180,6 +180,10 @@ def should_generate_module_page(app: Sphinx, modname: str) -> bool:
+ 
+ def collect_pages(app: Sphinx) -> Generator[Tuple[str, Dict[str, Any], str], None, None]:
+     env = app.builder.env
++    if app.builder.name == "singlehtml":
++        return
++    if app.builder.name.startswith("epub") and not env.config.viewcode_enable_epub:
++        return
+     if not hasattr(env, '_viewcode_modules'):
+         return
+     highlighter = app.builder.highlighter  # type: ignore
+2026-02-23 22:06:42,128 - INFO - Grading answer for sphinx-doc__sphinx-8721...
+2026-02-23 22:06:42,143 - INFO - report: {'sphinx-doc__sphinx-8721': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/test_ext_viewcode.py::test_viewcode_epub_default'], 'failure': []}, 'PASS_TO_PASS': {'success': ['tests/test_ext_viewcode.py::test_viewcode_epub_enabled', 'tests/test_ext_viewcode.py::test_linkcode', 'tests/test_ext_viewcode.py::test_local_source_files'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sphinx-doc__sphinx-8721: resolved: True
+2026-02-23 22:06:42,147 - INFO - Attempting to stop container sweb.eval.sphinx-doc__sphinx-8721.rikki-swe-lite-20260223_155834...
+2026-02-23 22:06:57,476 - INFO - Attempting to remove container sweb.eval.sphinx-doc__sphinx-8721.rikki-swe-lite-20260223_155834...
+2026-02-23 22:06:57,525 - INFO - Container sweb.eval.sphinx-doc__sphinx-8721.rikki-swe-lite-20260223_155834 removed.

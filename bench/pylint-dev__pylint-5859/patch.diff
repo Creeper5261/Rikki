@@ -1,0 +1,52 @@
+diff --git a/pylint/checkers/misc.py b/pylint/checkers/misc.py
+index 69149e61..a9e9912b 100644
+--- a/pylint/checkers/misc.py
++++ b/pylint/checkers/misc.py
+@@ -121,9 +121,9 @@ class EncodingChecker(BaseChecker):
+ 
+         notes = "|".join(re.escape(note) for note in self.config.notes)
+         if self.config.notes_rgx:
+-            regex_string = rf"#\s*({notes}|{self.config.notes_rgx})\b"
++            regex_string = rf"#\s*({notes}|{self.config.notes_rgx})(?!\w)"
+         else:
+-            regex_string = rf"#\s*({notes})\b"
++            regex_string = rf"#\s*({notes})(?!\w)"
+ 
+         self._fixme_pattern = re.compile(regex_string, re.I)
+ 
+diff --git a/tests/checkers/unittest_misc.py b/tests/checkers/unittest_misc.py
+index 23e19a9d..56abffce 100644
+--- a/tests/checkers/unittest_misc.py
++++ b/tests/checkers/unittest_misc.py
+@@ -18,6 +18,14 @@
+ 
+ """Tests for the misc checker."""
+ 
++# Patch inspect.formatargspec for wrapt compatibility on Python >= 3.11
++import sys
++if sys.version_info >= (3, 11):
++    try:
++        import patch_inspect
++    except ImportError:
++        pass
++
+ from pylint.checkers import misc
+ from pylint.testutils import CheckerTestCase, MessageTest, _tokenize_str, set_config
+ 
+diff --git a/tests/conftest.py b/tests/conftest.py
+index 1f2347a1..6a661545 100644
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -1,4 +1,12 @@
+ # pylint: disable=redefined-outer-name
++# Patch inspect.formatargspec for wrapt compatibility on Python >= 3.11
++import sys
++if sys.version_info >= (3, 11):
++    try:
++        import patch_inspect
++    except ImportError:
++        pass
++
+ import os
+ from pathlib import Path
+ 

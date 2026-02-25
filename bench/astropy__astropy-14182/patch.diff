@@ -1,0 +1,77 @@
+diff --git a/astropy/io/ascii/rst.py b/astropy/io/ascii/rst.py
+index abdeba8ef..fddb32809 100644
+--- a/astropy/io/ascii/rst.py
++++ b/astropy/io/ascii/rst.py
+@@ -57,10 +57,15 @@ class RST(FixedWidth):
+     data_class = SimpleRSTData
+     header_class = SimpleRSTHeader
+ 
+-    def __init__(self):
+-        super().__init__(delimiter_pad=None, bookend=False)
++    def __init__(self, header_rows=None, delimiter_pad=None, bookend=False):
++        super().__init__(delimiter_pad=delimiter_pad, bookend=bookend,
++                         header_rows=header_rows)
+ 
+     def write(self, lines):
+         lines = super().write(lines)
+-        lines = [lines[1]] + lines + [lines[1]]
++        # Find the position line (after header rows)
++        pos_idx = len(self.data.header_rows)
++        pos_line = lines[pos_idx]
++        lines.insert(0, pos_line)
++        lines.append(pos_line)
+         return lines
+diff --git a/astropy/io/ascii/tests/test_rst.py b/astropy/io/ascii/tests/test_rst.py
+index 84d6fed40..c109834f7 100644
+--- a/astropy/io/ascii/tests/test_rst.py
++++ b/astropy/io/ascii/tests/test_rst.py
+@@ -3,6 +3,7 @@
+ from io import StringIO
+ 
+ from astropy.io import ascii
++from astropy.table import Table, Column
+ 
+ from .common import assert_almost_equal, assert_equal
+ 
+@@ -185,3 +186,41 @@ Col1      Col2 Col3 Col4
+ ==== ========= ==== ====
+ """,
+     )
++
++
++def test_rst_header_rows():
++    """Test reading and writing RST table with multiple header rows"""
++    tbl = [
++        "====== ======",
++        "   Col1   Col2",
++        "    m      km",
++        "====== ======",
++        "   1.2    3.4",
++        "   5.6    7.8",
++        "====== ======",
++    ]
++    header_rows = ["name", "unit"]
++    dat = ascii.read(tbl, format="rst", header_rows=header_rows)
++    out = StringIO()
++    ascii.write(dat, out, format="rst", header_rows=header_rows)
++    assert out.getvalue().splitlines() == tbl
++
++
++def test_rst_write_with_units():
++    """Test writing a table with column units using header_rows"""
++    t = Table()
++    t['a'] = Column([1, 2, 3], unit='m')
++    t['b'] = Column([4.5, 6.7, 8.9], unit='km')
++    out = StringIO()
++    ascii.write(t, out, format="rst", header_rows=['name', 'unit'])
++    # Read back the written table
++    out.seek(0)
++    t2 = ascii.read(out, format="rst", header_rows=['name', 'unit'])
++    # Compare column names
++    assert t2.colnames == t.colnames
++    # Compare units
++    for col in t.colnames:
++        assert t2[col].unit == t[col].unit
++    # Compare data
++    for col in t.colnames:
++        assert_almost_equal(t2[col], t[col])

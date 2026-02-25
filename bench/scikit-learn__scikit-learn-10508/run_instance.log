@@ -1,0 +1,116 @@
+2026-02-23 21:59:22,561 - INFO - Creating container for scikit-learn__scikit-learn-10508...
+2026-02-23 21:59:31,941 - INFO - Container for scikit-learn__scikit-learn-10508 created: f17b1a25940bce60c21fdbe16557f19b1e6f1370d62058be0f2a2faa6f29e2d4
+2026-02-23 21:59:32,169 - INFO - Container for scikit-learn__scikit-learn-10508 started: f17b1a25940bce60c21fdbe16557f19b1e6f1370d62058be0f2a2faa6f29e2d4
+2026-02-23 21:59:32,173 - INFO - Intermediate patch for scikit-learn__scikit-learn-10508 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/scikit-learn__scikit-learn-10508/patch.diff, now applying to container...
+2026-02-23 21:59:32,414 - INFO - >>>>> Applied Patch:
+Checking patch sklearn/preprocessing/label.py...
+Checking patch sklearn/preprocessing/tests/test_label.py...
+Applied patch sklearn/preprocessing/label.py cleanly.
+Applied patch sklearn/preprocessing/tests/test_label.py cleanly.
+
+2026-02-23 21:59:32,648 - INFO - Git diff before:
+diff --git a/sklearn/preprocessing/label.py b/sklearn/preprocessing/label.py
+index 61b8d4a21..cc73a8070 100644
+--- a/sklearn/preprocessing/label.py
++++ b/sklearn/preprocessing/label.py
+@@ -127,6 +127,9 @@ class LabelEncoder(BaseEstimator, TransformerMixin):
+         check_is_fitted(self, 'classes_')
+         y = column_or_1d(y, warn=True)
+ 
++        if y.size == 0:
++            return np.array([], dtype=np.int64)
++
+         classes = np.unique(y)
+         if len(np.intersect1d(classes, self.classes_)) < len(classes):
+             diff = np.setdiff1d(classes, self.classes_)
+@@ -148,6 +151,9 @@ class LabelEncoder(BaseEstimator, TransformerMixin):
+         """
+         check_is_fitted(self, 'classes_')
+ 
++        if len(y) == 0:
++            return np.array([], dtype=self.classes_.dtype)
++
+         diff = np.setdiff1d(y, np.arange(len(self.classes_)))
+         if len(diff):
+             raise ValueError(
+@@ -503,7 +509,10 @@ def label_binarize(y, classes, neg_label=0, pos_label=1, sparse_output=False):
+         # pick out the known labels from y
+         y_in_classes = np.in1d(y, classes)
+         y_seen = y[y_in_classes]
+-        indices = np.searchsorted(sorted_class, y_seen)
++        if y_seen.size == 0:
++            indices = np.array([], dtype=np.int64)
++        else:
++            indices = np.searchsorted(sorted_class, y_seen)
+         indptr = np.hstack((0, np.cumsum(y_in_classes)))
+ 
+         data = np.empty_like(indices)
+diff --git a/sklearn/preprocessing/tests/test_label.py b/sklearn/preprocessing/tests/test_label.py
+index 4f64fc6b4..77616cd9b 100644
+--- a/sklearn/preprocessing/tests/test_label.py
++++ b/sklearn/preprocessing/tests/test_label.py
+@@ -201,6 +201,17 @@ def test_label_encoder_errors():
+     assert_raises(ValueError, le.transform, [])
+     assert_raises(ValueError, le.inverse_transform, [])
+ 
++    # Fitted encoder should handle empty arrays
++    le.fit([1, 2, 3])
++    assert_array_equal(le.transform([]), np.array([], dtype=np.int64))
++    assert_array_equal(le.inverse_transform([]), np.array([], dtype=le.classes_.dtype))
++
++    # String data
++    le2 = LabelEncoder()
++    le2.fit(['a', 'b', 'c'])
++    assert_array_equal(le2.transform([]), np.array([], dtype=np.int64))
++    assert_array_equal(le2.inverse_transform([]), np.array([], dtype=le2.classes_.dtype))
++
+     # Fail on unseen labels
+     le = LabelEncoder()
+     le.fit([1, 2, 3, -1, 1])
+2026-02-23 21:59:32,654 - INFO - Eval script for scikit-learn__scikit-learn-10508 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/scikit-learn__scikit-learn-10508/eval.sh; copying to container...
+2026-02-23 21:59:38,379 - INFO - Test runtime: 5.62 seconds
+2026-02-23 21:59:38,386 - INFO - Test output for scikit-learn__scikit-learn-10508 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/scikit-learn__scikit-learn-10508/test_output.txt
+2026-02-23 21:59:38,469 - INFO - Git diff after:
+diff --git a/sklearn/preprocessing/label.py b/sklearn/preprocessing/label.py
+index 61b8d4a21..cc73a8070 100644
+--- a/sklearn/preprocessing/label.py
++++ b/sklearn/preprocessing/label.py
+@@ -127,6 +127,9 @@ class LabelEncoder(BaseEstimator, TransformerMixin):
+         check_is_fitted(self, 'classes_')
+         y = column_or_1d(y, warn=True)
+ 
++        if y.size == 0:
++            return np.array([], dtype=np.int64)
++
+         classes = np.unique(y)
+         if len(np.intersect1d(classes, self.classes_)) < len(classes):
+             diff = np.setdiff1d(classes, self.classes_)
+@@ -148,6 +151,9 @@ class LabelEncoder(BaseEstimator, TransformerMixin):
+         """
+         check_is_fitted(self, 'classes_')
+ 
++        if len(y) == 0:
++            return np.array([], dtype=self.classes_.dtype)
++
+         diff = np.setdiff1d(y, np.arange(len(self.classes_)))
+         if len(diff):
+             raise ValueError(
+@@ -503,7 +509,10 @@ def label_binarize(y, classes, neg_label=0, pos_label=1, sparse_output=False):
+         # pick out the known labels from y
+         y_in_classes = np.in1d(y, classes)
+         y_seen = y[y_in_classes]
+-        indices = np.searchsorted(sorted_class, y_seen)
++        if y_seen.size == 0:
++            indices = np.array([], dtype=np.int64)
++        else:
++            indices = np.searchsorted(sorted_class, y_seen)
+         indptr = np.hstack((0, np.cumsum(y_in_classes)))
+ 
+         data = np.empty_like(indices)
+2026-02-23 21:59:38,469 - INFO - Git diff changed after running eval script
+2026-02-23 21:59:38,469 - INFO - Grading answer for scikit-learn__scikit-learn-10508...
+2026-02-23 21:59:38,477 - INFO - report: {'scikit-learn__scikit-learn-10508': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['sklearn/preprocessing/tests/test_label.py::test_label_encoder_errors', 'sklearn/preprocessing/tests/test_label.py::test_label_encoder_empty_array']}, 'PASS_TO_PASS': {'success': ['sklearn/preprocessing/tests/test_label.py::test_label_binarizer', 'sklearn/preprocessing/tests/test_label.py::test_label_binarizer_unseen_labels', 'sklearn/preprocessing/tests/test_label.py::test_label_binarizer_set_label_encoding', 'sklearn/preprocessing/tests/test_label.py::test_label_binarizer_errors', 'sklearn/preprocessing/tests/test_label.py::test_label_encoder', 'sklearn/preprocessing/tests/test_label.py::test_label_encoder_fit_transform', 'sklearn/preprocessing/tests/test_label.py::test_sparse_output_multilabel_binarizer', 'sklearn/preprocessing/tests/test_label.py::test_multilabel_binarizer', 'sklearn/preprocessing/tests/test_label.py::test_multilabel_binarizer_empty_sample', 'sklearn/preprocessing/tests/test_label.py::test_multilabel_binarizer_unknown_class', 'sklearn/preprocessing/tests/test_label.py::test_multilabel_binarizer_given_classes', 'sklearn/preprocessing/tests/test_label.py::test_multilabel_binarizer_same_length_sequence', 'sklearn/preprocessing/tests/test_label.py::test_multilabel_binarizer_non_integer_labels', 'sklearn/preprocessing/tests/test_label.py::test_multilabel_binarizer_non_unique', 'sklearn/preprocessing/tests/test_label.py::test_multilabel_binarizer_inverse_validation', 'sklearn/preprocessing/tests/test_label.py::test_label_binarize_with_class_order', 'sklearn/preprocessing/tests/test_label.py::test_invalid_input_label_binarize', 'sklearn/preprocessing/tests/test_label.py::test_inverse_binarize_multiclass'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for scikit-learn__scikit-learn-10508: resolved: False
+2026-02-23 21:59:38,480 - INFO - Attempting to stop container sweb.eval.scikit-learn__scikit-learn-10508.rikki-swe-lite-20260223_155834...
+2026-02-23 21:59:53,717 - INFO - Attempting to remove container sweb.eval.scikit-learn__scikit-learn-10508.rikki-swe-lite-20260223_155834...
+2026-02-23 21:59:53,753 - INFO - Container sweb.eval.scikit-learn__scikit-learn-10508.rikki-swe-lite-20260223_155834 removed.

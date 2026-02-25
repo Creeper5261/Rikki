@@ -1,0 +1,57 @@
+diff --git a/sympy/printing/pycode.py b/sympy/printing/pycode.py
+index 6ec7bd891c..bd775a11cd 100644
+--- a/sympy/printing/pycode.py
++++ b/sympy/printing/pycode.py
+@@ -288,6 +288,11 @@ def _print_MatrixBase(self, expr):
+         func = self.known_functions.get(name, name)
+         return "%s(%s)" % (func, self._print(expr.tolist()))
+ 
++    def _print_Identity(self, expr):
++        """Identity printer"""
++        raise NotImplementedError(
++            "Identity matrix cannot be converted to Python code without numpy")
++
+     _print_SparseMatrix = \
+         _print_MutableSparseMatrix = \
+         _print_ImmutableSparseMatrix = \
+@@ -523,8 +528,21 @@ def _print_DotProduct(self, expr):
+             arg2 = arg2.T
+ 
+         return "%s(%s, %s)" % (self._module_format('numpy.dot'),
+-                               self._print(arg1),
+-                               self._print(arg2))
++                                self._print(arg1),
++                                self._print(arg2))
++
++    def _print_Identity(self, expr):
++        """Identity printer"""
++        try:
++            n = expr.rows
++        except TypeError:
++            raise NotImplementedError(
++                "Cannot convert symbolic identity matrix to numpy")
++        if n.is_Integer:
++            return '{}({})'.format(self._module_format('numpy.eye'), n)
++        else:
++            raise NotImplementedError(
++                "Cannot convert symbolic identity matrix to numpy")
+ 
+     def _print_Piecewise(self, expr):
+         "Piecewise function printer"
+@@ -754,3 +772,16 @@ def _print_Function(self, expr):
+         mod = expr.func.__module__ or ''
+         return '%s(%s)' % (self._module_format(mod + ('.' if mod else '') + expr.func.__name__),
+                            ', '.join(map(lambda arg: self._print(arg), expr.args)))
++
++    def _print_Identity(self, expr):
++        """Identity printer for SymPy"""
++        try:
++            n = expr.rows
++        except TypeError:
++            raise NotImplementedError(
++                "Cannot convert symbolic identity matrix to SymPy")
++        if n.is_Integer:
++            return '{}({})'.format(self._module_format('sympy.Identity'), n)
++        else:
++            raise NotImplementedError(
++                "Cannot convert symbolic identity matrix to SymPy")

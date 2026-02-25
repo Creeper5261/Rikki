@@ -1,0 +1,36 @@
+diff --git a/src/_pytest/assertion/util.py b/src/_pytest/assertion/util.py
+index 762e5761d..4b3b8051f 100644
+--- a/src/_pytest/assertion/util.py
++++ b/src/_pytest/assertion/util.py
+@@ -125,7 +125,7 @@ def assertrepr_compare(config, op, left, right):
+     explanation = None
+     try:
+         if op == "==":
+-            if istext(left) and istext(right):
++            if (istext(left) and istext(right)) or (isinstance(left, bytes) and isinstance(right, bytes)):
+                 explanation = _diff_text(left, right, verbose)
+             else:
+                 if issequence(left) and issequence(right):
+@@ -139,14 +139,15 @@ def assertrepr_compare(config, op, left, right):
+                     explanation = _compare_eq_cls(left, right, verbose, type_fn)
+                 elif verbose > 0:
+                     explanation = _compare_eq_verbose(left, right)
+-                if isiterable(left) and isiterable(right):
+-                    expl = _compare_eq_iterable(left, right, verbose)
+-                    if explanation is not None:
+-                        explanation.extend(expl)
+-                    else:
+-                        explanation = expl
++                if not (isinstance(left, bytes) and isinstance(right, bytes)):
++                    if isiterable(left) and isiterable(right):
++                        expl = _compare_eq_iterable(left, right, verbose)
++                        if explanation is not None:
++                            explanation.extend(expl)
++                        else:
++                            explanation = expl
+         elif op == "not in":
+-            if istext(left) and istext(right):
++            if (istext(left) and istext(right)) or (isinstance(left, bytes) and isinstance(right, bytes)):
+                 explanation = _notin_text(left, right, verbose)
+     except outcomes.Exit:
+         raise

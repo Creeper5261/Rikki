@@ -1,0 +1,21 @@
+{
+    "instance_id": "sphinx-doc__sphinx-8721",
+    "selected": {
+        "instance_id": "sphinx-doc__sphinx-8721",
+        "has_report": true,
+        "resolved": true,
+        "patch_exists": true,
+        "patch_applied": true,
+        "patch_diff_exists": true,
+        "patch_diff_size": 643,
+        "run_log_exists": true,
+        "eval_sh_exists": true,
+        "test_output_exists": true,
+        "p2p_success": 3,
+        "p2p_failure": 0,
+        "p2p_total": 3,
+        "f2p_success": 1,
+        "f2p_failure": 0,
+        "f2p_total": 1
+    }
+}

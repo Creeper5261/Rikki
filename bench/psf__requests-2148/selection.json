@@ -1,0 +1,21 @@
+{
+    "instance_id": "psf__requests-2148",
+    "selected": {
+        "instance_id": "psf__requests-2148",
+        "has_report": true,
+        "resolved": true,
+        "patch_exists": true,
+        "patch_applied": true,
+        "patch_diff_exists": true,
+        "patch_diff_size": 3687,
+        "run_log_exists": true,
+        "eval_sh_exists": true,
+        "test_output_exists": true,
+        "p2p_success": 118,
+        "p2p_failure": 0,
+        "p2p_total": 118,
+        "f2p_success": 10,
+        "f2p_failure": 0,
+        "f2p_total": 10
+    }
+}

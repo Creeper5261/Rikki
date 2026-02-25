@@ -1,0 +1,37 @@
+diff --git a/lib/matplotlib/figure.py b/lib/matplotlib/figure.py
+index 5bbb78698..61250147f 100644
+--- a/lib/matplotlib/figure.py
++++ b/lib/matplotlib/figure.py
+@@ -2416,19 +2416,23 @@ class Figure(FigureBase):
+                     "The Figure parameters 'layout' and 'constrained_layout' "
+                     "cannot be used together. Please use 'layout' only.")
+             self.set_layout_engine(layout=layout)
+-        elif tight_layout is not None:
+-            if constrained_layout is not None:
++        elif tight_layout is not None or constrained_layout is not None:
++            # At least one of tight_layout or constrained_layout is not None
++            if tight_layout is not None and constrained_layout is not None:
+                 _api.warn_external(
+                     "The Figure parameters 'tight_layout' and "
+                     "'constrained_layout' cannot be used together. Please use "
+                     "'layout' parameter")
+-            self.set_layout_engine(layout='tight')
+-            if isinstance(tight_layout, dict):
+-                self.get_layout_engine().set(**tight_layout)
+-        elif constrained_layout is not None:
+-            self.set_layout_engine(layout='constrained')
+-            if isinstance(constrained_layout, dict):
+-                self.get_layout_engine().set(**constrained_layout)
++            # Determine which layout engine to use based on truthiness
++            if tight_layout and tight_layout is not None:
++                self.set_layout_engine(layout='tight')
++                if isinstance(tight_layout, dict):
++                    self.get_layout_engine().set(**tight_layout)
++            elif constrained_layout and constrained_layout is not None:
++                self.set_layout_engine(layout='constrained')
++                if isinstance(constrained_layout, dict):
++                    self.get_layout_engine().set(**constrained_layout)
++            # If both are False, no layout engine is set
+         else:
+             # everything is None, so use default:
+             self.set_layout_engine(layout=layout)

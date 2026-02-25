@@ -1,0 +1,58 @@
+diff --git a/sklearn/preprocessing/label.py b/sklearn/preprocessing/label.py
+index 61b8d4a21..cc73a8070 100644
+--- a/sklearn/preprocessing/label.py
++++ b/sklearn/preprocessing/label.py
+@@ -127,6 +127,9 @@ class LabelEncoder(BaseEstimator, TransformerMixin):
+         check_is_fitted(self, 'classes_')
+         y = column_or_1d(y, warn=True)
+ 
++        if y.size == 0:
++            return np.array([], dtype=np.int64)
++
+         classes = np.unique(y)
+         if len(np.intersect1d(classes, self.classes_)) < len(classes):
+             diff = np.setdiff1d(classes, self.classes_)
+@@ -148,6 +151,9 @@ class LabelEncoder(BaseEstimator, TransformerMixin):
+         """
+         check_is_fitted(self, 'classes_')
+ 
++        if len(y) == 0:
++            return np.array([], dtype=self.classes_.dtype)
++
+         diff = np.setdiff1d(y, np.arange(len(self.classes_)))
+         if len(diff):
+             raise ValueError(
+@@ -503,7 +509,10 @@ def label_binarize(y, classes, neg_label=0, pos_label=1, sparse_output=False):
+         # pick out the known labels from y
+         y_in_classes = np.in1d(y, classes)
+         y_seen = y[y_in_classes]
+-        indices = np.searchsorted(sorted_class, y_seen)
++        if y_seen.size == 0:
++            indices = np.array([], dtype=np.int64)
++        else:
++            indices = np.searchsorted(sorted_class, y_seen)
+         indptr = np.hstack((0, np.cumsum(y_in_classes)))
+ 
+         data = np.empty_like(indices)
+diff --git a/sklearn/preprocessing/tests/test_label.py b/sklearn/preprocessing/tests/test_label.py
+index 4f64fc6b4..77616cd9b 100644
+--- a/sklearn/preprocessing/tests/test_label.py
++++ b/sklearn/preprocessing/tests/test_label.py
+@@ -201,6 +201,17 @@ def test_label_encoder_errors():
+     assert_raises(ValueError, le.transform, [])
+     assert_raises(ValueError, le.inverse_transform, [])
+ 
++    # Fitted encoder should handle empty arrays
++    le.fit([1, 2, 3])
++    assert_array_equal(le.transform([]), np.array([], dtype=np.int64))
++    assert_array_equal(le.inverse_transform([]), np.array([], dtype=le.classes_.dtype))
++
++    # String data
++    le2 = LabelEncoder()
++    le2.fit(['a', 'b', 'c'])
++    assert_array_equal(le2.transform([]), np.array([], dtype=np.int64))
++    assert_array_equal(le2.inverse_transform([]), np.array([], dtype=le2.classes_.dtype))
++
+     # Fail on unseen labels
+     le = LabelEncoder()
+     le.fit([1, 2, 3, -1, 1])

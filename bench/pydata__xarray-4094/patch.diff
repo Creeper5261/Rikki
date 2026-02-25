@@ -1,0 +1,42 @@
+diff --git a/xarray/core/dataarray.py b/xarray/core/dataarray.py
+index b0df8749..b086f87d 100644
+--- a/xarray/core/dataarray.py
++++ b/xarray/core/dataarray.py
+@@ -1961,7 +1961,10 @@ class DataArray(AbstractArray, DataWithCoords):
+         # pull variables out of datarray
+         data_dict = {}
+         for k in variables:
+-            data_dict[k] = self.sel({variable_dim: k}).squeeze(drop=True)
++            squeezed = self.sel({variable_dim: k}).squeeze(drop=True)
++            if dim in squeezed.coords:
++                squeezed = squeezed.reset_coords(dim, drop=True)
++            data_dict[k] = squeezed
+ 
+         # unstacked dataset
+         return Dataset(data_dict)
+diff --git a/xarray/core/dtypes.py b/xarray/core/dtypes.py
+index 4db2990a..295c15c3 100644
+--- a/xarray/core/dtypes.py
++++ b/xarray/core/dtypes.py
+@@ -38,7 +38,7 @@ NINF = AlwaysLessThan()
+ PROMOTE_TO_OBJECT = [
+     {np.number, np.character},  # numpy promotes to character
+     {np.bool_, np.character},  # numpy promotes to character
+-    {np.bytes_, np.unicode_},  # numpy promotes to unicode
++    {np.bytes_, np.str_},  # numpy promotes to unicode
+ ]
+ 
+ 
+diff --git a/xarray/core/formatting.py b/xarray/core/formatting.py
+index 28eaae5f..e256b7a3 100644
+--- a/xarray/core/formatting.py
++++ b/xarray/core/formatting.py
+@@ -140,7 +140,7 @@ def format_item(x, timedelta_format=None, quote_strings=True):
+         return format_timedelta(x, timedelta_format=timedelta_format)
+     elif isinstance(x, (str, bytes)):
+         return repr(x) if quote_strings else x
+-    elif isinstance(x, (float, np.float_)):
++    elif isinstance(x, (float, np.float64)):
+         return f"{x:.4}"
+     else:
+         return str(x)

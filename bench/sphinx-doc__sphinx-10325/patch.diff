@@ -1,0 +1,97 @@
+diff --git a/sphinx/ext/autodoc/__init__.py b/sphinx/ext/autodoc/__init__.py
+index 62631f7ff..250593665 100644
+--- a/sphinx/ext/autodoc/__init__.py
++++ b/sphinx/ext/autodoc/__init__.py
+@@ -110,11 +110,12 @@ def exclude_members_option(arg: Any) -> Union[object, Set[str]]:
+ 
+ 
+ def inherited_members_option(arg: Any) -> Union[object, Set[str]]:
+-    """Used to convert the :members: option to auto directives."""
++    """Used to convert the :inherited-members: option to auto directives."""
+     if arg in (None, True):
+         return 'object'
+     else:
+-        return arg
++        # arg is a string (class name or comma-separated list)
++        return {x.strip() for x in arg.split(',') if x.strip()}
+ 
+ 
+ def member_order_option(arg: Any) -> Optional[str]:
+@@ -681,17 +682,39 @@ class Documenter:
+         """
+         def is_filtered_inherited_member(name: str, obj: Any) -> bool:
+             if inspect.isclass(self.object):
+-                for cls in self.object.__mro__:
+-                    if cls.__name__ == self.options.inherited_members and cls != self.object:
+-                        # given member is a member of specified *super class*
+-                        return True
+-                    elif name in cls.__dict__:
+-                        return False
+-                    elif name in self.get_attr(cls, '__annotations__', {}):
+-                        return False
+-                    elif isinstance(obj, ObjectMember) and obj.class_ is cls:
+-                        return False
+-
++                ignored = self.options.inherited_members
++                if ignored == 'object':
++                    # special sentinel meaning no filtering
++                    return False
++                # normalize to a set of class names
++                if isinstance(ignored, str):
++                    ignored = {ignored}
++                # check if member is defined directly in self.object
++                if name in self.object.__dict__:
++                    return False
++                if name in self.get_attr(self.object, '__annotations__', {}):
++                    return False
++                if isinstance(obj, ObjectMember) and obj.class_ is self.object:
++                    return False
++                # find the class where the member is defined in superclasses
++                defining_class = None
++                for cls in self.object.__mro__[1:]:
++                    if name in cls.__dict__:
++                        defining_class = cls
++                        break
++                    if name in self.get_attr(cls, '__annotations__', {}):
++                        defining_class = cls
++                        break
++                    if isinstance(obj, ObjectMember) and obj.class_ is cls:
++                        defining_class = cls
++                        break
++                if defining_class is None:
++                    # member not found in any superclass (should not happen)
++                    return False
++                # check if the defining class is ignored
++                if ignored and defining_class.__name__ in ignored:
++                    return True
++                return False
+             return False
+ 
+         ret = []
+diff --git a/tests/roots/test-ext-autodoc/target/inheritance.py b/tests/roots/test-ext-autodoc/target/inheritance.py
+index ffac84bb6..afad7c202 100644
+--- a/tests/roots/test-ext-autodoc/target/inheritance.py
++++ b/tests/roots/test-ext-autodoc/target/inheritance.py
+@@ -15,3 +15,22 @@ class Derived(Base):
+     def inheritedmeth(self):
+         # no docstring here
+         pass
++
++
++class Base2(object):
++    def base2meth(self):
++        """Base2 method."""
++
++    @classmethod
++    def base2classmeth(cls):
++        """Base2 class method."""
++
++    @staticmethod
++    def base2staticmeth(cls):
++        """Base2 static method."""
++
++
++class MultiDerived(Base, Base2):
++    def base2meth(self):
++        # overridden, no docstring
++        pass

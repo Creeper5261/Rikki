@@ -1,0 +1,21 @@
+{
+    "instance_id": "scikit-learn__scikit-learn-13779",
+    "selected": {
+        "instance_id": "scikit-learn__scikit-learn-13779",
+        "has_report": true,
+        "resolved": true,
+        "patch_exists": true,
+        "patch_applied": true,
+        "patch_diff_exists": true,
+        "patch_diff_size": 611,
+        "run_log_exists": true,
+        "eval_sh_exists": true,
+        "test_output_exists": true,
+        "p2p_success": 18,
+        "p2p_failure": 0,
+        "p2p_total": 18,
+        "f2p_success": 2,
+        "f2p_failure": 0,
+        "f2p_total": 2
+    }
+}

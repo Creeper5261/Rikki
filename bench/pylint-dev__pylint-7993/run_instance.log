@@ -1,0 +1,156 @@
+2026-02-25 19:46:30,407 - INFO - Environment image sweb.env.py.x86_64.b70be1b28e254d81bab6a9:latest found for pylint-dev__pylint-7993
+Building instance image sweb.eval.x86_64.pylint-dev__pylint-7993:latest for pylint-dev__pylint-7993
+2026-02-25 19:47:30,825 - INFO - Creating container for pylint-dev__pylint-7993...
+2026-02-25 19:47:30,950 - INFO - Container for pylint-dev__pylint-7993 created: 71a1037f6b55d50f27476e27db5cf8d877fa3e1cd5d1ce9da86bf794eca2250b
+2026-02-25 19:47:31,143 - INFO - Container for pylint-dev__pylint-7993 started: 71a1037f6b55d50f27476e27db5cf8d877fa3e1cd5d1ce9da86bf794eca2250b
+2026-02-25 19:47:31,153 - INFO - Intermediate patch for pylint-dev__pylint-7993 written to logs/run_evaluation/rikki-swe-lite-20260225_145658-harness-pylint7993/rikki-deepseek-reasoner/pylint-dev__pylint-7993/patch.diff, now applying to container...
+2026-02-25 19:47:31,393 - INFO - >>>>> Applied Patch:
+Checking patch pylint/reporters/text.py...
+Checking patch tests/reporters/unittest_reporting.py...
+Applied patch pylint/reporters/text.py cleanly.
+Applied patch tests/reporters/unittest_reporting.py cleanly.
+
+2026-02-25 19:47:31,621 - INFO - Git diff before:
+diff --git a/pylint/reporters/text.py b/pylint/reporters/text.py
+index 29bd46798..4747df01f 100644
+--- a/pylint/reporters/text.py
++++ b/pylint/reporters/text.py
+@@ -12,6 +12,7 @@ from __future__ import annotations
+ 
+ import os
+ import re
++import string
+ import sys
+ import warnings
+ from dataclasses import asdict, fields
+@@ -175,14 +176,33 @@ class TextReporter(BaseReporter):
+         self._template = template
+ 
+         # Check to see if all parameters in the template are attributes of the Message
+-        arguments = re.findall(r"\{(.+?)(:.*)?\}", template)
+-        for argument in arguments:
+-            if argument[0] not in MESSAGE_FIELDS:
++        formatter = string.Formatter()
++        cleaned_parts = []
++        for literal, field_name, format_spec, conversion in formatter.parse(template):
++            # Escape braces in literal parts
++            if literal:
++                literal = literal.replace("{", "{{").replace("}", "}}")
++            cleaned_parts.append(literal)
++            if field_name is None:
++                continue
++            # Reconstruct placeholder
++            placeholder = "{"
++            if conversion is not None:
++                placeholder += field_name + "!" + conversion
++            else:
++                placeholder += field_name
++            if format_spec:
++                placeholder += ":" + format_spec
++            placeholder += "}"
++            if field_name in MESSAGE_FIELDS:
++                cleaned_parts.append(placeholder)
++            else:
+                 warnings.warn(
+-                    f"Don't recognize the argument '{argument[0]}' in the --msg-template. "
++                    f"Don't recognize the argument '{field_name}' in the --msg-template. "
+                     "Are you sure it is supported on the current version of pylint?"
+                 )
+-                template = re.sub(r"\{" + argument[0] + r"(:.*?)?\}", "", template)
++                # Omit placeholder from cleaned template
++        template = "".join(cleaned_parts)
+         self._fixed_template = template
+ 
+     def write_message(self, msg: Message) -> None:
+diff --git a/tests/reporters/unittest_reporting.py b/tests/reporters/unittest_reporting.py
+index 37f3e5fd9..4dc8a4687 100644
+--- a/tests/reporters/unittest_reporting.py
++++ b/tests/reporters/unittest_reporting.py
+@@ -113,6 +113,25 @@ def test_template_option_non_existing(linter) -> None:
+     assert out_lines[2] == "my_mod:2::()"
+ 
+ 
++def test_template_option_custom_braces(linter):
++    """Test that double braces are treated as literals in msg-template."""
++    output = StringIO()
++    linter.reporter.out = output
++    linter.config.msg_template = '{{ "Category": "{category}" }}'
++    linter.open()
++    # No warnings should be emitted
++    with warnings.catch_warnings(record=True) as records:
++        warnings.simplefilter("always")
++        linter.set_current_module("my_mod")
++        assert len(records) == 0
++    linter.add_message("C0301", line=1, args=(1, 2))
++    out_lines = output.getvalue().split("\n")
++    # The output should contain the literal braces
++    assert out_lines[1] == '{ "Category": "convention" }'
++
++
++
++
+ def test_deprecation_set_output(recwarn):
+     """TODO remove in 3.0."""
+     reporter = BaseReporter()
+2026-02-25 19:47:31,625 - INFO - Eval script for pylint-dev__pylint-7993 written to logs/run_evaluation/rikki-swe-lite-20260225_145658-harness-pylint7993/rikki-deepseek-reasoner/pylint-dev__pylint-7993/eval.sh; copying to container...
+2026-02-25 19:47:36,760 - INFO - Test runtime: 5.03 seconds
+2026-02-25 19:47:36,764 - INFO - Test output for pylint-dev__pylint-7993 written to logs/run_evaluation/rikki-swe-lite-20260225_145658-harness-pylint7993/rikki-deepseek-reasoner/pylint-dev__pylint-7993/test_output.txt
+2026-02-25 19:47:36,870 - INFO - Git diff after:
+diff --git a/pylint/reporters/text.py b/pylint/reporters/text.py
+index 29bd46798..4747df01f 100644
+--- a/pylint/reporters/text.py
++++ b/pylint/reporters/text.py
+@@ -12,6 +12,7 @@ from __future__ import annotations
+ 
+ import os
+ import re
++import string
+ import sys
+ import warnings
+ from dataclasses import asdict, fields
+@@ -175,14 +176,33 @@ class TextReporter(BaseReporter):
+         self._template = template
+ 
+         # Check to see if all parameters in the template are attributes of the Message
+-        arguments = re.findall(r"\{(.+?)(:.*)?\}", template)
+-        for argument in arguments:
+-            if argument[0] not in MESSAGE_FIELDS:
++        formatter = string.Formatter()
++        cleaned_parts = []
++        for literal, field_name, format_spec, conversion in formatter.parse(template):
++            # Escape braces in literal parts
++            if literal:
++                literal = literal.replace("{", "{{").replace("}", "}}")
++            cleaned_parts.append(literal)
++            if field_name is None:
++                continue
++            # Reconstruct placeholder
++            placeholder = "{"
++            if conversion is not None:
++                placeholder += field_name + "!" + conversion
++            else:
++                placeholder += field_name
++            if format_spec:
++                placeholder += ":" + format_spec
++            placeholder += "}"
++            if field_name in MESSAGE_FIELDS:
++                cleaned_parts.append(placeholder)
++            else:
+                 warnings.warn(
+-                    f"Don't recognize the argument '{argument[0]}' in the --msg-template. "
++                    f"Don't recognize the argument '{field_name}' in the --msg-template. "
+                     "Are you sure it is supported on the current version of pylint?"
+                 )
+-                template = re.sub(r"\{" + argument[0] + r"(:.*?)?\}", "", template)
++                # Omit placeholder from cleaned template
++        template = "".join(cleaned_parts)
+         self._fixed_template = template
+ 
+     def write_message(self, msg: Message) -> None:
+2026-02-25 19:47:36,870 - INFO - Git diff changed after running eval script
+2026-02-25 19:47:36,871 - INFO - Grading answer for pylint-dev__pylint-7993...
+2026-02-25 19:47:36,879 - INFO - report: {'pylint-dev__pylint-7993': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'tests_status': {'FAIL_TO_PASS': {'success': ['tests/reporters/unittest_reporting.py::test_template_option_with_header'], 'failure': []}, 'PASS_TO_PASS': {'success': ['tests/reporters/unittest_reporting.py::test_template_option', 'tests/reporters/unittest_reporting.py::test_template_option_default', 'tests/reporters/unittest_reporting.py::test_template_option_end_line', 'tests/reporters/unittest_reporting.py::test_template_option_non_existing', 'tests/reporters/unittest_reporting.py::test_deprecation_set_output', 'tests/reporters/unittest_reporting.py::test_parseable_output_deprecated', 'tests/reporters/unittest_reporting.py::test_parseable_output_regression', 'tests/reporters/unittest_reporting.py::test_multi_format_output', 'tests/reporters/unittest_reporting.py::test_multi_reporter_independant_messages', 'tests/reporters/unittest_reporting.py::test_display_results_is_renamed'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for pylint-dev__pylint-7993: resolved: True
+2026-02-25 19:47:36,883 - INFO - Attempting to stop container sweb.eval.pylint-dev__pylint-7993.rikki-swe-lite-20260225_145658-harness-pylint7993...
+2026-02-25 19:47:52,173 - INFO - Attempting to remove container sweb.eval.pylint-dev__pylint-7993.rikki-swe-lite-20260225_145658-harness-pylint7993...
+2026-02-25 19:47:52,219 - INFO - Container sweb.eval.pylint-dev__pylint-7993.rikki-swe-lite-20260225_145658-harness-pylint7993 removed.

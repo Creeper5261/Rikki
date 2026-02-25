@@ -1,0 +1,32 @@
+diff --git a/astropy/wcs/wcs.py b/astropy/wcs/wcs.py
+index d3a06f2b3..18b7cd780 100644
+--- a/astropy/wcs/wcs.py
++++ b/astropy/wcs/wcs.py
+@@ -1222,7 +1222,12 @@ reduce these to 2 dimensions using the naxis kwarg.
+ 
+             if ra_dec_order and sky == 'input':
+                 xy = self._denormalize_sky(xy)
+-            output = func(xy, origin)
++
++            if xy.size == 0:
++                output = np.empty((0, self.naxis), dtype=np.float64)
++            else:
++                output = func(xy, origin)
++
+             if ra_dec_order and sky == 'output':
+                 output = self._normalize_sky(output)
+                 return (output[:, 0].reshape(axes[0].shape),
+@@ -1237,7 +1242,12 @@ reduce these to 2 dimensions using the naxis kwarg.
+                     "of shape (N, {0})".format(self.naxis))
+             if ra_dec_order and sky == 'input':
+                 xy = self._denormalize_sky(xy)
+-            result = func(xy, origin)
++
++            if xy.size == 0:
++                result = np.empty((0, self.naxis), dtype=np.float64)
++            else:
++                result = func(xy, origin)
++
+             if ra_dec_order and sky == 'output':
+                 result = self._normalize_sky(result)
+             return result

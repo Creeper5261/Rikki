@@ -1,0 +1,81 @@
+diff --git a/pylint/reporters/text.py b/pylint/reporters/text.py
+index 29bd4679..4747df01 100644
+--- a/pylint/reporters/text.py
++++ b/pylint/reporters/text.py
+@@ -12,6 +12,7 @@ from __future__ import annotations
+ 
+ import os
+ import re
++import string
+ import sys
+ import warnings
+ from dataclasses import asdict, fields
+@@ -175,14 +176,33 @@ class TextReporter(BaseReporter):
+         self._template = template
+ 
+         # Check to see if all parameters in the template are attributes of the Message
+-        arguments = re.findall(r"\{(.+?)(:.*)?\}", template)
+-        for argument in arguments:
+-            if argument[0] not in MESSAGE_FIELDS:
++        formatter = string.Formatter()
++        cleaned_parts = []
++        for literal, field_name, format_spec, conversion in formatter.parse(template):
++            # Escape braces in literal parts
++            if literal:
++                literal = literal.replace("{", "{{").replace("}", "}}")
++            cleaned_parts.append(literal)
++            if field_name is None:
++                continue
++            # Reconstruct placeholder
++            placeholder = "{"
++            if conversion is not None:
++                placeholder += field_name + "!" + conversion
++            else:
++                placeholder += field_name
++            if format_spec:
++                placeholder += ":" + format_spec
++            placeholder += "}"
++            if field_name in MESSAGE_FIELDS:
++                cleaned_parts.append(placeholder)
++            else:
+                 warnings.warn(
+-                    f"Don't recognize the argument '{argument[0]}' in the --msg-template. "
++                    f"Don't recognize the argument '{field_name}' in the --msg-template. "
+                     "Are you sure it is supported on the current version of pylint?"
+                 )
+-                template = re.sub(r"\{" + argument[0] + r"(:.*?)?\}", "", template)
++                # Omit placeholder from cleaned template
++        template = "".join(cleaned_parts)
+         self._fixed_template = template
+ 
+     def write_message(self, msg: Message) -> None:
+diff --git a/tests/reporters/unittest_reporting.py b/tests/reporters/unittest_reporting.py
+index 37f3e5fd..4dc8a468 100644
+--- a/tests/reporters/unittest_reporting.py
++++ b/tests/reporters/unittest_reporting.py
+@@ -113,6 +113,25 @@ def test_template_option_non_existing(linter) -> None:
+     assert out_lines[2] == "my_mod:2::()"
+ 
+ 
++def test_template_option_custom_braces(linter):
++    """Test that double braces are treated as literals in msg-template."""
++    output = StringIO()
++    linter.reporter.out = output
++    linter.config.msg_template = '{{ "Category": "{category}" }}'
++    linter.open()
++    # No warnings should be emitted
++    with warnings.catch_warnings(record=True) as records:
++        warnings.simplefilter("always")
++        linter.set_current_module("my_mod")
++        assert len(records) == 0
++    linter.add_message("C0301", line=1, args=(1, 2))
++    out_lines = output.getvalue().split("\n")
++    # The output should contain the literal braces
++    assert out_lines[1] == '{ "Category": "convention" }'
++
++
++
++
+ def test_deprecation_set_output(recwarn):
+     """TODO remove in 3.0."""
+     reporter = BaseReporter()

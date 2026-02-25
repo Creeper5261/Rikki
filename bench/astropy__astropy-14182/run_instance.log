@@ -1,0 +1,125 @@
+2026-02-25 23:04:33,646 - INFO - Environment image sweb.env.py.x86_64.428468730904ff6b4232aa:latest found for astropy__astropy-14182
+Building instance image sweb.eval.x86_64.astropy__astropy-14182:latest for astropy__astropy-14182
+2026-02-25 23:04:33,695 - INFO - Image sweb.eval.x86_64.astropy__astropy-14182:latest already exists, skipping build.
+2026-02-25 23:04:33,695 - INFO - Creating container for astropy__astropy-14182...
+2026-02-25 23:04:34,010 - INFO - Container for astropy__astropy-14182 created: d4b44a664cea37cc2191857f8e5a13178d52a09300bc445d1d1d2d582730634a
+2026-02-25 23:04:34,608 - INFO - Container for astropy__astropy-14182 started: d4b44a664cea37cc2191857f8e5a13178d52a09300bc445d1d1d2d582730634a
+2026-02-25 23:04:34,612 - INFO - Intermediate patch for astropy__astropy-14182 written to logs/run_evaluation/rikki-swe-lite-20260225_201155-harness5/rikki-deepseek-reasoner/astropy__astropy-14182/patch.diff, now applying to container...
+2026-02-25 23:04:35,046 - INFO - >>>>> Applied Patch:
+Checking patch astropy/io/ascii/rst.py...
+Checking patch astropy/io/ascii/tests/test_rst.py...
+Applied patch astropy/io/ascii/rst.py cleanly.
+Applied patch astropy/io/ascii/tests/test_rst.py cleanly.
+
+2026-02-25 23:04:36,609 - INFO - Git diff before:
+diff --git a/astropy/io/ascii/rst.py b/astropy/io/ascii/rst.py
+index abdeba8ef..fddb32809 100644
+--- a/astropy/io/ascii/rst.py
++++ b/astropy/io/ascii/rst.py
+@@ -57,10 +57,15 @@ class RST(FixedWidth):
+     data_class = SimpleRSTData
+     header_class = SimpleRSTHeader
+ 
+-    def __init__(self):
+-        super().__init__(delimiter_pad=None, bookend=False)
++    def __init__(self, header_rows=None, delimiter_pad=None, bookend=False):
++        super().__init__(delimiter_pad=delimiter_pad, bookend=bookend,
++                         header_rows=header_rows)
+ 
+     def write(self, lines):
+         lines = super().write(lines)
+-        lines = [lines[1]] + lines + [lines[1]]
++        # Find the position line (after header rows)
++        pos_idx = len(self.data.header_rows)
++        pos_line = lines[pos_idx]
++        lines.insert(0, pos_line)
++        lines.append(pos_line)
+         return lines
+diff --git a/astropy/io/ascii/tests/test_rst.py b/astropy/io/ascii/tests/test_rst.py
+index 84d6fed40..c109834f7 100644
+--- a/astropy/io/ascii/tests/test_rst.py
++++ b/astropy/io/ascii/tests/test_rst.py
+@@ -3,6 +3,7 @@
+ from io import StringIO
+ 
+ from astropy.io import ascii
++from astropy.table import Table, Column
+ 
+ from .common import assert_almost_equal, assert_equal
+ 
+@@ -185,3 +186,41 @@ Col1      Col2 Col3 Col4
+ ==== ========= ==== ====
+ """,
+     )
++
++
++def test_rst_header_rows():
++    """Test reading and writing RST table with multiple header rows"""
++    tbl = [
++        "====== ======",
++        "   Col1   Col2",
++        "    m      km",
++        "====== ======",
++        "   1.2    3.4",
++        "   5.6    7.8",
++        "====== ======",
++    ]
++    header_rows = ["name", "unit"]
++    dat = ascii.read(tbl, format="rst", header_rows=header_rows)
++    out = StringIO()
++    ascii.write(dat, out, format="rst", header_rows=header_rows)
++    assert out.getvalue().splitlines() == tbl
++
++
++def test_rst_write_with_units():
++    """Test writing a table with column units using header_rows"""
++    t = Table()
++    t['a'] = Column([1, 2, 3], unit='m')
++    t['b'] = Column([4.5, 6.7, 8.9], unit='km')
++    out = StringIO()
++    ascii.write(t, out, format="rst", header_rows=['name', 'unit'])
++    # Read back the written table
++    out.seek(0)
++    t2 = ascii.read(out, format="rst", header_rows=['name', 'unit'])
++    # Compare column names
++    assert t2.colnames == t.colnames
++    # Compare units
++    for col in t.colnames:
++        assert t2[col].unit == t[col].unit
++    # Compare data
++    for col in t.colnames:
++        assert_almost_equal(t2[col], t[col])
+2026-02-25 23:04:36,614 - INFO - Eval script for astropy__astropy-14182 written to logs/run_evaluation/rikki-swe-lite-20260225_201155-harness5/rikki-deepseek-reasoner/astropy__astropy-14182/eval.sh; copying to container...
+2026-02-25 23:05:25,001 - INFO - Test runtime: 48.18 seconds
+2026-02-25 23:05:25,006 - INFO - Test output for astropy__astropy-14182 written to logs/run_evaluation/rikki-swe-lite-20260225_201155-harness5/rikki-deepseek-reasoner/astropy__astropy-14182/test_output.txt
+2026-02-25 23:05:25,154 - INFO - Git diff after:
+diff --git a/astropy/io/ascii/rst.py b/astropy/io/ascii/rst.py
+index abdeba8ef..fddb32809 100644
+--- a/astropy/io/ascii/rst.py
++++ b/astropy/io/ascii/rst.py
+@@ -57,10 +57,15 @@ class RST(FixedWidth):
+     data_class = SimpleRSTData
+     header_class = SimpleRSTHeader
+ 
+-    def __init__(self):
+-        super().__init__(delimiter_pad=None, bookend=False)
++    def __init__(self, header_rows=None, delimiter_pad=None, bookend=False):
++        super().__init__(delimiter_pad=delimiter_pad, bookend=bookend,
++                         header_rows=header_rows)
+ 
+     def write(self, lines):
+         lines = super().write(lines)
+-        lines = [lines[1]] + lines + [lines[1]]
++        # Find the position line (after header rows)
++        pos_idx = len(self.data.header_rows)
++        pos_line = lines[pos_idx]
++        lines.insert(0, pos_line)
++        lines.append(pos_line)
+         return lines
+2026-02-25 23:05:25,154 - INFO - Git diff changed after running eval script
+2026-02-25 23:05:25,155 - INFO - Grading answer for astropy__astropy-14182...
+2026-02-25 23:05:25,161 - INFO - report: {'astropy__astropy-14182': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': False, 'tests_status': {'FAIL_TO_PASS': {'success': [], 'failure': ['astropy/io/ascii/tests/test_rst.py::test_rst_with_header_rows']}, 'PASS_TO_PASS': {'success': ['astropy/io/ascii/tests/test_rst.py::test_read_normal', 'astropy/io/ascii/tests/test_rst.py::test_read_normal_names', 'astropy/io/ascii/tests/test_rst.py::test_read_normal_names_include', 'astropy/io/ascii/tests/test_rst.py::test_read_normal_exclude', 'astropy/io/ascii/tests/test_rst.py::test_read_unbounded_right_column', 'astropy/io/ascii/tests/test_rst.py::test_read_unbounded_right_column_header', 'astropy/io/ascii/tests/test_rst.py::test_read_right_indented_table', 'astropy/io/ascii/tests/test_rst.py::test_trailing_spaces_in_row_definition', 'astropy/io/ascii/tests/test_rst.py::test_write_normal'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for astropy__astropy-14182: resolved: False
+2026-02-25 23:05:25,164 - INFO - Attempting to stop container sweb.eval.astropy__astropy-14182.rikki-swe-lite-20260225_201155-harness5...
+2026-02-25 23:05:40,468 - INFO - Attempting to remove container sweb.eval.astropy__astropy-14182.rikki-swe-lite-20260225_201155-harness5...
+2026-02-25 23:05:40,537 - INFO - Container sweb.eval.astropy__astropy-14182.rikki-swe-lite-20260225_201155-harness5 removed.

@@ -1,0 +1,51 @@
+2026-02-23 22:08:39,540 - INFO - Creating container for sympy__sympy-23117...
+2026-02-23 22:08:44,342 - INFO - Container for sympy__sympy-23117 created: e8ceed37fbe1c591df01181c6cfb441b758bc8a5442cf031137f91eb3d4af29f
+2026-02-23 22:08:44,594 - INFO - Container for sympy__sympy-23117 started: e8ceed37fbe1c591df01181c6cfb441b758bc8a5442cf031137f91eb3d4af29f
+2026-02-23 22:08:44,598 - INFO - Intermediate patch for sympy__sympy-23117 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/sympy__sympy-23117/patch.diff, now applying to container...
+2026-02-23 22:08:44,795 - INFO - >>>>> Applied Patch:
+Checking patch sympy/tensor/array/ndim_array.py...
+Applied patch sympy/tensor/array/ndim_array.py cleanly.
+
+2026-02-23 22:08:45,411 - INFO - Git diff before:
+diff --git a/sympy/tensor/array/ndim_array.py b/sympy/tensor/array/ndim_array.py
+index 6490a655a4..e08d66e168 100644
+--- a/sympy/tensor/array/ndim_array.py
++++ b/sympy/tensor/array/ndim_array.py
+@@ -195,7 +195,10 @@ def f(pointer):
+                 return [pointer], ()
+ 
+             result = []
+-            elems, shapes = zip(*[f(i) for i in pointer])
++            results = [f(i) for i in pointer]
++            if not results:
++                return [], (0,)
++            elems, shapes = zip(*results)
+             if len(set(shapes)) != 1:
+                 raise ValueError("could not determine shape unambiguously")
+             for i in elems:
+2026-02-23 22:08:45,416 - INFO - Eval script for sympy__sympy-23117 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/sympy__sympy-23117/eval.sh; copying to container...
+2026-02-23 22:08:54,747 - INFO - Test runtime: 9.21 seconds
+2026-02-23 22:08:54,750 - INFO - Test output for sympy__sympy-23117 written to logs/run_evaluation/rikki-swe-lite-20260223_155834/rikki-deepseek-reasoner/sympy__sympy-23117/test_output.txt
+2026-02-23 22:08:54,857 - INFO - Git diff after:
+diff --git a/sympy/tensor/array/ndim_array.py b/sympy/tensor/array/ndim_array.py
+index 6490a655a4..e08d66e168 100644
+--- a/sympy/tensor/array/ndim_array.py
++++ b/sympy/tensor/array/ndim_array.py
+@@ -195,7 +195,10 @@ def f(pointer):
+                 return [pointer], ()
+ 
+             result = []
+-            elems, shapes = zip(*[f(i) for i in pointer])
++            results = [f(i) for i in pointer]
++            if not results:
++                return [], (0,)
++            elems, shapes = zip(*results)
+             if len(set(shapes)) != 1:
+                 raise ValueError("could not determine shape unambiguously")
+             for i in elems:
+2026-02-23 22:08:54,858 - INFO - Grading answer for sympy__sympy-23117...
+2026-02-23 22:08:54,880 - INFO - report: {'sympy__sympy-23117': {'patch_is_None': False, 'patch_exists': True, 'patch_successfully_applied': True, 'resolved': True, 'tests_status': {'FAIL_TO_PASS': {'success': ['test_issue_17851'], 'failure': []}, 'PASS_TO_PASS': {'success': ['test_array_negative_indices', 'test_issue_18361', 'test_issue_20222'], 'failure': []}, 'FAIL_TO_FAIL': {'success': [], 'failure': []}, 'PASS_TO_FAIL': {'success': [], 'failure': []}}}}
+Result for sympy__sympy-23117: resolved: True
+2026-02-23 22:08:54,885 - INFO - Attempting to stop container sweb.eval.sympy__sympy-23117.rikki-swe-lite-20260223_155834...
+2026-02-23 22:09:10,194 - INFO - Attempting to remove container sweb.eval.sympy__sympy-23117.rikki-swe-lite-20260223_155834...
+2026-02-23 22:09:10,242 - INFO - Container sweb.eval.sympy__sympy-23117.rikki-swe-lite-20260223_155834 removed.

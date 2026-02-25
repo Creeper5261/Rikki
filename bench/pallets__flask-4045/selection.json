@@ -1,0 +1,21 @@
+{
+    "instance_id": "pallets__flask-4045",
+    "selected": {
+        "instance_id": "pallets__flask-4045",
+        "has_report": true,
+        "resolved": false,
+        "patch_exists": true,
+        "patch_applied": true,
+        "patch_diff_exists": true,
+        "patch_diff_size": 490,
+        "run_log_exists": true,
+        "eval_sh_exists": true,
+        "test_output_exists": true,
+        "p2p_success": 50,
+        "p2p_failure": 0,
+        "p2p_total": 50,
+        "f2p_success": 0,
+        "f2p_failure": 2,
+        "f2p_total": 2
+    }
+}

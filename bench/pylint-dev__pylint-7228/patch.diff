@@ -1,0 +1,91 @@
+diff --git a/pylint/config/argument.py b/pylint/config/argument.py
+index 3c295151..8662a43e 100644
+--- a/pylint/config/argument.py
++++ b/pylint/config/argument.py
+@@ -99,11 +99,21 @@ def _py_version_transformer(value: str) -> tuple[int, ...]:
+     return version
+ 
+ 
++def _compile_regex(pattern: str) -> Pattern[str]:
++    """Compile a regex pattern, raising argparse.ArgumentTypeError on error."""
++    try:
++        return re.compile(pattern)
++    except re.error as e:
++        raise argparse.ArgumentTypeError(
++            f"Invalid regex pattern {pattern!r}: {e}"
++        ) from e
++
++
+ def _regexp_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     """Transforms a comma separated list of regular expressions."""
+     patterns: list[Pattern[str]] = []
+     for pattern in _csv_transformer(value):
+-        patterns.append(re.compile(pattern))
++        patterns.append(_compile_regex(pattern))
+     return patterns
+ 
+ 
+@@ -112,7 +122,7 @@ def _regexp_paths_csv_transfomer(value: str) -> Sequence[Pattern[str]]:
+     patterns: list[Pattern[str]] = []
+     for pattern in _csv_transformer(value):
+         patterns.append(
+-            re.compile(
++            _compile_regex(
+                 str(pathlib.PureWindowsPath(pattern)).replace("\\", "\\\\")
+                 + "|"
+                 + pathlib.PureWindowsPath(pattern).as_posix()
+@@ -130,7 +140,7 @@ _TYPE_TRANSFORMERS: dict[str, Callable[[str], _ArgumentTypes]] = {
+     "non_empty_string": _non_empty_string_transformer,
+     "path": _path_transformer,
+     "py_version": _py_version_transformer,
+-    "regexp": re.compile,
++    "regexp": _compile_regex,
+     "regexp_csv": _regexp_csv_transfomer,
+     "regexp_paths_csv": _regexp_paths_csv_transfomer,
+     "string": pylint_utils._unquote,
+diff --git a/pylint/config/option.py b/pylint/config/option.py
+index 5043fe76..53c8f776 100644
+--- a/pylint/config/option.py
++++ b/pylint/config/option.py
+@@ -23,7 +23,12 @@ def _csv_validator(_, name, value):
+ def _regexp_validator(_, name, value):
+     if hasattr(value, "pattern"):
+         return value
+-    return re.compile(value)
++    try:
++        return re.compile(value)
++    except re.error as e:
++        raise optparse.OptionValueError(
++            f"Invalid regex pattern {value!r}: {e}"
++        ) from e
+ 
+ 
+ # pylint: disable=unused-argument
+@@ -38,13 +43,12 @@ def _regexp_paths_csv_validator(
+         return value
+     patterns = []
+     for val in _csv_validator(_, name, value):
+-        patterns.append(
+-            re.compile(
+-                str(pathlib.PureWindowsPath(val)).replace("\\", "\\\\")
+-                + "|"
+-                + pathlib.PureWindowsPath(val).as_posix()
+-            )
++        pattern = (
++            str(pathlib.PureWindowsPath(val)).replace("\\", "\\\\")
++            + "|"
++            + pathlib.PureWindowsPath(val).as_posix()
+         )
++        patterns.append(_regexp_validator(_, name, pattern))
+     return patterns
+ 
+ 
+@@ -103,7 +107,7 @@ VALIDATORS = {
+     "string": utils._unquote,
+     "int": int,
+     "float": float,
+-    "regexp": lambda pattern: re.compile(pattern or ""),
++    "regexp": _regexp_validator,
+     "regexp_csv": _regexp_csv_validator,
+     "regexp_paths_csv": _regexp_paths_csv_validator,
+     "csv": _csv_validator,

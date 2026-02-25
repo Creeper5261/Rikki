@@ -1,0 +1,21 @@
+{
+    "instance_id": "pytest-dev__pytest-5495",
+    "selected": {
+        "instance_id": "pytest-dev__pytest-5495",
+        "has_report": true,
+        "resolved": false,
+        "patch_exists": true,
+        "patch_applied": true,
+        "patch_diff_exists": true,
+        "patch_diff_size": 1862,
+        "run_log_exists": true,
+        "eval_sh_exists": true,
+        "test_output_exists": true,
+        "p2p_success": 86,
+        "p2p_failure": 0,
+        "p2p_total": 86,
+        "f2p_success": 0,
+        "f2p_failure": 2,
+        "f2p_total": 2
+    }
+}
