@@ -27,13 +27,31 @@ Built-in presets for DeepSeek, OpenAI, Google Gemini, Moonshot / Kimi, Ollama (l
 
 ## Setup
 
+You can install Rikki either directly from the JetBrains Marketplace (recommended) or manually from a downloaded ZIP file.
+
+### Option 1: Install from [JETBRAINS Marketplace](https://plugins.jetbrains.com/plugin/30315-rikki-code-agent) (Recommended)
+
+1. Open IntelliJ IDEA.
+
+2. Go to Settings → Plugins → Marketplace.
+
+3. Search for **Rikki Code Agent**.
+
+4. Click Install and restart the IDE if prompted.
+
+### Option 2: Install from Disk (Manual Installation)
+
 1. Download `idea-plugin-0.1.0.zip` from the [Releases](https://github.com/Creeper5261/Rikki/releases) or [JETBRAINS Marketplace](https://plugins.jetbrains.com/plugin/30315-rikki-code-agent) .
 2. In IntelliJ IDEA, go to **Settings → Plugins → ⚙ → Install Plugin from Disk**, and select the downloaded file.
-3. Open **Settings → Tools → Rikki Code Agent**.
-4. Select a provider, enter the API key, and choose a model.
-5. For local use, select **Ollama** — no API key is required.
+
+## Configuration
+After installation:
+1. Open **Settings → Tools → Rikki Code Agent**.
+2. Select a provider, enter the API key, and choose a model.
+3. For local use, select **Ollama** — no API key is required.
 
 ## License
 
 [MIT](LICENSE)
+
 
