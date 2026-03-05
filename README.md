@@ -22,8 +22,37 @@ Built-in presets for DeepSeek, OpenAI, Google Gemini, Moonshot / Kimi, Ollama (l
 
 ## Requirements
 
-- IntelliJ IDEA 2024.1 or later
+- JetBrains IDE based on platform build `241+`
+
+<details>
+<summary>Supported IDE versions</summary>
+
+- Android Studio — Koala \| 2024.1.1+
+- AppCode — build 241.0+
+- Aqua — build 241.0+
+- CLion — 2024.1+
+- Code With Me Guest — 1.0+
+- DataGrip — 2024.1+
+- DataSpell — 2024.1+
+- GoLand — 2024.1+
+- IntelliJ IDEA — 2024.1+
+- IntelliJ IDEA Community — 2024.1+
+- JetBrains Client — 1.0+
+- JetBrains Gateway — 2024.1+
+- MPS — 2024.1+
+- PhpStorm — 2024.1+
+- PyCharm — 2024.1+
+- PyCharm Community — 2024.1+
+- Rider — 2024.1+
+- RubyMine — 2024.1+
+- RustRover — 2024.1+
+- WebStorm — 2024.1+
+- Writerside — build 241.0+
+
+</details>
+
 - An API key from a supported LLM provider, or a locally running Ollama instance
+
 
 ## Setup
 
@@ -53,6 +82,7 @@ After installation:
 ## License
 
 [MIT](LICENSE)
+
 
 
 
