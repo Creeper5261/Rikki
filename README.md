@@ -64,7 +64,7 @@ You can install Rikki either directly from the JetBrains Marketplace (recommende
 
 2. Go to Settings → Plugins → Marketplace.
 
-3. Search for **Rikki Coding Agent**.
+3. Search for **Rikki Code Agent**.
 
 4. Click Install and restart the IDE if prompted.
 
@@ -82,6 +82,7 @@ After installation:
 ## License
 
 [MIT](LICENSE)
+
 
 
 
