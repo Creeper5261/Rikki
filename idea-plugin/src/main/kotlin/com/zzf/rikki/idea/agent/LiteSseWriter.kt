@@ -79,10 +79,14 @@ class LiteSseWriter(outputStream: OutputStream) {
         )
 
     /** Pushes a todo list update so ChatPanel's TodoPanel refreshes in real time. */
-    fun emitTodoUpdated(todosJson: String) {
+    fun emitTodoUpdated(todosJson: String, sessionId: String? = null) {
         try {
             val todosNode = mapper.readTree(todosJson)
-            emit("todo_updated", mapOf("todos" to todosNode))
+            val payload = mutableMapOf<String, Any>("todos" to todosNode)
+            if (!sessionId.isNullOrBlank()) {
+                payload["sessionID"] = sessionId
+            }
+            emit("todo_updated", payload)
         } catch (_: Exception) {}
     }
 

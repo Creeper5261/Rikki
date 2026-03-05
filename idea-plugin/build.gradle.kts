@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.zzf"
-version = "0.1.0"
+version = "0.1.1"
 
 java {
     toolchain {
@@ -61,7 +61,7 @@ intellij {
     version.set("2024.1")
     type.set("IC")
     sandboxDir.set(layout.buildDirectory.dir("idea-sandbox").get().asFile.absolutePath)
-    plugins.set(listOf("java", "org.jetbrains.plugins.terminal"))
+    plugins.set(listOf("org.jetbrains.plugins.terminal"))
 }
 
 tasks.patchPluginXml {
@@ -85,7 +85,20 @@ tasks.buildSearchableOptions {
 }
 
 tasks.runPluginVerifier {
-    ideVersions.set(listOf("IC-2024.1", "IC-2024.2", "IC-2024.3"))
+    ideVersions.set(
+        listOf(
+            "IC-2024.1", // IntelliJ IDEA Community
+            "IU-2024.1", // IntelliJ IDEA Ultimate
+            "PY-2024.1", // PyCharm Professional
+            "PS-2024.1", // PhpStorm
+            "DB-2024.1", // DataGrip
+            "WS-2024.1", // WebStorm
+            "GO-2024.1", // GoLand
+            "CL-2024.1", // CLion
+            "RD-2024.1", // Rider
+            "RM-2024.1"  // RubyMine
+        )
+    )
 }
 
 tasks.runIde {

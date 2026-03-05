@@ -163,3 +163,19 @@ After each change, report:
 - git commit hash and push status.
 
 If a build cannot be validated locally, state it explicitly rather than assuming success.
+
+---
+
+## Cross-IDE Update (0.1.1)
+
+- Plugin packaging no longer declares `com.intellij.modules.java` dependency.
+- `ide_action` is capability-gated:
+  - Exposed only when `ide_capabilities` reports bridge availability and supported operations.
+  - `build` is intentionally unsupported in cross-IDE mode.
+  - Supported operations are dynamically derived (typically `run`, `test`, `status`, `cancel`, `capabilities`).
+- Execution defaults:
+  - `build`/`test` -> `bash`
+  - `run`/`debug`/`status` -> `ide_action` when available, else fallback to `bash`
+- `bash` tool supports shell fallback order `bash -> powershell -> cmd` and accepts optional `shell` argument (`auto|bash|powershell|cmd`).
+- IDE context is now generic-first and avoids Java-specific class indexing and language-level introspection in the main path.
+- Release notes should reference issue `#1` (remove Java hard dependency for non-Java JetBrains IDEs).

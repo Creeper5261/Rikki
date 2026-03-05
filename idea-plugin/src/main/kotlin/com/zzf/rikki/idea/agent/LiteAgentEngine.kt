@@ -9,7 +9,6 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.io.BufferedReader
-import java.io.File
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URI
@@ -39,11 +38,11 @@ class LiteAgentEngine(
         internal fun detectCapabilities(provider: String, model: String): ModelCapabilities {
             val m = model.trim().lowercase()
             return when {
-                // ── DeepSeek R1: exposes reasoning_content in streaming delta ─────
+                // DeepSeek R1: exposes reasoning_content in streaming delta
                 m == "deepseek-reasoner" ->
                     ModelCapabilities(hasReasoningContent = true)
 
-                // ── OpenAI o1 / o1-mini / o1-preview ─────────────────────────────
+                // OpenAI o1 / o1-mini / o1-preview
                 // Requires: developer role, temperature=1, max_completion_tokens,
                 // does NOT support function calling (tools).
                 provider == "OPENAI" && (m == "o1" || m == "o1-mini" || m == "o1-preview") ->
@@ -54,12 +53,12 @@ class LiteAgentEngine(
                         supportsTools       = false
                     )
 
-                // ── OpenAI o3 / o4 series ─────────────────────────────────────────
+                // OpenAI o3 / o4 series
                 // Full tool support; max_tokens is deprecated, use max_completion_tokens.
                 provider == "OPENAI" && (m.startsWith("o3") || m.startsWith("o4")) ->
                     ModelCapabilities(maxTokensKey = "max_completion_tokens")
 
-                // ── Everything else: standard OpenAI-compatible behaviour ─────────
+                // Everything else: standard OpenAI-compatible behaviour
                 else -> ModelCapabilities()
             }
         }
@@ -72,11 +71,12 @@ class LiteAgentEngine(
             text.startsWith("You:")       -> "user"      to text.removePrefix("You:").trim()
             text.startsWith("Agent:")     -> "assistant" to text.removePrefix("Agent:").trim()
             text.startsWith("Assistant:") -> "assistant" to text.removePrefix("Assistant:").trim()
+            text.startsWith("System:")    -> "system"    to text.removePrefix("System:").trim()
             else                          -> null
         }
     }
 
-    // ── Model capabilities ────────────────────────────────────────────────────
+    // Model capabilities
 
     /**
      * Provider-specific and model-specific capabilities derived from official
@@ -93,7 +93,7 @@ class LiteAgentEngine(
      *                           all others use "max_tokens".
      * @param supportsTools      Whether the model accepts a "tools" array.
      *                           o1/o1-mini originally did not; kept false for
-     *                           safety – users who know their model supports
+     *                           safety - users who know their model supports
      *                           tools can switch to o3/o4-mini instead.
      * @param hasReasoningContent Whether the model returns a "reasoning_content"
      *                           delta field that must be replayed in assistant
@@ -107,7 +107,7 @@ class LiteAgentEngine(
         val hasReasoningContent: Boolean = false
     )
 
-    // ── Agent loop ────────────────────────────────────────────────────────────
+    // Agent loop
 
     private val tools = LiteToolRegistry(project, mapper)
 
@@ -133,10 +133,12 @@ class LiteAgentEngine(
         sseWriter.emitStatus("busy", "Agent is thinking...")
 
         tools.ide.ideContextNode = ideContext
+        val ideCapabilitySnapshot = tools.ide.refreshCapabilities()
+        val toolDefinitions = tools.toolDefinitions(ideCapabilitySnapshot)
 
         // Build initial message list
         val messages = mutableListOf<Map<String, Any?>>()
-        val systemPrompt = buildSystemPrompt(workspaceRoot, ideContext, caps)
+        val systemPrompt = buildSystemPrompt(workspaceRoot, ideContext, caps, ideCapabilitySnapshot)
         messages += mapOf("role" to caps.systemRole, "content" to systemPrompt)
 
         // Replay history
@@ -155,7 +157,7 @@ class LiteAgentEngine(
 
         for (step in 0 until MAX_STEPS) {
             val msgId  = "msg_$msgIdx"
-            val result = callLlmStreaming(messages, caps, sseWriter, msgId)
+            val result = callLlmStreaming(messages, caps, toolDefinitions, sseWriter, msgId)
             textAnswer = result.text
 
             // Build assistant history entry
@@ -249,8 +251,10 @@ class LiteAgentEngine(
                 }
 
                 if (tc.name == "todo_write" && toolResult.error == null) {
-                    val todosFile = File(workspaceRoot, ".rikki/todos.json")
-                    if (todosFile.exists()) sseWriter.emitTodoUpdated(todosFile.readText())
+                    val todosJson = tools.readTodosJson(workspaceRoot, sid)
+                    if (!todosJson.isNullOrBlank()) {
+                        sseWriter.emitTodoUpdated(todosJson, sid)
+                    }
                 }
             }
             msgIdx++
@@ -260,7 +264,7 @@ class LiteAgentEngine(
         sseWriter.emitStatus("idle", "Ready")
     }
 
-    // ── LLM streaming ─────────────────────────────────────────────────────────
+    // LLM streaming
 
     data class ToolCallInfo(val id: String, val name: String, val argsRaw: String, val args: JsonNode)
     data class LlmResult(val text: String, val toolCalls: List<ToolCallInfo>, val reasoningContent: String = "")
@@ -268,6 +272,7 @@ class LiteAgentEngine(
     private suspend fun callLlmStreaming(
         messages: List<Map<String, Any?>>,
         caps: ModelCapabilities,
+        toolDefinitions: List<Map<String, Any>>,
         sseWriter: LiteSseWriter,
         msgId: String
     ): LlmResult = withContext(Dispatchers.IO) {
@@ -279,7 +284,7 @@ class LiteAgentEngine(
         val model   = s.modelName.ifBlank { "deepseek-chat" }
         val baseUrl = s.currentBaseUrl().trimEnd('/')
 
-        val body = buildRequestBody(model, messages, caps)
+        val body = buildRequestBody(model, messages, caps, toolDefinitions)
         val conn = openConnection("$baseUrl/chat/completions", apiKey)
             ?: return@withContext LlmResult("Error: cannot connect to LLM endpoint.", emptyList())
 
@@ -289,7 +294,7 @@ class LiteAgentEngine(
                 val errBody = try {
                     conn.errorStream?.bufferedReader(StandardCharsets.UTF_8)?.readText()?.trim()?.take(400) ?: ""
                 } catch (_: Exception) { "" }
-                val msg = if (errBody.isNotBlank()) "Error: HTTP ${conn.responseCode} — $errBody"
+                val msg = if (errBody.isNotBlank()) "Error: HTTP ${conn.responseCode} - $errBody"
                           else "Error: HTTP ${conn.responseCode}"
                 return@withContext LlmResult(msg, emptyList())
             }
@@ -313,23 +318,16 @@ class LiteAgentEngine(
                     val delta  = choice.path("delta")
 
                     // Text content
-                    val content = delta.path("content")
-                    if (!content.isNull && !content.isMissingNode) {
-                        val text = content.asText("")
-                        if (text.isNotEmpty()) {
-                            sseWriter.emitMessage(msgId, text)
-                            textBuf.append(text)
-                        }
+                    val textDelta = extractChunkTextDelta(choice, delta)
+                    if (textDelta.isNotEmpty()) {
+                        sseWriter.emitMessage(msgId, textDelta)
+                        textBuf.append(textDelta)
                     }
 
-                    // Reasoning content — stream to frontend and replay in history
-                    val reasoning = delta.path("reasoning_content")
-                    if (!reasoning.isNull && !reasoning.isMissingNode) {
-                        val rd = reasoning.asText("")
-                        if (rd.isNotEmpty()) {
-                            sseWriter.emitThought(msgId, rd)
-                            reasoningBuf.append(rd)
-                        }
+                    val reasoningDelta = extractChunkReasoningDelta(choice, delta)
+                    if (reasoningDelta.isNotEmpty()) {
+                        sseWriter.emitThought(msgId, reasoningDelta)
+                        reasoningBuf.append(reasoningDelta)
                     }
 
                     // Tool call deltas
@@ -392,7 +390,8 @@ class LiteAgentEngine(
     private fun buildRequestBody(
         model: String,
         messages: List<Map<String, Any?>>,
-        caps: ModelCapabilities
+        caps: ModelCapabilities,
+        toolDefinitions: List<Map<String, Any>>
     ): String {
         val body = mutableMapOf<String, Any?>(
             "model"            to model,
@@ -401,17 +400,74 @@ class LiteAgentEngine(
             "temperature"      to (caps.temperatureFixed ?: 0.1),
             "messages"         to messages
         )
-        if (caps.supportsTools) {
-            body["tools"] = LiteToolRegistry.toolDefinitions()
+        if (caps.supportsTools && toolDefinitions.isNotEmpty()) {
+            body["tools"] = toolDefinitions
         }
         return mapper.writeValueAsString(body)
     }
+    private fun extractChunkTextDelta(choice: JsonNode, delta: JsonNode): String {
+        textFromNode(delta.path("content")).let { if (it.isNotEmpty()) return it }
+        textFromNode(delta.path("text")).let { if (it.isNotEmpty()) return it }
+        textFromNode(choice.path("message").path("content")).let { if (it.isNotEmpty()) return it }
+        return ""
+    }
 
-    // ── System prompt ──────────────────────────────────────────────────────────
+    private fun extractChunkReasoningDelta(choice: JsonNode, delta: JsonNode): String {
+        textFromNode(delta.path("reasoning_content")).let { if (it.isNotEmpty()) return it }
+        textFromNode(delta.path("reasoning")).let { if (it.isNotEmpty()) return it }
+        textFromNode(delta.path("reasoning_delta")).let { if (it.isNotEmpty()) return it }
+        textFromNode(delta.path("thinking")).let { if (it.isNotEmpty()) return it }
+        textFromNode(delta.path("reasoning_text")).let { if (it.isNotEmpty()) return it }
+        textFromNode(choice.path("message").path("reasoning_content")).let { if (it.isNotEmpty()) return it }
+        textFromNode(choice.path("message").path("reasoning")).let { if (it.isNotEmpty()) return it }
+        textFromNode(choice.path("message").path("thinking")).let { if (it.isNotEmpty()) return it }
+        return ""
+    }
 
-    private fun buildSystemPrompt(workspaceRoot: String, ideContext: JsonNode, caps: ModelCapabilities): String {
+    private fun textFromNode(node: JsonNode?): String {
+        if (node == null || node.isMissingNode || node.isNull) {
+            return ""
+        }
+        if (node.isTextual) {
+            return node.asText("")
+        }
+        if (node.isArray) {
+            val sb = StringBuilder()
+            for (item in node) {
+                val text = textFromNode(item)
+                if (text.isNotEmpty()) {
+                    sb.append(text)
+                } else if (item.isObject) {
+                    val candidate = textFromNode(item.path("text"))
+                    if (candidate.isNotEmpty()) {
+                        sb.append(candidate)
+                    }
+                }
+            }
+            return sb.toString()
+        }
+        if (node.isObject) {
+            textFromNode(node.path("text")).let { if (it.isNotBlank()) return it }
+            textFromNode(node.path("content")).let { if (it.isNotBlank()) return it }
+            return ""
+        }
+        return node.asText("")
+    }
+
+    // System prompt
+
+    private fun buildSystemPrompt(
+        workspaceRoot: String,
+        ideContext: JsonNode,
+        caps: ModelCapabilities,
+        ideCapabilities: com.zzf.rikki.idea.agent.tools.LiteIdeTools.CapabilitySnapshot
+    ): String {
         val sb = StringBuilder(if (caps.supportsTools) SYSTEM_PROMPT else SYSTEM_PROMPT_NO_TOOLS)
         sb.append("\n\nWorking directory: $workspaceRoot")
+        sb.append("\nIDE bridge available: ${ideCapabilities.bridgeAvailable}")
+        if (ideCapabilities.actionOperations.isNotEmpty()) {
+            sb.append("\nIDE actions available: ${ideCapabilities.actionOperations.joinToString(", ")}")
+        }
         if (!ideContext.isNull && !ideContext.isMissingNode && ideContext.size() > 0) {
             sb.append("\n\n<ide_context>\n")
             sb.append(mapper.writerWithDefaultPrettyPrinter().writeValueAsString(ideContext))
@@ -433,12 +489,17 @@ You are an interactive assistant that helps users with software engineering task
 - Prefer specialized tools over shell for file operations:
   - Use read to view files, edit to modify files, write only when creating new files.
   - Use glob to find files by name and grep to search file contents.
-- Use bash for terminal operations (git, builds, tests, scripts).
+- Build and test should default to bash so results stay close to CI scripts.
+- Prefer ide_action for run/debug/status when that tool is available.
+- If IDE capability is uncertain, call ide_capabilities first.
+- If ide_action is unavailable or returns unsupported, fall back to bash.
 - Run tool calls in parallel when outputs are independent; otherwise run sequentially.
 
 ## Workflow
-- For complex or multi-step tasks, use the todo_write tool to break the work into clear steps before starting. Update each item's status (in_progress → completed) as you work through them.
-- When making tool calls, do not include any text in your response — only call the tools. Reserve text for the final step after all tool calls are complete.
+- For complex or multi-step tasks, use the todo_write tool to break the work into clear steps before starting. Update each item's status (in_progress -> completed) as you work through them.
+- If the conversation already has prior tool/todo context, continue from unfinished work and avoid recreating the whole todo list unless the task scope changed.
+- On resumed conversations, prefer todo_read first; if todos already exist, update progress instead of rewriting from scratch.
+- When making tool calls, do not include any text in your response - only call the tools. Reserve text for the final step after all tool calls are complete.
 - Default to doing the work without asking questions.
 - Only ask when truly blocked after checking relevant context.
 - Be concise and friendly.

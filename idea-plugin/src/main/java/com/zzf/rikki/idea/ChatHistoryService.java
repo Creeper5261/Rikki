@@ -1,6 +1,7 @@
 package com.zzf.rikki.idea;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.intellij.openapi.components.PersistentStateComponent;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.components.State;
@@ -240,6 +241,9 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
             State diskState = MAPPER.readValue(historyFile.toFile(), State.class);
             if (diskState != null) {
                 mergeState(diskState);
+                // Rewrite once after load so deprecated fields (e.g. session settings)
+                // are dropped from chat-history.json immediately.
+                persistToDisk();
             }
         } catch (Exception e) {
             logger.warn("chat_history_load_disk_failed path=" + historyFile, e);
@@ -731,6 +735,8 @@ public final class ChatHistoryService implements PersistentStateComponent<ChatHi
         public List<String> messages = new ArrayList<>();
         @XCollection(style = XCollection.Style.v2)
         public List<UiMessage> uiMessages = new ArrayList<>();
+        // Session-level runtime settings are no longer persisted to chat-history.json.
+        @JsonIgnore
         public SessionSettings settings = new SessionSettings();
     }
 

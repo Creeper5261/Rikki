@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.intellij.ide.highlighter.JavaFileType;
 import com.intellij.ide.ui.LafManagerListener;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.application.WriteAction;
@@ -16,19 +15,11 @@ import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.projectRoots.ProjectJdkTable;
 import com.intellij.openapi.projectRoots.Sdk;
-import com.intellij.openapi.roots.LanguageLevelProjectExtension;
-import com.intellij.openapi.roots.ModuleRootManager;
-import com.intellij.openapi.roots.ProjectFileIndex;
 import com.intellij.openapi.roots.ProjectRootManager;
 import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.openapi.wm.ToolWindowManager;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
-import com.intellij.pom.java.LanguageLevel;
-import com.intellij.psi.PsiClass;
-import com.intellij.psi.PsiFile;
-import com.intellij.psi.PsiJavaFile;
-import com.intellij.psi.PsiManager;
 import com.intellij.util.messages.MessageBusConnection;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
@@ -414,7 +405,7 @@ final class ChatPanel {
         refreshChatHeaderTitle();
         installResponsiveSidebarBehavior();
         installLookAndFeelListener();
-        loadTodosAsync();
+        syncTodoPanelForCurrentSession();
     }
 
     JComponent getComponent() {
@@ -1041,6 +1032,9 @@ final class ChatPanel {
             return;
         }
         stopRequestedByUser = true;
+        if (history != null) {
+            history.appendLine("System: Previous run was interrupted by user. Continue from existing progress and unfinished todos.");
+        }
         setAwaitingUserApproval(false, null);
         setBusy(false, "Stopped");
         Thread streamThread = activeStreamThread;
@@ -1137,14 +1131,6 @@ final class ChatPanel {
             BiConsumer<String, String> eventHandler = (event, data) -> dispatchSseEvent(event, data, assistantState);
             ChatSseAdapter streamAdapter = new ChatSseAdapter();
             try {
-                String sdkAlignNote = autoAlignProjectSdkIfNeeded();
-                if (!sdkAlignNote.isBlank()) {
-                    history.appendLine("System: " + sdkAlignNote);
-                    SwingUtilities.invokeLater(() -> {
-                        addSystemMessage(sdkAlignNote);
-                        persistSystemUiMessage(sdkAlignNote);
-                    });
-                }
                 String ideContext = SEND_VERBOSE_IDE_CONTEXT ? buildIdeContextWithTimeout(3000) : "";
                 ObjectNode ideContextPayload = buildIdeContextPayloadWithTimeout(3500);
                 
@@ -1241,9 +1227,9 @@ final class ChatPanel {
                     if (sid != null && !sid.isBlank()) {
                         bindBackendSession(sid);
                     }
-                } else if ("thought".equals(event)) {
+                } else if ("thought".equals(event) || "reasoning".equals(event)) {
                     JsonNode node = mapper.readTree(data);
-                    String delta = node.path("reasoning_delta").asText("");
+                    String delta = extractThoughtDelta(node);
                     if (delta.isEmpty()) {
                         return;
                     }
@@ -1262,7 +1248,7 @@ final class ChatPanel {
                     if (ui.thoughtPanel != null && !delta.isEmpty()) {
                         ui.thoughtPanel.appendContent(delta, true);
                     }
-                } else if ("thought_end".equals(event)) {
+                } else if ("thought_end".equals(event) || "reasoning_end".equals(event)) {
                     JsonNode node = mapper.readTree(data);
                     AgentMessageUI ui = findAssistantUi(assistantState, extractMessageID(node));
                     if (ui == null) {
@@ -1365,9 +1351,19 @@ final class ChatPanel {
                     // keep-alive — no action needed
                 } else if ("todo_updated".equals(event)) {
                     JsonNode node = mapper.readTree(data);
+                    String eventSessionId = firstNonBlank(
+                            node.path("sessionID").asText(""),
+                            node.path("sessionId").asText("")
+                    );
+                    String activeSessionId = firstNonBlank(currentSessionId);
+                    if (!eventSessionId.isBlank() && !activeSessionId.isBlank() && !eventSessionId.equals(activeSessionId)) {
+                        return;
+                    }
                     JsonNode todosNode = node.get("todos");
-                    if (todosNode != null) {
+                    if (todosNode != null && todosNode.isArray()) {
                         todoPanel.updateFromJson(todosNode.toString());
+                    } else {
+                        todoPanel.setTodos(new ArrayList<>());
                     }
                 }
             } catch (Exception e) {
@@ -1411,6 +1407,61 @@ final class ChatPanel {
         if (node.has("messageId")) return node.path("messageId").asText(null);
         if (node.has("id")) return node.path("id").asText(null);
         return null;
+    }
+
+    private String extractThoughtDelta(JsonNode node) {
+        if (node == null || node.isMissingNode()) {
+            return "";
+        }
+        String delta = textFromJsonNode(node.path("reasoning_delta"));
+        if (!delta.isBlank()) return delta;
+        delta = textFromJsonNode(node.path("delta"));
+        if (!delta.isBlank()) return delta;
+        delta = textFromJsonNode(node.path("reasoning_content"));
+        if (!delta.isBlank()) return delta;
+        delta = textFromJsonNode(node.path("reasoning"));
+        if (!delta.isBlank()) return delta;
+        delta = textFromJsonNode(node.path("thinking"));
+        if (!delta.isBlank()) return delta;
+        delta = textFromJsonNode(node.path("thought"));
+        if (!delta.isBlank()) return delta;
+        delta = textFromJsonNode(node.path("text_delta"));
+        if (!delta.isBlank()) return delta;
+        return "";
+    }
+
+    private String textFromJsonNode(JsonNode node) {
+        if (node == null || node.isMissingNode() || node.isNull()) {
+            return "";
+        }
+        if (node.isTextual()) {
+            return node.asText("");
+        }
+        if (node.isArray()) {
+            StringBuilder sb = new StringBuilder();
+            for (JsonNode item : node) {
+                String text = textFromJsonNode(item);
+                if (!text.isBlank()) {
+                    sb.append(text);
+                    continue;
+                }
+                if (item != null && item.isObject()) {
+                    String nested = textFromJsonNode(item.path("text"));
+                    if (!nested.isBlank()) {
+                        sb.append(nested);
+                    }
+                }
+            }
+            return sb.toString();
+        }
+        if (node.isObject()) {
+            String text = textFromJsonNode(node.path("text"));
+            if (!text.isBlank()) return text;
+            String content = textFromJsonNode(node.path("content"));
+            if (!content.isBlank()) return content;
+            return "";
+        }
+        return node.asText("");
     }
 
     private void handleToolEvent(String event, JsonNode node, ConversationStateManager<AgentMessageUI> assistantState) {
@@ -2010,31 +2061,129 @@ final class ChatPanel {
                 }
             }
         }
-        if (!normalized.isEmpty()) {
-            return normalized;
-        }
         ChatHistoryService.ChatSession session = history.getCurrentSession();
-        if (session == null || session.uiMessages == null) {
+        if (session == null) {
             return normalized;
         }
-        for (ChatHistoryService.UiMessage message : session.uiMessages) {
-            if (message == null) {
-                continue;
+        if (normalized.isEmpty() && session.uiMessages != null) {
+            for (ChatHistoryService.UiMessage message : session.uiMessages) {
+                if (message == null) {
+                    continue;
+                }
+                String text = firstNonBlank(message.text);
+                if (text.isBlank()) {
+                    continue;
+                }
+                String role = firstNonBlank(message.role).toLowerCase();
+                if ("user".equals(role)) {
+                    normalized.add("You: " + text.trim());
+                } else if ("assistant".equals(role) || "agent".equals(role)) {
+                    normalized.add("Agent: " + text.trim());
+                } else if ("system".equals(role)) {
+                    normalized.add("System: " + text.trim());
+                }
             }
-            String text = firstNonBlank(message.text);
-            if (text.isBlank()) {
-                continue;
-            }
-            String role = firstNonBlank(message.role).toLowerCase();
-            if ("user".equals(role)) {
-                normalized.add("You: " + text.trim());
-            } else if ("assistant".equals(role) || "agent".equals(role)) {
-                normalized.add("Agent: " + text.trim());
-            } else if ("system".equals(role)) {
-                normalized.add("System: " + text.trim());
-            }
+        }
+        normalized.addAll(buildToolMemoryLines(session));
+        String todoSnapshot = buildCurrentSessionTodoSnapshotLine();
+        if (!todoSnapshot.isBlank()) {
+            normalized.add(todoSnapshot);
         }
         return normalized;
+    }
+
+    private List<String> buildToolMemoryLines(ChatHistoryService.ChatSession session) {
+        List<String> memory = new ArrayList<>();
+        if (session == null || session.uiMessages == null || session.uiMessages.isEmpty()) {
+            return memory;
+        }
+        int start = Math.max(0, session.uiMessages.size() - 12);
+        for (int i = start; i < session.uiMessages.size(); i++) {
+            ChatHistoryService.UiMessage message = session.uiMessages.get(i);
+            if (message == null || message.toolActivities == null || message.toolActivities.isEmpty()) {
+                continue;
+            }
+            for (ChatHistoryService.ToolActivity activity : message.toolActivities) {
+                if (activity == null) {
+                    continue;
+                }
+                String tool = firstNonBlank(activity.tool);
+                String status = firstNonBlank(activity.status);
+                String summary = firstNonBlank(activity.summary, activity.expandedSummary, activity.meta);
+                if (tool.isBlank() && status.isBlank() && summary.isBlank()) {
+                    continue;
+                }
+                StringBuilder line = new StringBuilder("System: Previous tool");
+                if (!tool.isBlank()) {
+                    line.append(" ").append(tool.trim());
+                }
+                if (!status.isBlank()) {
+                    line.append(" status=").append(status.trim());
+                }
+                if (!summary.isBlank()) {
+                    line.append(" summary=").append(trimForUi(summary, 180));
+                }
+                memory.add(line.toString());
+                if (memory.size() >= 20) {
+                    return memory;
+                }
+            }
+        }
+        return memory;
+    }
+
+    private String buildCurrentSessionTodoSnapshotLine() {
+        String sessionId = firstNonBlank(currentSessionId).trim();
+        if (sessionId.isBlank()) {
+            return "";
+        }
+        Path todoFile = resolveSessionTodoFile(sessionId);
+        if (todoFile == null || !Files.exists(todoFile)) {
+            return "";
+        }
+        try {
+            String json = Files.readString(todoFile, StandardCharsets.UTF_8);
+            if (json == null || json.isBlank()) {
+                return "";
+            }
+            JsonNode todosNode = mapper.readTree(json);
+            if (todosNode == null || !todosNode.isArray() || todosNode.size() == 0) {
+                return "";
+            }
+            int total = todosNode.size();
+            int pending = 0;
+            int inProgress = 0;
+            int completed = 0;
+            List<String> samples = new ArrayList<>();
+            for (JsonNode item : todosNode) {
+                if (item == null || item.isNull()) {
+                    continue;
+                }
+                String status = firstNonBlank(item.path("status").asText("pending")).trim().toLowerCase(Locale.ROOT);
+                switch (status) {
+                    case "completed" -> completed++;
+                    case "in_progress" -> inProgress++;
+                    default -> pending++;
+                }
+                if (samples.size() < 5) {
+                    String content = firstNonBlank(item.path("content").asText(""), item.path("title").asText(""));
+                    if (!content.isBlank()) {
+                        samples.add(trimForUi(content, 80));
+                    }
+                }
+            }
+            StringBuilder sb = new StringBuilder("System: Current session todo list");
+            sb.append(" total=").append(total)
+              .append(" pending=").append(pending)
+              .append(" in_progress=").append(inProgress)
+              .append(" completed=").append(completed);
+            if (!samples.isEmpty()) {
+                sb.append(" items=").append(String.join(" | ", samples));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private boolean isWorkspaceApplied(JsonNode metaNode) {
@@ -2468,6 +2617,60 @@ final class ChatPanel {
                 logger.warn("Failed to load todos from backend: " + e.getMessage());
             }
         });
+    }
+
+    private void syncTodoPanelForCurrentSession() {
+        if (workspaceRoot == null || workspaceRoot.isBlank()) {
+            todoPanel.setTodos(new ArrayList<>());
+            return;
+        }
+        String sessionId = firstNonBlank(currentSessionId).trim();
+        if (sessionId.isBlank()) {
+            todoPanel.setTodos(new ArrayList<>());
+            return;
+        }
+        Path todoFile = resolveSessionTodoFile(sessionId);
+        if (todoFile == null || !Files.exists(todoFile)) {
+            todoPanel.setTodos(new ArrayList<>());
+            return;
+        }
+        try {
+            String json = Files.readString(todoFile, StandardCharsets.UTF_8);
+            if (json == null || json.isBlank()) {
+                todoPanel.setTodos(new ArrayList<>());
+            } else {
+                todoPanel.updateFromJson(json);
+            }
+        } catch (Exception e) {
+            logger.debug("Failed to read session todo file: " + todoFile, e);
+            todoPanel.setTodos(new ArrayList<>());
+        }
+    }
+
+    private Path resolveSessionTodoFile(String sessionId) {
+        if (workspaceRoot == null || workspaceRoot.isBlank()) {
+            return null;
+        }
+        String normalized = sanitizeSessionId(sessionId);
+        if (normalized.isBlank()) {
+            return null;
+        }
+        return Path.of(workspaceRoot, ".rikki", "todos", normalized + ".json");
+    }
+
+    private static String sanitizeSessionId(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(sessionId.length());
+        for (char ch : sessionId.toCharArray()) {
+            if (Character.isLetterOrDigit(ch) || ch == '-' || ch == '_' || ch == '.') {
+                sb.append(ch);
+            } else {
+                sb.append('_');
+            }
+        }
+        return sb.toString();
     }
 
     private String resolveTodosEndpoint() {
@@ -3006,10 +3209,6 @@ final class ChatPanel {
             return;
         }
         ui.lastAppendedChunk = text;
-        if (ui.thinkingOpen) {
-            ui.deferredAnswerBuffer.append(text);
-            return;
-        }
         ui.answerBuffer.append(text);
         setMarkdownContent(ui.answerPane, ui.answerBuffer.toString());
         scrollToBottomSmart();
@@ -5571,86 +5770,18 @@ final class ChatPanel {
             node.put("indexReady", !DumbService.isDumb(project));
             node.put("ideBridgeUrl", firstNonBlank(resolveIdeBridgeUrl()));
 
-            Sdk projectSdk = ProjectRootManager.getInstance(project).getProjectSdk();
-            String projectSdkResolvedHome = resolveSdkHome(projectSdk);
-            if (projectSdk != null) {
-                String sdkName = firstNonBlank(projectSdk.getName());
-                String sdkVersion = firstNonBlank(projectSdk.getVersionString());
-                String sdkHome = firstNonBlank(projectSdk.getHomePath());
-                node.put("projectSdkName", sdkName);
-                node.put("projectSdkVersion", sdkVersion);
-                node.put("projectSdkHome", sdkHome);
-                if (!projectSdkResolvedHome.isBlank()) {
-                    node.put("projectSdkResolvedHome", projectSdkResolvedHome);
-                }
-                Integer sdkMajor = extractMajorVersion(sdkVersion);
-                if (sdkMajor != null) {
-                    node.put("projectSdkMajor", sdkMajor);
-                }
-            }
-            node.put("autoAlignProjectSdkEnabled", AUTO_ALIGN_PROJECT_SDK);
-            node.put("autoAlignGradleJvmEnabled", AUTO_ALIGN_GRADLE_JVM);
-            node.put("autoAlignMavenRunnerJreEnabled", AUTO_ALIGN_MAVEN_RUNNER_JRE);
-            node.put("autoAlignRunConfigJreEnabled", AUTO_ALIGN_RUN_CONFIGURATION_JRE);
-            String gradleJvm = firstNonBlank(readGradleJvmSettingReflective());
-            String mavenRunnerJre = firstNonBlank(readMavenRunnerJreReflective());
-            String runConfigJres = firstNonBlank(readRunConfigurationJresReflective());
-            node.put("gradleJvm", gradleJvm);
-            node.put("mavenRunnerJre", mavenRunnerJre);
-            node.put("runConfigJres", runConfigJres);
-            String gradleJvmResolvedHome = resolveConfiguredJreHome(gradleJvm, projectSdk);
-            if (!gradleJvmResolvedHome.isBlank()) {
-                node.put("gradleJvmResolvedHome", gradleJvmResolvedHome);
-            }
-            String mavenRunnerResolvedHome = resolveConfiguredJreHome(mavenRunnerJre, projectSdk);
-            if (!mavenRunnerResolvedHome.isBlank()) {
-                node.put("mavenRunnerResolvedHome", mavenRunnerResolvedHome);
-            }
-            ArrayNode runConfigResolvedHomes = node.putArray("runConfigResolvedHomes");
-            Set<String> runConfigResolvedSet = new LinkedHashSet<>();
-            for (String token : splitCsvValues(runConfigJres)) {
-                String home = resolveConfiguredJreHome(token, projectSdk);
-                if (!home.isBlank()) {
-                    runConfigResolvedSet.add(home);
-                }
-            }
-            String firstRunConfigResolvedHome = "";
-            for (String home : runConfigResolvedSet) {
-                if (firstRunConfigResolvedHome.isBlank()) {
-                    firstRunConfigResolvedHome = home;
-                }
-                runConfigResolvedHomes.add(home);
-            }
-            if (!firstRunConfigResolvedHome.isBlank()) {
-                node.put("runConfigResolvedHome", firstRunConfigResolvedHome);
-            }
-            node.put("runConfigCount", countRunConfigurationsReflective());
-
-            LanguageLevel level = LanguageLevelProjectExtension.getInstance(project).getLanguageLevel();
-            if (level != null) {
-                node.put("languageLevel", level.name());
-                Integer levelMajor = extractMajorVersion(level.name());
-                if (levelMajor != null) {
-                    node.put("languageLevelMajor", levelMajor);
-                }
-            }
-
             Module[] modules = ModuleManager.getInstance(project).getModules();
             node.put("moduleCount", modules.length);
             ArrayNode moduleNames = node.putArray("moduleNames");
-            ArrayNode moduleSdkMajors = node.putArray("moduleSdkMajors");
-            int moduleSample = Math.min(modules.length, 12);
+            int moduleSample = Math.min(modules.length, 20);
             for (int i = 0; i < moduleSample; i++) {
                 moduleNames.add(firstNonBlank(modules[i].getName()));
-                try {
-                    Sdk moduleSdk = ModuleRootManager.getInstance(modules[i]).getSdk();
-                    Integer major = extractMajorVersion(moduleSdk != null ? moduleSdk.getVersionString() : "");
-                    if (major != null) {
-                        moduleSdkMajors.add(major);
-                    }
-                } catch (Exception ignored) {
-                    
-                }
+            }
+
+            node.put("runConfigCount", countRunConfigurationsReflective());
+            ArrayNode runConfigSample = node.putArray("runConfigSample");
+            for (String cfgName : listRunConfigurationsReflective(20)) {
+                runConfigSample.add(cfgName);
             }
 
             node.put("hasGradlewBat", existsWorkspaceFile("gradlew.bat"));
@@ -5662,6 +5793,10 @@ final class ChatPanel {
             node.put("hasPomXml", existsWorkspaceFile("pom.xml"));
             node.put("hasMvnwCmd", existsWorkspaceFile("mvnw.cmd"));
             node.put("hasMvnw", existsWorkspaceFile("mvnw"));
+            node.put("hasPackageJson", existsWorkspaceFile("package.json"));
+            node.put("hasPyprojectToml", existsWorkspaceFile("pyproject.toml"));
+            node.put("hasRequirementsTxt", existsWorkspaceFile("requirements.txt"));
+            node.put("hasComposerJson", existsWorkspaceFile("composer.json"));
 
             return node;
         });
@@ -5681,63 +5816,8 @@ final class ChatPanel {
     }
 
     private String autoAlignProjectSdkIfNeeded() {
-        if (!AUTO_ALIGN_PROJECT_SDK || project == null || project.isDisposed()) {
-            return "";
-        }
-        boolean looksLikeJavaProject = existsWorkspaceFile("pom.xml")
-                || existsWorkspaceFile("build.gradle")
-                || existsWorkspaceFile("build.gradle.kts")
-                || existsWorkspaceFile("settings.gradle")
-                || existsWorkspaceFile("settings.gradle.kts")
-                || existsWorkspaceFile("src/main/java")
-                || existsWorkspaceFile("src/test/java");
-        if (!looksLikeJavaProject) {
-            return "";
-        }
-        try {
-            Sdk currentSdk = ProjectRootManager.getInstance(project).getProjectSdk();
-            String currentVersion = currentSdk != null ? firstNonBlank(currentSdk.getVersionString()) : "";
-            Integer currentMajor = extractMajorVersion(currentVersion);
-            LanguageLevel languageLevel = LanguageLevelProjectExtension.getInstance(project).getLanguageLevel();
-            Integer requiredMajor = languageLevel == null ? null : extractMajorVersion(languageLevel.name());
-            if (requiredMajor == null || requiredMajor <= 0) {
-                return "";
-            }
-            if (currentMajor != null && currentMajor.equals(requiredMajor)) {
-                List<String> alignmentNotes = autoAlignBuildToolJvmSettings(currentSdk);
-                return String.join(" ", alignmentNotes).trim();
-            }
-
-            Sdk[] allJdks = ProjectJdkTable.getInstance().getAllJdks();
-            Sdk candidate = null;
-            for (Sdk sdk : allJdks) {
-                if (sdk == null) {
-                    continue;
-                }
-                Integer major = extractMajorVersion(firstNonBlank(sdk.getVersionString(), sdk.getName()));
-                if (major != null && major.equals(requiredMajor)) {
-                    candidate = sdk;
-                    break;
-                }
-            }
-            if (candidate == null) {
-                return "";
-            }
-            if (currentSdk != null && firstNonBlank(currentSdk.getName()).equals(firstNonBlank(candidate.getName()))) {
-                return "";
-            }
-
-            final Sdk targetSdk = candidate;
-            WriteAction.runAndWait(() -> ProjectRootManager.getInstance(project).setProjectSdk(targetSdk));
-            List<String> notes = new ArrayList<>();
-            notes.add("Auto-aligned Project SDK to " + firstNonBlank(targetSdk.getName(), targetSdk.getVersionString(), "Java " + requiredMajor)
-                    + " (language level: " + languageLevel.name() + ").");
-            notes.addAll(autoAlignBuildToolJvmSettings(targetSdk));
-            return String.join(" ", notes).trim();
-        } catch (Exception e) {
-            logger.warn("auto_align_project_sdk_failed", e);
-            return "";
-        }
+        // Java-specific SDK alignment is intentionally disabled in cross-IDE mode.
+        return "";
     }
 
     private List<String> autoAlignBuildToolJvmSettings(Sdk sdk) {
@@ -5996,6 +6076,43 @@ final class ChatPanel {
         }
     }
 
+    private List<String> listRunConfigurationsReflective(int limit) {
+        List<String> names = new ArrayList<>();
+        if (project == null || project.isDisposed()) {
+            return names;
+        }
+        int safeLimit = Math.max(1, limit);
+        try {
+            Class<?> runManagerClass = Class.forName("com.intellij.execution.RunManager");
+            Method getInstance = runManagerClass.getMethod("getInstance", Project.class);
+            Object runManager = getInstance.invoke(null, project);
+            if (runManager == null) {
+                return names;
+            }
+            Method getAllSettings = runManagerClass.getMethod("getAllSettings");
+            Object allSettings = getAllSettings.invoke(runManager);
+            if (!(allSettings instanceof Iterable<?> iterable)) {
+                return names;
+            }
+            for (Object setting : iterable) {
+                if (setting == null || names.size() >= safeLimit) {
+                    continue;
+                }
+                Method getName = findNoArgMethod(setting.getClass(), "getName");
+                if (getName == null) {
+                    continue;
+                }
+                String value = safeReflectString(getName.invoke(setting));
+                if (!value.isBlank()) {
+                    names.add(value);
+                }
+            }
+            return names;
+        } catch (Exception ignored) {
+            return names;
+        }
+    }
+
     private String readRunConfigurationJresReflective() {
         if (project == null || project.isDisposed()) {
             return "";
@@ -6097,16 +6214,17 @@ final class ChatPanel {
 
     private String buildIdeContext() {
         if (project == null) {
-            return "IDEA Project Unavailable";
+            return "IDE Project Unavailable";
         }
         if (DumbService.isDumb(project)) {
-            return "IDEA Index Not Ready";
+            return "IDE Index Not Ready";
         }
         return ReadAction.compute(() -> {
             StringBuilder sb = new StringBuilder();
             sb.append("IDEContext:\n");
             sb.append("projectName: ").append(firstNonBlank(project.getName())).append('\n');
             sb.append("workspaceRoot: ").append(firstNonBlank(workspaceRoot)).append('\n');
+            sb.append("ideBridgeUrl: ").append(firstNonBlank(resolveIdeBridgeUrl(), "(unavailable)")).append('\n');
 
             Sdk projectSdk = ProjectRootManager.getInstance(project).getProjectSdk();
             if (projectSdk != null) {
@@ -6121,7 +6239,7 @@ final class ChatPanel {
 
             Module[] modules = ModuleManager.getInstance(project).getModules();
             sb.append("moduleCount: ").append(modules.length).append('\n');
-            int moduleSample = Math.min(modules.length, 8);
+            int moduleSample = Math.min(modules.length, 12);
             for (int i = 0; i < moduleSample; i++) {
                 sb.append("module[").append(i).append("]: ")
                         .append(firstNonBlank(modules[i].getName()))
@@ -6136,43 +6254,17 @@ final class ChatPanel {
             sb.append("  pomXml: ").append(detectBuildFile("pom.xml")).append('\n');
             sb.append("  mvnwCmd: ").append(detectBuildFile("mvnw.cmd")).append('\n');
             sb.append("  mvnw: ").append(detectBuildFile("mvnw")).append('\n');
-            sb.append("toolJvmHints:\n");
-            sb.append("  gradleJvm: ").append(firstNonBlank(readGradleJvmSettingReflective(), "(unset)")).append('\n');
-            sb.append("  mavenRunnerJre: ").append(firstNonBlank(readMavenRunnerJreReflective(), "(unset)")).append('\n');
-            sb.append("  runConfigJres: ").append(firstNonBlank(readRunConfigurationJresReflective(), "(unset)")).append('\n');
+            sb.append("  packageJson: ").append(detectBuildFile("package.json")).append('\n');
+            sb.append("  pyprojectToml: ").append(detectBuildFile("pyproject.toml")).append('\n');
+            sb.append("  requirementsTxt: ").append(detectBuildFile("requirements.txt")).append('\n');
+            sb.append("  composerJson: ").append(detectBuildFile("composer.json")).append('\n');
+            sb.append("runConfigHints:\n");
             sb.append("  runConfigCount: ").append(countRunConfigurationsReflective()).append('\n');
-            sb.append("  autoAlignProjectSdk: ").append(AUTO_ALIGN_PROJECT_SDK).append('\n');
-            sb.append("  autoAlignGradleJvm: ").append(AUTO_ALIGN_GRADLE_JVM).append('\n');
-            sb.append("  autoAlignMavenRunnerJre: ").append(AUTO_ALIGN_MAVEN_RUNNER_JRE).append('\n');
-            sb.append("  autoAlignRunConfigJre: ").append(AUTO_ALIGN_RUN_CONFIGURATION_JRE).append('\n');
-
-            sb.append("javaClassIndex:\n");
-            ProjectFileIndex fileIndex = ProjectRootManager.getInstance(project).getFileIndex();
-            List<VirtualFile> files = new ArrayList<>();
-            fileIndex.iterateContent(file -> {
-                if (files.size() < 60 && !file.isDirectory() && file.getFileType() instanceof JavaFileType) {
-                    files.add(file);
-                }
-                return true;
-            });
-
-            PsiManager psiManager = PsiManager.getInstance(project);
-            int classCount = 0;
-            for (VirtualFile file : files) {
-                PsiFile psiFile = psiManager.findFile(file);
-                if (psiFile instanceof PsiJavaFile) {
-                    PsiClass[] classes = ((PsiJavaFile) psiFile).getClasses();
-                    for (PsiClass clz : classes) {
-                        if (classCount >= 120) {
-                            sb.append("... (class list truncated)\n");
-                            return sb.toString();
-                        }
-                        sb.append("class ")
-                                .append(firstNonBlank(clz.getName(), "(anonymous)"))
-                                .append('\n');
-                        classCount++;
-                    }
-                }
+            List<String> runConfigSample = listRunConfigurationsReflective(8);
+            for (int i = 0; i < runConfigSample.size(); i++) {
+                sb.append("  runConfig[").append(i).append("]: ")
+                        .append(firstNonBlank(runConfigSample.get(i), "(unnamed)"))
+                        .append('\n');
             }
             return sb.toString();
         });
@@ -6345,6 +6437,7 @@ final class ChatPanel {
         if (history != null) {
             history.setCurrentBackendSessionId(sessionID);
         }
+        syncTodoPanelForCurrentSession();
     }
 
     private void setBusy(boolean busy, String msg) {
@@ -6396,13 +6489,17 @@ final class ChatPanel {
             refreshPendingChangesPanel();
         }
         
-        if (history == null) return;
+        if (history == null) {
+            syncTodoPanelForCurrentSession();
+            return;
+        }
         List<ChatHistoryService.UiMessage> uiMessages = history.getUiMessages();
         if (uiMessages != null && !uiMessages.isEmpty()) {
             rebuildConversationFromUiMessages(uiMessages);
             conversationList.revalidate();
             conversationList.repaint();
             scrollToBottom();
+            syncTodoPanelForCurrentSession();
             return;
         }
         List<String> lines = history.getLines();
@@ -6425,6 +6522,7 @@ final class ChatPanel {
         conversationList.revalidate();
         conversationList.repaint();
         scrollToBottom();
+        syncTodoPanelForCurrentSession();
     }
 
     private void rebuildConversationFromUiMessages(List<ChatHistoryService.UiMessage> uiMessages) {

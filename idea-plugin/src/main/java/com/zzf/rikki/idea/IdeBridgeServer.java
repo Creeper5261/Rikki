@@ -17,11 +17,6 @@ import com.intellij.execution.process.ProcessHandler;
 import com.intellij.execution.runners.ExecutionEnvironment;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.compiler.CompileContext;
-import com.intellij.openapi.compiler.CompileStatusNotification;
-import com.intellij.openapi.compiler.CompilerManager;
-import com.intellij.openapi.compiler.CompilerMessage;
-import com.intellij.openapi.compiler.CompilerMessageCategory;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
@@ -40,7 +35,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -49,10 +43,6 @@ import java.util.concurrent.TimeUnit;
 @Service(Service.Level.PROJECT)
 public final class IdeBridgeServer implements Disposable {
     private static final Logger logger = Logger.getInstance(IdeBridgeServer.class);
-    private static final int DEFAULT_BUILD_TIMEOUT_MS = 300_000;
-    private static final int MIN_BUILD_TIMEOUT_MS = 10_000;
-    private static final int MAX_BUILD_TIMEOUT_MS = 1_800_000;
-    private static final int MAX_COMPILER_MESSAGE_LINES = 200;
     private static final int MAX_RESPONSE_OUTPUT_CHARS = 20_000;
     private static final int MAX_STATUS_OUTPUT_CHARS = 8_000;
     private static final int MAX_JOB_LOG_LINES = 400;
@@ -207,7 +197,6 @@ public final class IdeBridgeServer implements Disposable {
         node.put("logStreaming", true);
 
         ArrayNode asyncOps = node.putArray("asyncOperations");
-        asyncOps.add("build");
         asyncOps.add("run");
         asyncOps.add("test");
         asyncOps.add("status");
@@ -215,7 +204,6 @@ public final class IdeBridgeServer implements Disposable {
         asyncOps.add("capabilities");
 
         ArrayNode directOps = node.putArray("directOperations");
-        directOps.add("build");
         directOps.add("run");
         directOps.add("test");
 
@@ -278,10 +266,6 @@ public final class IdeBridgeServer implements Disposable {
 
         try {
             switch (job.operation) {
-                case "build" -> {
-                    ObjectNode result = executeBuild(request);
-                    applyResultToJob(job, result);
-                }
                 case "run" -> {
                     ObjectNode result = executeRunLike(request, false);
                     applyRunLikeStartResult(job, result);
@@ -568,79 +552,13 @@ public final class IdeBridgeServer implements Disposable {
     }
 
     private ObjectNode executeBuild(JsonNode request) {
-        String mode = normalizeBuildMode(request.path("mode").asText(""));
-        long timeoutMs = normalizeTimeout(request.path("timeoutMs").asLong(DEFAULT_BUILD_TIMEOUT_MS));
-
-        BuildResult result = new BuildResult();
-        CountDownLatch latch = new CountDownLatch(1);
-        long startedAt = System.currentTimeMillis();
-
-        ApplicationManager.getApplication().invokeLater(() -> {
-            if (project.isDisposed()) {
-                result.status = "error";
-                result.summary = "Project disposed before build started.";
-                latch.countDown();
-                return;
-            }
-            CompileStatusNotification callback = (aborted, errors, warnings, compileContext) -> {
-                result.aborted = aborted;
-                result.errors = errors;
-                result.warnings = warnings;
-                result.output = collectCompilerMessages(compileContext, MAX_COMPILER_MESSAGE_LINES);
-                if (aborted) {
-                    result.status = "aborted";
-                } else if (errors > 0) {
-                    result.status = "failed";
-                } else {
-                    result.status = "success";
-                }
-                result.summary = buildSummary(result.status, errors, warnings, aborted);
-                latch.countDown();
-            };
-
-            CompilerManager compilerManager = CompilerManager.getInstance(project);
-            if ("rebuild".equals(mode)) {
-                compilerManager.rebuild(callback);
-            } else {
-                compilerManager.make(callback);
-            }
-        });
-
-        boolean completed;
-        boolean interrupted = false;
-        try {
-            completed = latch.await(timeoutMs, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            completed = false;
-            interrupted = true;
-        }
-        long durationMs = Math.max(0L, System.currentTimeMillis() - startedAt);
-
-        if (!completed) {
-            if (interrupted) {
-                if (result.status == null || result.status.isBlank()) {
-                    result.status = "canceled";
-                    result.summary = "Build canceled.";
-                }
-            } else if (result.status == null || result.status.isBlank()) {
-                result.status = "timeout";
-                result.summary = "Build did not finish within " + timeoutMs + "ms.";
-            }
-        }
-
-        boolean ok = "success".equalsIgnoreCase(result.status);
         ObjectNode node = mapper.createObjectNode();
-        node.put("ok", ok);
+        node.put("ok", false);
         node.put("action", "build");
-        node.put("mode", mode);
-        node.put("status", firstNonBlank(result.status, "error"));
-        node.put("aborted", result.aborted);
-        node.put("errors", Math.max(0, result.errors));
-        node.put("warnings", Math.max(0, result.warnings));
-        node.put("durationMs", durationMs);
-        node.put("summary", firstNonBlank(result.summary, ok ? "IDE build succeeded." : "IDE build failed."));
-        node.put("output", trimOutput(firstNonBlank(result.output)));
+        node.put("status", "unsupported");
+        node.put("code", "unsupported_operation");
+        node.put("summary", "IDE build is disabled in cross-IDE mode. Use bash for build/test.");
+        node.put("output", "IDE build is disabled in cross-IDE mode. Use bash for build/test.");
         return node;
     }
 
@@ -723,7 +641,7 @@ public final class IdeBridgeServer implements Disposable {
     }
 
     private boolean isSupportedOperation(String operation) {
-        return "build".equals(operation) || "run".equals(operation) || "test".equals(operation);
+        return "run".equals(operation) || "test".equals(operation);
     }
 
     private boolean isTerminal(String status) {
@@ -737,7 +655,7 @@ public final class IdeBridgeServer implements Disposable {
 
     private String normalizeOperation(String raw) {
         String normalized = firstNonBlank(raw).toLowerCase(Locale.ROOT);
-        if ("build".equals(normalized) || "run".equals(normalized) || "test".equals(normalized)) {
+        if ("run".equals(normalized) || "test".equals(normalized)) {
             return normalized;
         }
         return "";
@@ -889,59 +807,6 @@ public final class IdeBridgeServer implements Disposable {
         return names.isEmpty() ? "(none)" : String.join(", ", names);
     }
 
-    private String collectCompilerMessages(CompileContext context, int maxLines) {
-        if (context == null) {
-            return "";
-        }
-        List<String> lines = new ArrayList<>();
-        appendCompilerMessages(lines, context.getMessages(CompilerMessageCategory.ERROR), "ERROR", maxLines);
-        appendCompilerMessages(lines, context.getMessages(CompilerMessageCategory.WARNING), "WARN", maxLines);
-        appendCompilerMessages(lines, context.getMessages(CompilerMessageCategory.INFORMATION), "INFO", maxLines);
-        return String.join("\n", lines);
-    }
-
-    private void appendCompilerMessages(
-            List<String> lines,
-            CompilerMessage[] messages,
-            String level,
-            int maxLines
-    ) {
-        if (messages == null || messages.length == 0 || lines.size() >= maxLines) {
-            return;
-        }
-        for (CompilerMessage msg : messages) {
-            if (msg == null) {
-                continue;
-            }
-            if (lines.size() >= maxLines) {
-                lines.add("... truncated compiler output ...");
-                break;
-            }
-            String message = firstNonBlank(msg.getMessage());
-            String path = msg.getVirtualFile() == null ? "" : firstNonBlank(msg.getVirtualFile().getPath());
-            if (!path.isBlank()) {
-                lines.add("[" + level + "] " + message + " (" + path + ")");
-            } else {
-                lines.add("[" + level + "] " + message);
-            }
-        }
-    }
-
-    private String normalizeBuildMode(String raw) {
-        String normalized = firstNonBlank(raw, "make").trim().toLowerCase(Locale.ROOT);
-        if ("rebuild".equals(normalized)) {
-            return "rebuild";
-        }
-        return "make";
-    }
-
-    private long normalizeTimeout(long rawMs) {
-        long safe = rawMs <= 0 ? DEFAULT_BUILD_TIMEOUT_MS : rawMs;
-        safe = Math.max(MIN_BUILD_TIMEOUT_MS, safe);
-        safe = Math.min(MAX_BUILD_TIMEOUT_MS, safe);
-        return safe;
-    }
-
     private ObjectNode error(String code, String message) {
         ObjectNode node = mapper.createObjectNode();
         node.put("ok", false);
@@ -959,22 +824,6 @@ public final class IdeBridgeServer implements Disposable {
         try (OutputStream os = exchange.getResponseBody()) {
             os.write(bytes);
         }
-    }
-
-    private String buildSummary(String status, int errors, int warnings, boolean aborted) {
-        if ("success".equalsIgnoreCase(status)) {
-            return "IDE build succeeded (" + warnings + " warning(s)).";
-        }
-        if ("aborted".equalsIgnoreCase(status) || aborted) {
-            return "IDE build aborted (" + errors + " error(s), " + warnings + " warning(s)).";
-        }
-        if ("timeout".equalsIgnoreCase(status)) {
-            return "IDE build timeout.";
-        }
-        if ("canceled".equalsIgnoreCase(status)) {
-            return "IDE build canceled.";
-        }
-        return "IDE build failed (" + errors + " error(s), " + warnings + " warning(s)).";
     }
 
     private String trimOutput(String output) {
@@ -1070,15 +919,6 @@ public final class IdeBridgeServer implements Disposable {
                 }
             }
         }
-    }
-
-    private static final class BuildResult {
-        String status;
-        String summary;
-        String output;
-        int errors;
-        int warnings;
-        boolean aborted;
     }
 
     private static final class IdeJob {
