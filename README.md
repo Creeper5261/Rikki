@@ -41,7 +41,7 @@ You can install Rikki either directly from the JetBrains Marketplace (recommende
 
 ### Option 2: Install from Disk (Manual Installation)
 
-1. Download `idea-plugin-0.1.0.zip` from the [Releases](https://github.com/Creeper5261/Rikki/releases) or [JETBRAINS Marketplace](https://plugins.jetbrains.com/plugin/30315-rikki-code-agent) .
+1. Download `idea-plugin-0.1.1.zip` from the [Releases](https://github.com/Creeper5261/Rikki/releases) or [JETBRAINS Marketplace](https://plugins.jetbrains.com/plugin/30315-rikki-code-agent) .
 2. In IntelliJ IDEA, go to **Settings → Plugins → ⚙ → Install Plugin from Disk**, and select the downloaded file.
 
 ## Configuration
@@ -53,6 +53,7 @@ After installation:
 ## License
 
 [MIT](LICENSE)
+
 
 
 
