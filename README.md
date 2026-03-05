@@ -1,4 +1,4 @@
-# Rikki Code Agent
+# Rikki Coding Agent
 
 A lightweight AI coding assistant plugin for JetBrains IDEs. Connects directly to LLM APIs — no backend server required.
 
@@ -35,7 +35,7 @@ You can install Rikki either directly from the JetBrains Marketplace (recommende
 
 2. Go to Settings → Plugins → Marketplace.
 
-3. Search for **Rikki Code Agent**.
+3. Search for **Rikki Coding Agent**.
 
 4. Click Install and restart the IDE if prompted.
 
@@ -46,12 +46,13 @@ You can install Rikki either directly from the JetBrains Marketplace (recommende
 
 ## Configuration
 After installation:
-1. Open **Settings → Tools → Rikki Code Agent**.
+1. Open **Settings → Tools → Rikki Coding Agent**.
 2. Select a provider, enter the API key, and choose a model.
 3. For local use, select **Ollama** — no API key is required.
 
 ## License
 
 [MIT](LICENSE)
+
 
 
