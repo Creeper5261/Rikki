@@ -1,6 +1,6 @@
 <idea-plugin>
     <id>com.zzf.rikki.idea</id>
-    <name>Rikki Code Agent</name>
+    <name>Rikki Coding Agent</name>
     <vendor email="zhengzhengfeng@outlook.com" url="https://github.com/Creeper5261/Rikki">Creeper5261</vendor>
 
     <idea-version since-build="241"/>
@@ -31,7 +31,7 @@
         Each provider stores its own API key - switching provider automatically loads the correct key.<br><br>
 
         <b>Setup</b><br>
-        Open <b>Settings -> Tools -> Rikki Code Agent</b>, choose your provider, enter the API key,
+        Open <b>Settings -> Tools -> Rikki Coding Agent</b>, choose your provider, enter the API key,
         and select a model. For local use, choose Ollama - no API key needed.
     ]]></description>
 
@@ -54,7 +54,7 @@
             parentId="tools"
             instance="com.zzf.rikki.idea.settings.RikkiSettingsConfigurable"
             id="com.zzf.rikki.idea.settings.RikkiSettingsConfigurable"
-            displayName="Rikki Code Agent"/>
+            displayName="Rikki Coding Agent"/>
         <projectService serviceImplementation="com.zzf.rikki.idea.IdeBridgeServer"/>
         <toolWindow id="Rikki" anchor="right"
                     icon="/icons/toolWindowRikki.svg"
