@@ -58,7 +58,7 @@ Built-in presets for DeepSeek, OpenAI, Google Gemini, Moonshot / Kimi, Ollama (l
 
 You can install Rikki either directly from the JetBrains Marketplace (recommended) or manually from a downloaded ZIP file.
 
-### Option 1: Install from [JETBRAINS Marketplace](https://plugins.jetbrains.com/plugin/30315-rikki-code-agent) (Recommended)
+### Option 1: Install from [JETBRAINS Marketplace](https://plugins.jetbrains.com/plugin/30315-rikki-coding-agent) (Recommended)
 
 1. Open IntelliJ IDEA.
 <!-- 1. Open your JetBrains IDE. -->
@@ -91,7 +91,7 @@ You can install Rikki either directly from the JetBrains Marketplace (recommende
 </details> -->
 2. Go to Settings → Plugins → Marketplace.
 
-3. Search for **Rikki Code Agent**.
+3. Search for **Rikki Coding Agent**.
 
 4. Click Install and restart the IDE if prompted.
 
@@ -109,6 +109,7 @@ After installation:
 ## License
 
 [MIT](LICENSE)
+
 
 
 
