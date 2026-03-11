@@ -1,137 +1,106 @@
 package com.zzf.rikki.idea.agent.tools
 
 import com.fasterxml.jackson.databind.JsonNode
-import java.io.ByteArrayOutputStream
-import java.io.File
-import java.util.concurrent.TimeUnit
+import com.zzf.rikki.idea.agent.compat.CommandRunner
+import com.zzf.rikki.idea.agent.compat.CommandRunnerResult
 import java.util.concurrent.atomic.AtomicBoolean
 
-/** Shell tool: runs commands with bash-first auto-fallback, captures combined output. */
+/** Shell tool facade: validates args, delegates execution, preserves legacy output formatting. */
 class LiteBashTool {
-
-    companion object {
-        private const val DEFAULT_TIMEOUT_MS = 60_000L
-        private const val MAX_OUTPUT = 8_000
-        private const val POLL_INTERVAL_MS = 200L
-        private val SUPPORTED_SHELLS = setOf("auto", "bash", "powershell", "cmd")
-    }
-
-    private data class ShellSpec(val name: String, val argvPrefix: List<String>)
-
-    private data class ExecutionResult(
-        val output: String,
-        val exitCode: Int,
-        val timedOut: Boolean,
-        val skipped: Boolean
-    )
+    private val runner = CommandRunner()
 
     fun execute(args: JsonNode, workspaceRoot: String, skipFlag: AtomicBoolean? = null): String {
-        val command    = args.path("command").asText("").ifBlank { throw IllegalArgumentException("command is required") }
-        val workdirStr = args.path("workdir").asText(workspaceRoot).ifBlank { workspaceRoot }
-        val timeoutMs  = args.path("timeout").asLong(DEFAULT_TIMEOUT_MS).let { if (it <= 0) DEFAULT_TIMEOUT_MS else it }
-        val shellPref  = args.path("shell").asText("auto").trim().lowercase().ifBlank { "auto" }
-        if (shellPref !in SUPPORTED_SHELLS) {
-            throw IllegalArgumentException("shell must be one of: auto, bash, powershell, cmd")
+        val detail = executeDetailed(args, workspaceRoot, skipFlag)
+        val timeoutMs = args.path("timeout").asLong(CommandRunner.DEFAULT_TIMEOUT_MS).let {
+            if (it <= 0L) CommandRunner.DEFAULT_TIMEOUT_MS else it
         }
-
-        val workdir = resolveWorkdir(workspaceRoot, workdirStr)
-        val candidates = resolveShellCandidates(shellPref)
-        val startupErrors = mutableListOf<String>()
-
-        for (shell in candidates) {
-            val pb = ProcessBuilder(shell.argvPrefix + command)
-                .directory(workdir)
-                .redirectErrorStream(true)
-
-            // Propagate current env, then force UTF-8 for subprocess output
-            pb.environment().putAll(System.getenv())
-            pb.environment()["PYTHONIOENCODING"] = "utf-8"
-            if (shell.name == "bash") {
-                pb.environment()["LANG"] = "en_US.UTF-8"
-                pb.environment()["LC_ALL"] = "en_US.UTF-8"
-            }
-
-            val proc = try {
-                pb.start()
-            } catch (e: Exception) {
-                startupErrors += "${shell.name}: ${e.message ?: "failed to start"}"
-                continue
-            }
-
-            val result = runProcess(proc, timeoutMs, skipFlag)
-            return formatResult(shell.name, command, timeoutMs, result)
-        }
-
-        val shellNames = candidates.joinToString(", ") { it.name }
-        val err = if (startupErrors.isEmpty()) "no startup error details" else startupErrors.joinToString("; ")
-        return "No usable shell found (requested=$shellPref, tried=$shellNames): $err"
+        return formatResult(args.path("command").asText(""), timeoutMs, detail)
     }
 
-    private fun resolveWorkdir(workspaceRoot: String, requested: String): File {
-        val dir = File(requested).let { if (it.isAbsolute) it else File(workspaceRoot, requested) }
-        return if (dir.isDirectory) dir else File(workspaceRoot)
-    }
-
-    private fun resolveShellCandidates(shellPref: String): List<ShellSpec> = when (shellPref) {
-        "bash"       -> listOf(ShellSpec("bash", listOf("bash", "-c")))
-        "powershell" -> listOf(ShellSpec("powershell", listOf("powershell", "-NoProfile", "-NonInteractive", "-Command")))
-        "cmd"        -> listOf(ShellSpec("cmd", listOf("cmd", "/c")))
-        else         -> listOf(
-            ShellSpec("bash", listOf("bash", "-c")),
-            ShellSpec("powershell", listOf("powershell", "-NoProfile", "-NonInteractive", "-Command")),
-            ShellSpec("cmd", listOf("cmd", "/c"))
+    fun executeDetailed(
+        args: JsonNode,
+        workspaceRoot: String,
+        skipFlag: AtomicBoolean? = null
+    ): CommandRunnerResult {
+        val command = args.path("command").asText("").ifBlank {
+            throw IllegalArgumentException("command is required")
+        }
+        val workdir = args.path("workdir").asText(workspaceRoot).ifBlank { workspaceRoot }
+        val timeoutMs = args.path("timeout").asLong(CommandRunner.DEFAULT_TIMEOUT_MS).let {
+            if (it <= 0L) CommandRunner.DEFAULT_TIMEOUT_MS else it
+        }
+        val shell = args.path("shell").asText("auto").trim().lowercase().ifBlank { "auto" }
+        return runner.run(
+            command = command,
+            workspaceRoot = workspaceRoot,
+            workdir = workdir,
+            timeoutMs = timeoutMs,
+            shellPref = shell,
+            skipFlag = skipFlag
         )
     }
 
-    private fun runProcess(proc: Process, timeoutMs: Long, skipFlag: AtomicBoolean?): ExecutionResult {
-        val outputBuf = ByteArrayOutputStream()
-        val readerThread = Thread {
-            try { proc.inputStream.copyTo(outputBuf) } catch (_: Exception) {}
-        }.also { it.isDaemon = true; it.start() }
+    fun formatResult(command: String, timeoutMs: Long, result: CommandRunnerResult): String =
+        runner.formatOutput(command, timeoutMs, result)
 
-        val deadline = System.currentTimeMillis() + timeoutMs
-        var timedOut = false
-        var skipped = false
+    companion object {
+        private val RISK_PATTERNS = listOf(
+            "sudo " to "requires elevated privileges",
+            "su -" to "switches user identity",
+            "su root" to "switches user identity",
+            "rm -rf" to "destructive file removal",
+            "rm -fr" to "destructive file removal",
+            "rm -r " to "recursive deletion",
+            "rm -f /" to "targets filesystem root",
+            "mkfs" to "formats a filesystem",
+            "dd if=" to "raw disk write",
+            "| bash" to "pipes remote script into shell",
+            "| sh " to "pipes remote script into shell",
+            "| zsh " to "pipes remote script into shell",
+            "| fish " to "pipes remote script into shell",
+            "chmod 777" to "grants unsafe world-writable permissions",
+            "chmod -R " to "recursively changes permissions",
+            "> /dev/" to "writes to device path",
+            "/dev/sd" to "targets block device",
+            "/dev/hd" to "targets block device",
+            "/dev/nvme" to "targets block device",
+            ":(){ :|:& };:" to "fork bomb"
+        )
 
-        while (proc.isAlive) {
-            if (skipFlag?.get() == true) {
-                skipped = true
-                proc.destroyForcibly()
-                break
-            }
-            if (System.currentTimeMillis() >= deadline) {
-                timedOut = true
-                proc.destroyForcibly()
-                break
-            }
-            proc.waitFor(POLL_INTERVAL_MS, TimeUnit.MILLISECONDS)
+        fun isHighRiskCommand(command: String): Boolean = detectRiskReasons(command).isNotEmpty()
+
+        fun detectRiskReasons(command: String): List<String> {
+            val normalized = command.trim().lowercase()
+            return RISK_PATTERNS
+                .filter { normalized.contains(it.first) }
+                .map { it.second }
+                .distinct()
         }
 
-        readerThread.join(2_000)
-        val output = outputBuf.toString(Charsets.UTF_8.name())
-        val exitCode = try { proc.exitValue() } catch (_: Exception) { -1 }
-        return ExecutionResult(output, exitCode, timedOut, skipped)
-    }
-
-    private fun formatResult(shell: String, command: String, timeoutMs: Long, result: ExecutionResult): String {
-        val prefix = "[shell=$shell]"
-        val truncated = if (result.output.length > MAX_OUTPUT) {
-            result.output.take(MAX_OUTPUT) + "\n\n...(truncated)"
-        } else {
-            result.output
+        fun isStrictApprovalCommand(command: String): Boolean {
+            val normalized = command.trim().lowercase()
+            return listOf(
+                "rm -rf",
+                "rm -fr",
+                "rm -r ",
+                "rm -f /",
+                "mkfs",
+                "dd if=",
+                "> /dev/",
+                "/dev/sd",
+                "/dev/hd",
+                "/dev/nvme",
+                ":(){ :|:& };:"
+            ).any { normalized.contains(it) }
         }
 
-        return when {
-            result.skipped ->
-                "$prefix (Skipped by user - command was interrupted)\n$truncated".trimEnd()
-            result.timedOut ->
-                "$prefix (Command timed out after ${timeoutMs}ms)\n$truncated".trimEnd()
-            result.exitCode != 0 ->
-                "$prefix Command failed with exit code ${result.exitCode}: $command\n$truncated".trimEnd()
-            truncated.isBlank() ->
-                "$prefix (no output)"
-            else ->
-                "$prefix\n$truncated"
+        fun commandFamily(command: String): String {
+            val trimmed = command.trim()
+            if (trimmed.isBlank()) {
+                return "command"
+            }
+            val firstToken = trimmed.substringBefore(' ').substringAfterLast('/')
+            return firstToken.lowercase().ifBlank { "command" }
         }
     }
 }

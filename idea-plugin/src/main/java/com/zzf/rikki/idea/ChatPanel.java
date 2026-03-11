@@ -1348,7 +1348,7 @@ final class ChatPanel {
                 } else if ("status".equals(event)) {
                     handleStatusEvent(data);
                 } else if ("heartbeat".equals(event)) {
-                    // keep-alive — no action needed
+                    // keep-alive 闁?no action needed
                 } else if ("todo_updated".equals(event)) {
                     JsonNode node = mapper.readTree(data);
                     String eventSessionId = firstNonBlank(
@@ -1517,11 +1517,10 @@ final class ChatPanel {
 
         AgentMessageUI ui = lastAssistantUi(assistantState);
         if (ui == null) return;
-
         ToolActivityState state = resolveToolActivity(ui, callID, toolName);
-        if (state == null) return;
+        if (state.pendingCommand != null && state.pendingCommand.id != null && !state.pendingCommand.id.isBlank()) return;
 
-        // Ensure an ActivityCommandPanel exists (bash → TERMINAL render type)
+        // Ensure an ActivityCommandPanel exists (bash 闁?TERMINAL render type)
         ensureToolRenderType(ui, state, ToolRenderType.TERMINAL);
         if (state.panel == null) return;
 
@@ -2513,7 +2512,7 @@ final class ChatPanel {
         boolean reject = decision == CommandApprovalDecision.REJECT;
         String decisionMode = resolveDecisionMode(decision);
         // For approvals (not reject): immediately clear the waiting-for-approval state
-        // so the status bar switches from "等待确认" to "正在思考" right away,
+        // so the status bar switches from "缂佹稑顦欢鐔烘兜椤旀鍚? to "婵繐绲藉﹢顏堝箑濠靛ň鍋? right away,
         // rather than staying frozen until the command finishes executing.
         if (!reject) {
             state.commandDecisionMade = true;
@@ -3644,9 +3643,9 @@ final class ChatPanel {
         conversationList.revalidate();
         conversationList.repaint();
         if (isUser) {
-            scrollToBottom();       // user sends → always jump to bottom
+            scrollToBottom();       // user sends 闁?always jump to bottom
         } else {
-            scrollToBottomSmart();  // assistant bubble → only if already near bottom
+            scrollToBottomSmart();  // assistant bubble 闁?only if already near bottom
         }
         return ui;
     }
@@ -3745,7 +3744,7 @@ final class ChatPanel {
             }
         } else if ("CREATE".equals(normalizedType)) {
             // Do NOT read oldContent from disk for CREATE: the file was just written,
-            // reading it now would give newContent == oldContent → diff +0 -0.
+            // reading it now would give newContent == oldContent 闁?diff +0 -0.
             if (exists && !oldContent.isBlank()) {
                 normalizedType = "EDIT";
             }
@@ -3942,7 +3941,7 @@ final class ChatPanel {
         panel.setBorder(JBUI.Borders.empty(6, 4, 4, 4));
         panel.setOpaque(false);
 
-        // ── Header ──────────────────────────────────────────────────────────
+        // 闁冲厜鍋撻柍鍏夊亾 Header 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
         JPanel header = new JPanel(new BorderLayout(8, 0));
         header.setOpaque(false);
         JLabel title = new JLabel(changes.size() + " files changed  +" + totalAdded + "  -" + totalRemoved);
@@ -3957,7 +3956,7 @@ final class ChatPanel {
         panel.add(topSep);
         panel.add(Box.createVerticalStrut(4));
 
-        // ── File rows ────────────────────────────────────────────────────────
+        // 闁冲厜鍋撻柍鍏夊亾 File rows 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
         // Each row: [filename + diff stats (left)] | [Undo button (right)]
         // Clicking the left area opens the diff viewer.
         List<JButton> undoButtons = new ArrayList<>();
@@ -3971,7 +3970,7 @@ final class ChatPanel {
             row.setBorder(JBUI.Borders.empty(3, 4, 3, 4));
             row.setMaximumSize(new Dimension(Integer.MAX_VALUE, JBUI.scale(32)));
 
-            // Left: filename + diff stats — clicking opens diff viewer
+            // Left: filename + diff stats 闁?clicking opens diff viewer
             JPanel left = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
             left.setOpaque(false);
             left.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
@@ -4012,7 +4011,7 @@ final class ChatPanel {
             panel.add(row);
         }
 
-        // ── Undo All ─────────────────────────────────────────────────────────
+        // 闁冲厜鍋撻柍鍏夊亾 Undo All 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?
         panel.add(Box.createVerticalStrut(4));
         JSeparator botSep = new JSeparator();
         botSep.setMaximumSize(new Dimension(Integer.MAX_VALUE, 1));
@@ -4685,7 +4684,7 @@ final class ChatPanel {
             metaLabel.setForeground(UIUtil.getContextHelpForeground());
             metaLabel.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
 
-            skipLabel = new JLabel("\u29BB");  // ⦻ skip symbol
+            skipLabel = new JLabel("\u29BB");  // 閻?skip symbol
             skipLabel.setForeground(UIUtil.getContextHelpForeground());
             skipLabel.setFont(UIUtil.getLabelFont(UIUtil.FontSize.SMALL));
             skipLabel.setToolTipText("Skip this command");
@@ -6791,14 +6790,14 @@ final class ChatPanel {
             repaint();
         }
 
-        /** Called when streaming starts — auto-expands and resets manual-expand state. */
+        /** Called when streaming starts 闁?auto-expands and resets manual-expand state. */
         void autoExpand() {
             manuallyExpanded = false;
             setExpanded(true);
             scrollToBottomSmart();
         }
 
-        /** Called when streaming ends — collapses only if the user has not manually expanded. */
+        /** Called when streaming ends 闁?collapses only if the user has not manually expanded. */
         void autoCollapse() {
             if (!manuallyExpanded) {
                 setExpanded(false);
@@ -6814,14 +6813,14 @@ final class ChatPanel {
         }
     }
 
-    // ── Tabler "History" icon — redrawn in Java2D from the MIT-licensed SVG ──
+    // 闁冲厜鍋撻柍鍏夊亾 Tabler "History" icon 闁?redrawn in Java2D from the MIT-licensed SVG 闁冲厜鍋撻柍鍏夊亾
     // Source: https://tabler.io/icons  (MIT License)
     // Original viewBox: 0 0 24 24, stroke-width=2, stroke-linecap/join=round
     //
     // Paths:
-    //   M12 8 l0 4 l2 2          → clock hands
-    //   M3.05 11 a9 9 0 1 1 .5 4 → large clockwise arc (most of the clock circle)
-    //   m-.5 5 v-5 h5            → undo arrow at bottom-left
+    //   M12 8 l0 4 l2 2          闁?clock hands
+    //   M3.05 11 a9 9 0 1 1 .5 4 闁?large clockwise arc (most of the clock circle)
+    //   m-.5 5 v-5 h5            闁?undo arrow at bottom-left
     private static final class TablerHistoryIcon implements Icon {
         private final int size;
 
@@ -6836,28 +6835,28 @@ final class ChatPanel {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
                 g2.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
 
-                // Use the button's foreground (set by applyTopNavButtonTheme — respects dark/light)
+                // Use the button's foreground (set by applyTopNavButtonTheme 闁?respects dark/light)
                 g2.setColor(c != null ? c.getForeground() : Color.GRAY);
                 g2.translate(x, y);
 
-                // Scale from the SVG's 24×24 coordinate space to our icon size
+                // Scale from the SVG's 24閼?4 coordinate space to our icon size
                 double scale = size / 24.0;
                 g2.scale(scale, scale);
 
                 BasicStroke round = new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND);
                 g2.setStroke(round);
 
-                // ── Clock circle (large clockwise arc) ───────────────────────
+                // 闁冲厜鍋撻柍鍏夊亾 Clock circle (large clockwise arc) 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋?
                 // Arc from (3.05, 11) to (3.55, 15), radius=9, centre=(12,12).
-                // Java2D start angle=173.6°, extent=-334° (clockwise = negative).
+                // Java2D start angle=173.6閹? extent=-334閹?(clockwise = negative).
                 g2.draw(new Arc2D.Double(3, 3, 18, 18, 173.6, -334.0, Arc2D.OPEN));
 
-                // ── Clock hands (M12 8 l0 4 l2 2) ────────────────────────────
+                // 闁冲厜鍋撻柍鍏夊亾 Clock hands (M12 8 l0 4 l2 2) 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
                 g2.draw(new Line2D.Double(12, 8, 12, 12));
                 g2.draw(new Line2D.Double(12, 12, 14, 14));
 
-                // ── Undo arrow (m-.5 5 v-5 h5 from arc end (3.55,15)) ────────
-                // Absolute coords: (3.05,20) → (3.05,15) → (8.05,15)
+                // 闁冲厜鍋撻柍鍏夊亾 Undo arrow (m-.5 5 v-5 h5 from arc end (3.55,15)) 闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾闁冲厜鍋撻柍鍏夊亾
+                // Absolute coords: (3.05,20) 闁?(3.05,15) 闁?(8.05,15)
                 Path2D.Double arrow = new Path2D.Double();
                 arrow.moveTo(3.05, 20);
                 arrow.lineTo(3.05, 15);

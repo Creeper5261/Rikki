@@ -3,118 +3,40 @@ package com.zzf.rikki.idea.agent
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.openapi.project.Project
-import com.zzf.rikki.idea.settings.RikkiSettings
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.withContext
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URI
-import java.nio.charset.StandardCharsets
-import java.util.UUID
+import com.zzf.rikki.idea.agent.compat.ChatRuntimeRequest
+import com.zzf.rikki.idea.agent.compat.InMemoryPendingApprovalService
+import com.zzf.rikki.idea.agent.compat.LiteCompatRuntime
+import com.zzf.rikki.idea.agent.compat.LiteModelSupport
+import com.zzf.rikki.idea.agent.compat.LiteToolExecutor
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-/** Runs the agentic LLM loop and emits SSE events through [LiteSseWriter]. */
+/** Thin facade over the compat runtime adapter. */
 class LiteAgentEngine(
-    private val project: Project,
-    private val mapper: ObjectMapper
+    project: Project,
+    mapper: ObjectMapper,
+    private val pendingApprovalService: InMemoryPendingApprovalService = InMemoryPendingApprovalService(),
+    toolExecutor: LiteToolExecutor = LiteToolExecutor(project, mapper, pendingApprovalService)
 ) {
-    companion object {
-        private const val MAX_STEPS = 120
-        private const val MAX_OUTPUT = 8_000
+    private val runtimeFacade = LiteCompatRuntime(
+        project = project,
+        mapper = mapper,
+        pendingApprovalService = pendingApprovalService,
+        toolExecutor = toolExecutor
+    )
 
-        /**
-         * Returns capabilities for the given provider + model combination.
-         * Sources:
-         *  - DeepSeek: https://api-docs.deepseek.com/guides/thinking_mode
-         *  - OpenAI o1: https://platform.openai.com/docs/guides/reasoning
-         *  - OpenAI o3/o4: https://platform.openai.com/docs/models
-         */
-        internal fun detectCapabilities(provider: String, model: String): ModelCapabilities {
-            val m = model.trim().lowercase()
-            return when {
-                // DeepSeek R1: exposes reasoning_content in streaming delta
-                m == "deepseek-reasoner" ->
-                    ModelCapabilities(hasReasoningContent = true)
+    fun approvalService(): InMemoryPendingApprovalService = pendingApprovalService
 
-                // OpenAI o1 / o1-mini / o1-preview
-                // Requires: developer role, temperature=1, max_completion_tokens,
-                // does NOT support function calling (tools).
-                provider == "OPENAI" && (m == "o1" || m == "o1-mini" || m == "o1-preview") ->
-                    ModelCapabilities(
-                        systemRole          = "developer",
-                        temperatureFixed    = 1.0,
-                        maxTokensKey        = "max_completion_tokens",
-                        supportsTools       = false
-                    )
-
-                // OpenAI o3 / o4 series
-                // Full tool support; max_tokens is deprecated, use max_completion_tokens.
-                provider == "OPENAI" && (m.startsWith("o3") || m.startsWith("o4")) ->
-                    ModelCapabilities(maxTokensKey = "max_completion_tokens")
-
-                // Everything else: standard OpenAI-compatible behaviour
-                else -> ModelCapabilities()
-            }
-        }
-
-        /**
-         * Parses a history line into a (role, content) pair.
-         * Returns null if the line does not start with a recognised prefix.
-         */
-        internal fun parseHistoryLine(text: String): Pair<String, String>? = when {
-            text.startsWith("You:")       -> "user"      to text.removePrefix("You:").trim()
-            text.startsWith("Agent:")     -> "assistant" to text.removePrefix("Agent:").trim()
-            text.startsWith("Assistant:") -> "assistant" to text.removePrefix("Assistant:").trim()
-            text.startsWith("System:")    -> "system"    to text.removePrefix("System:").trim()
-            else                          -> null
+    fun setSkipFlag(flag: AtomicBoolean) {
+        if (flag.get()) {
+            pendingApprovalService.skipCurrentExecution()
         }
     }
 
-    // Model capabilities
-
-    /**
-     * Provider-specific and model-specific capabilities derived from official
-     * API documentation. All fields default to the standard OpenAI-compatible
-     * behaviour so that unknown models work without special handling.
-     *
-     * @param systemRole         Role name for the system/instruction message.
-     *                           OpenAI o1/o1-mini require "developer"; everything
-     *                           else uses "system".
-     * @param temperatureFixed   Exact temperature value that must be sent.
-     *                           o1/o1-mini only accept 1.0. null = use default.
-     * @param maxTokensKey       Parameter name for the token limit.
-     *                           OpenAI o-series uses "max_completion_tokens";
-     *                           all others use "max_tokens".
-     * @param supportsTools      Whether the model accepts a "tools" array.
-     *                           o1/o1-mini originally did not; kept false for
-     *                           safety - users who know their model supports
-     *                           tools can switch to o3/o4-mini instead.
-     * @param hasReasoningContent Whether the model returns a "reasoning_content"
-     *                           delta field that must be replayed in assistant
-     *                           history messages (deepseek-reasoner / R1).
-     */
-    data class ModelCapabilities(
-        val systemRole: String          = "system",
-        val temperatureFixed: Double?   = null,
-        val maxTokensKey: String        = "max_tokens",
-        val supportsTools: Boolean      = true,
-        val hasReasoningContent: Boolean = false
-    )
-
-    // Agent loop
-
-    private val tools = LiteToolRegistry(project, mapper)
-
-    fun setSkipFlag(flag: AtomicBoolean) { tools.setSkipFlag(flag) }
-
-    private var confirmFutureRef: AtomicReference<CompletableFuture<Boolean>?>? = null
-    fun setConfirmFutureRef(ref: AtomicReference<CompletableFuture<Boolean>?>) { confirmFutureRef = ref }
+    fun setConfirmFutureRef(ref: AtomicReference<CompletableFuture<Boolean>?>) {
+        ref.set(null)
+    }
 
     suspend fun run(
         goal: String,
@@ -125,392 +47,24 @@ class LiteAgentEngine(
         sessionId: String,
         sseWriter: LiteSseWriter
     ) {
-        val s    = RikkiSettings.getInstance().state
-        val sid  = sessionId.ifBlank { UUID.randomUUID().toString() }
-        val caps = detectCapabilities(s.provider, s.modelName)
-
-        sseWriter.emitSession(sid)
-        sseWriter.emitStatus("busy", "Agent is thinking...")
-
-        tools.ide.ideContextNode = ideContext
-        val ideCapabilitySnapshot = tools.ide.refreshCapabilities()
-        val toolDefinitions = tools.toolDefinitions(ideCapabilitySnapshot)
-
-        // Build initial message list
-        val messages = mutableListOf<Map<String, Any?>>()
-        val systemPrompt = buildSystemPrompt(workspaceRoot, ideContext, caps, ideCapabilitySnapshot)
-        messages += mapOf("role" to caps.systemRole, "content" to systemPrompt)
-
-        // Replay history
-        if (history.isArray) {
-            for (line in history) {
-                val text = line.asText("").trim()
-                if (text.isBlank()) continue
-                val (role, content) = parseHistoryLine(text) ?: continue
-                messages += mapOf("role" to role, "content" to content)
-            }
-        }
-        messages += mapOf("role" to "user", "content" to goal)
-
-        var textAnswer = ""
-        var msgIdx = 0
-
-        for (step in 0 until MAX_STEPS) {
-            val msgId  = "msg_$msgIdx"
-            val result = callLlmStreaming(messages, caps, toolDefinitions, sseWriter, msgId)
-            textAnswer = result.text
-
-            // Build assistant history entry
-            val assistantMsg = mutableMapOf<String, Any?>("role" to "assistant")
-            assistantMsg["content"] = result.text.ifBlank { null }
-            // Carry reasoning_content for models that require it (deepseek-reasoner)
-            if (caps.hasReasoningContent && result.reasoningContent.isNotBlank()) {
-                assistantMsg["reasoning_content"] = result.reasoningContent
-            }
-            if (result.toolCalls.isNotEmpty()) {
-                assistantMsg["tool_calls"] = result.toolCalls.map { tc ->
-                    mapOf(
-                        "id" to tc.id, "type" to "function",
-                        "function" to mapOf("name" to tc.name, "arguments" to tc.argsRaw)
-                    )
-                }
-            }
-            messages += assistantMsg
-
-            if (result.toolCalls.isEmpty()) break
-
-            // Execute each tool
-            for ((idx, tc) in result.toolCalls.withIndex()) {
-                val partId = "part_${msgIdx}_$idx"
-                val argsMap = try {
-                    @Suppress("UNCHECKED_CAST")
-                    mapper.convertValue(tc.args, Map::class.java) as Map<String, Any?>
-                } catch (_: Exception) { emptyMap() }
-
-                sseWriter.emitToolCall(partId, tc.name, tc.id, msgId, "pending", tc.name, argsMap)
-
-                // High-risk inline confirmation
-                if (tools.isHighRisk(tc.name, tc.args)) {
-                    val command = if (tc.name == "bash")
-                        tc.args.path("command").asText("(unknown)")
-                    else
-                        "Delete: ${tc.args.path("filePath").asText("(unknown)")}"
-
-                    sseWriter.emitToolConfirm(partId, tc.id, command, tc.name)
-                    sseWriter.emitStatus("waiting_approval", "Awaiting your approval...")
-
-                    val future = CompletableFuture<Boolean>()
-                    confirmFutureRef?.set(future)
-                    val approved = try {
-                        withContext(Dispatchers.IO) { future.get(1L, TimeUnit.HOURS) }
-                    } catch (ce: kotlinx.coroutines.CancellationException) {
-                        throw ce
-                    } catch (_: Exception) { false }
-                    confirmFutureRef?.set(null)
-
-                    sseWriter.emitStatus("busy", "Agent is thinking...")
-
-                    if (!approved) {
-                        sseWriter.emitToolResult(
-                            partId, tc.name, tc.id, msgId, "rejected", tc.name,
-                            "(User rejected this command.)"
-                        )
-                        messages += mapOf(
-                            "role" to "tool", "tool_call_id" to tc.id,
-                            "content" to "(User rejected this command. Do not retry.)"
-                        )
-                        continue
-                    }
-                }
-
-                sseWriter.emitToolCall(partId, tc.name, tc.id, msgId, "running", tc.name, argsMap)
-
-                val toolResult = tools.execute(tc.name, tc.args, workspaceRoot, sid, tc.id)
-
-                val meta: Map<String, Any?>? = if (toolResult.pendingChangePath != null) {
-                    mapOf(
-                        "workspaceApplied" to true,
-                        "pending_change" to mapOf(
-                            "path"          to toolResult.pendingChangePath,
-                            "type"          to toolResult.pendingChangeType,
-                            "oldContent"    to toolResult.pendingChangeOld,
-                            "newContent"    to toolResult.pendingChangeNew,
-                            "workspaceRoot" to workspaceRoot,
-                            "sessionId"     to sid
-                        )
-                    )
-                } else null
-
-                if (toolResult.error != null) {
-                    sseWriter.emitToolResult(partId, tc.name, tc.id, msgId, "error", tc.name, "", toolResult.error)
-                    messages += mapOf("role" to "tool", "tool_call_id" to tc.id, "content" to "Error: ${toolResult.error}")
-                } else {
-                    val out = toolResult.output.take(MAX_OUTPUT)
-                    sseWriter.emitToolResult(partId, tc.name, tc.id, msgId, "completed", tc.name, out, meta = meta)
-                    messages += mapOf("role" to "tool", "tool_call_id" to tc.id, "content" to out)
-                }
-
-                if (tc.name == "todo_write" && toolResult.error == null) {
-                    val todosJson = tools.readTodosJson(workspaceRoot, sid)
-                    if (!todosJson.isNullOrBlank()) {
-                        sseWriter.emitTodoUpdated(todosJson, sid)
-                    }
-                }
-            }
-            msgIdx++
-        }
-
-        sseWriter.emitFinish(sid, "msg_$msgIdx", textAnswer)
-        sseWriter.emitStatus("idle", "Ready")
-    }
-
-    // LLM streaming
-
-    data class ToolCallInfo(val id: String, val name: String, val argsRaw: String, val args: JsonNode)
-    data class LlmResult(val text: String, val toolCalls: List<ToolCallInfo>, val reasoningContent: String = "")
-
-    private suspend fun callLlmStreaming(
-        messages: List<Map<String, Any?>>,
-        caps: ModelCapabilities,
-        toolDefinitions: List<Map<String, Any>>,
-        sseWriter: LiteSseWriter,
-        msgId: String
-    ): LlmResult = withContext(Dispatchers.IO) {
-        val s      = RikkiSettings.getInstance().state
-        val apiKey = s.currentApiKey()
-        if (apiKey.isBlank() && s.provider != "OLLAMA")
-            return@withContext LlmResult("Error: API key not configured.", emptyList())
-
-        val model   = s.modelName.ifBlank { "deepseek-chat" }
-        val baseUrl = s.currentBaseUrl().trimEnd('/')
-
-        val body = buildRequestBody(model, messages, caps, toolDefinitions)
-        val conn = openConnection("$baseUrl/chat/completions", apiKey)
-            ?: return@withContext LlmResult("Error: cannot connect to LLM endpoint.", emptyList())
-
-        try {
-            conn.outputStream.use { it.write(body.toByteArray(StandardCharsets.UTF_8)) }
-            if (conn.responseCode !in 200..299) {
-                val errBody = try {
-                    conn.errorStream?.bufferedReader(StandardCharsets.UTF_8)?.readText()?.trim()?.take(400) ?: ""
-                } catch (_: Exception) { "" }
-                val msg = if (errBody.isNotBlank()) "Error: HTTP ${conn.responseCode} - $errBody"
-                          else "Error: HTTP ${conn.responseCode}"
-                return@withContext LlmResult(msg, emptyList())
-            }
-
-            val textBuf      = StringBuilder()
-            val reasoningBuf = StringBuilder()
-            val tcAccum      = mutableMapOf<Int, Triple<String, String, StringBuilder>>()
-            var finishReason = ""
-
-            BufferedReader(InputStreamReader(conn.inputStream, StandardCharsets.UTF_8)).use { br ->
-                var line: String?
-                while (br.readLine().also { line = it } != null) {
-                    currentCoroutineContext().ensureActive()
-                    val l = line ?: continue
-                    if (!l.startsWith("data:")) continue
-                    val data = l.removePrefix("data:").trim()
-                    if (data == "[DONE]" || data.isEmpty()) continue
-                    val chunk = try { mapper.readTree(data) } catch (_: Exception) { continue }
-
-                    val choice = chunk.path("choices").path(0)
-                    val delta  = choice.path("delta")
-
-                    // Text content
-                    val textDelta = extractChunkTextDelta(choice, delta)
-                    if (textDelta.isNotEmpty()) {
-                        sseWriter.emitMessage(msgId, textDelta)
-                        textBuf.append(textDelta)
-                    }
-
-                    val reasoningDelta = extractChunkReasoningDelta(choice, delta)
-                    if (reasoningDelta.isNotEmpty()) {
-                        sseWriter.emitThought(msgId, reasoningDelta)
-                        reasoningBuf.append(reasoningDelta)
-                    }
-
-                    // Tool call deltas
-                    val tcDeltas = delta.path("tool_calls")
-                    if (tcDeltas.isArray) {
-                        for (tc in tcDeltas) {
-                            val idx      = tc.path("index").asInt(0)
-                            val id       = tc.path("id").asText("")
-                            val name     = tc.path("function").path("name").asText("")
-                            val argChunk = tc.path("function").path("arguments").asText("")
-                            val cur      = tcAccum[idx]
-                            if (cur == null) {
-                                tcAccum[idx] = Triple(id, name, StringBuilder(argChunk))
-                            } else {
-                                tcAccum[idx] = Triple(
-                                    id.ifBlank { cur.first },
-                                    name.ifBlank { cur.second },
-                                    cur.third.append(argChunk)
-                                )
-                            }
-                        }
-                    }
-
-                    val fr = choice.path("finish_reason")
-                    if (!fr.isNull && !fr.isMissingNode) finishReason = fr.asText("")
-                }
-            }
-
-            if (reasoningBuf.isNotEmpty()) sseWriter.emitThoughtEnd(msgId)
-
-            val toolCalls = tcAccum.entries.sortedBy { it.key }.mapNotNull { (_, triple) ->
-                val (id, name, argsBuf) = triple
-                if (name.isBlank()) return@mapNotNull null
-                val raw  = argsBuf.toString()
-                val node = try { mapper.readTree(raw) } catch (_: Exception) { mapper.createObjectNode() }
-                ToolCallInfo(id, name, raw, node)
-            }
-
-            LlmResult(
-                textBuf.toString(),
-                if (finishReason == "tool_calls" || toolCalls.isNotEmpty()) toolCalls else emptyList(),
-                reasoningBuf.toString()
-            )
-        } finally {
-            conn.disconnect()
-        }
-    }
-
-    private fun openConnection(url: String, apiKey: String): HttpURLConnection? = try {
-        (URI.create(url).toURL().openConnection() as HttpURLConnection).apply {
-            requestMethod = "POST"
-            setRequestProperty("Content-Type", "application/json")
-            if (apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer $apiKey")
-            doOutput = true
-            connectTimeout = 10_000
-            readTimeout    = 180_000
-        }
-    } catch (_: Exception) { null }
-
-    private fun buildRequestBody(
-        model: String,
-        messages: List<Map<String, Any?>>,
-        caps: ModelCapabilities,
-        toolDefinitions: List<Map<String, Any>>
-    ): String {
-        val body = mutableMapOf<String, Any?>(
-            "model"            to model,
-            "stream"           to true,
-            caps.maxTokensKey  to 8192,
-            "temperature"      to (caps.temperatureFixed ?: 0.1),
-            "messages"         to messages
+        runtimeFacade.run(
+            request = ChatRuntimeRequest(
+                goal = goal,
+                workspaceRoot = workspaceRoot,
+                ideContext = ideContext,
+                history = history,
+                settings = settings,
+                sessionId = sessionId
+            ),
+            sink = sseWriter
         )
-        if (caps.supportsTools && toolDefinitions.isNotEmpty()) {
-            body["tools"] = toolDefinitions
-        }
-        return mapper.writeValueAsString(body)
-    }
-    private fun extractChunkTextDelta(choice: JsonNode, delta: JsonNode): String {
-        textFromNode(delta.path("content")).let { if (it.isNotEmpty()) return it }
-        textFromNode(delta.path("text")).let { if (it.isNotEmpty()) return it }
-        textFromNode(choice.path("message").path("content")).let { if (it.isNotEmpty()) return it }
-        return ""
     }
 
-    private fun extractChunkReasoningDelta(choice: JsonNode, delta: JsonNode): String {
-        textFromNode(delta.path("reasoning_content")).let { if (it.isNotEmpty()) return it }
-        textFromNode(delta.path("reasoning")).let { if (it.isNotEmpty()) return it }
-        textFromNode(delta.path("reasoning_delta")).let { if (it.isNotEmpty()) return it }
-        textFromNode(delta.path("thinking")).let { if (it.isNotEmpty()) return it }
-        textFromNode(delta.path("reasoning_text")).let { if (it.isNotEmpty()) return it }
-        textFromNode(choice.path("message").path("reasoning_content")).let { if (it.isNotEmpty()) return it }
-        textFromNode(choice.path("message").path("reasoning")).let { if (it.isNotEmpty()) return it }
-        textFromNode(choice.path("message").path("thinking")).let { if (it.isNotEmpty()) return it }
-        return ""
+    companion object {
+        fun detectCapabilities(provider: String, model: String) =
+            LiteModelSupport.detectCapabilities(provider, model)
+
+        fun parseHistoryLine(text: String): Pair<String, String>? =
+            LiteModelSupport.parseHistoryLine(text)
     }
-
-    private fun textFromNode(node: JsonNode?): String {
-        if (node == null || node.isMissingNode || node.isNull) {
-            return ""
-        }
-        if (node.isTextual) {
-            return node.asText("")
-        }
-        if (node.isArray) {
-            val sb = StringBuilder()
-            for (item in node) {
-                val text = textFromNode(item)
-                if (text.isNotEmpty()) {
-                    sb.append(text)
-                } else if (item.isObject) {
-                    val candidate = textFromNode(item.path("text"))
-                    if (candidate.isNotEmpty()) {
-                        sb.append(candidate)
-                    }
-                }
-            }
-            return sb.toString()
-        }
-        if (node.isObject) {
-            textFromNode(node.path("text")).let { if (it.isNotBlank()) return it }
-            textFromNode(node.path("content")).let { if (it.isNotBlank()) return it }
-            return ""
-        }
-        return node.asText("")
-    }
-
-    // System prompt
-
-    private fun buildSystemPrompt(
-        workspaceRoot: String,
-        ideContext: JsonNode,
-        caps: ModelCapabilities,
-        ideCapabilities: com.zzf.rikki.idea.agent.tools.LiteIdeTools.CapabilitySnapshot
-    ): String {
-        val sb = StringBuilder(if (caps.supportsTools) SYSTEM_PROMPT else SYSTEM_PROMPT_NO_TOOLS)
-        sb.append("\n\nWorking directory: $workspaceRoot")
-        sb.append("\nIDE bridge available: ${ideCapabilities.bridgeAvailable}")
-        if (ideCapabilities.actionOperations.isNotEmpty()) {
-            sb.append("\nIDE actions available: ${ideCapabilities.actionOperations.joinToString(", ")}")
-        }
-        if (!ideContext.isNull && !ideContext.isMissingNode && ideContext.size() > 0) {
-            sb.append("\n\n<ide_context>\n")
-            sb.append(mapper.writerWithDefaultPrettyPrinter().writeValueAsString(ideContext))
-            sb.append("\n</ide_context>")
-        }
-        return sb.toString()
-    }
-
-    private val SYSTEM_PROMPT = """
-You are Rikki, a powerful AI coding agent.
-
-You are an interactive assistant that helps users with software engineering tasks. Use the tools available to you to assist the user.
-
-## Editing constraints
-- Default to ASCII when editing or creating files. Only introduce non-ASCII characters when there is a clear justification.
-- Only add comments if they are necessary to make a non-obvious block easier to understand.
-
-## Tool usage
-- Prefer specialized tools over shell for file operations:
-  - Use read to view files, edit to modify files, write only when creating new files.
-  - Use glob to find files by name and grep to search file contents.
-- Build and test should default to bash so results stay close to CI scripts.
-- Prefer ide_action for run/debug/status when that tool is available.
-- If IDE capability is uncertain, call ide_capabilities first.
-- If ide_action is unavailable or returns unsupported, fall back to bash.
-- Run tool calls in parallel when outputs are independent; otherwise run sequentially.
-
-## Workflow
-- For complex or multi-step tasks, use the todo_write tool to break the work into clear steps before starting. Update each item's status (in_progress -> completed) as you work through them.
-- If the conversation already has prior tool/todo context, continue from unfinished work and avoid recreating the whole todo list unless the task scope changed.
-- On resumed conversations, prefer todo_read first; if todos already exist, update progress instead of rewriting from scratch.
-- When making tool calls, do not include any text in your response - only call the tools. Reserve text for the final step after all tool calls are complete.
-- Default to doing the work without asking questions.
-- Only ask when truly blocked after checking relevant context.
-- Be concise and friendly.
-    """.trimIndent()
-
-    /** Prompt variant for models that do not support function calling (e.g. o1/o1-mini). */
-    private val SYSTEM_PROMPT_NO_TOOLS = """
-You are Rikki, an AI coding assistant.
-
-This model does not support tool calls, so you cannot execute code or read files directly.
-Provide clear, detailed answers and code snippets the user can apply manually.
-Be concise and friendly.
-    """.trimIndent()
 }
