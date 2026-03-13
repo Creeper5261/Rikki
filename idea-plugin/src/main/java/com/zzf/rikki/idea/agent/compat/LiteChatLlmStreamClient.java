@@ -24,7 +24,7 @@ public class LiteChatLlmStreamClient implements LlmPort {
 
     @Override
     public LlmStreamResult streamChat(LlmChatRequest request, LlmStreamListener listener) {
-        RikkiSettings.State settings = RikkiSettings.Companion.getInstance().getState();
+        RikkiSettings.State settings = RikkiSettings.getInstance().getState();
         String apiKey = settings.currentApiKey();
         if ((apiKey == null || apiKey.isBlank()) && !"OLLAMA".equals(settings.getProvider())) {
             return new LlmStreamResult("Error: API key not configured.", List.of());

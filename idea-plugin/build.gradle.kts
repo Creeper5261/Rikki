@@ -1,6 +1,5 @@
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "1.9.22"
     id("org.jetbrains.intellij") version "1.17.4"
 }
 
@@ -13,35 +12,72 @@ java {
     }
 }
 
-kotlin {
-    jvmToolchain(17)
+fun readUnsignedShort(bytes: ByteArray, offset: Int): Int {
+    return ((bytes[offset].toInt() and 0xFF) shl 8) or (bytes[offset + 1].toInt() and 0xFF)
+}
+
+fun writeUnsignedShort(bytes: ByteArray, offset: Int, value: Int) {
+    bytes[offset] = ((value ushr 8) and 0xFF).toByte()
+    bytes[offset + 1] = (value and 0xFF).toByte()
+}
+
+fun patchInlineCompletionProviderClass(file: File) {
+    if (!file.exists()) {
+        throw GradleException("Inline completion provider class not found: $file")
+    }
+    val bytes = file.readBytes()
+    var index = 8
+    val constantPoolCount = readUnsignedShort(bytes, index)
+    index += 2
+    var nameOffset = -1
+    var entryIndex = 1
+    while (entryIndex < constantPoolCount) {
+        val tag = bytes[index].toInt() and 0xFF
+        index += 1
+        when (tag) {
+            1 -> {
+                val length = readUnsignedShort(bytes, index)
+                index += 2
+                val value = String(bytes, index, length, Charsets.UTF_8)
+                if (value == "getId_S2YkoFA") {
+                    nameOffset = index
+                }
+                index += length
+            }
+            3, 4 -> index += 4
+            5, 6 -> index += 8
+            7, 8, 16, 19, 20 -> index += 2
+            9, 10, 11, 12, 17, 18 -> index += 4
+            15 -> index += 3
+            else -> throw GradleException("Unsupported constant pool tag $tag while patching $file")
+        }
+        entryIndex += if (tag == 5 || tag == 6) 2 else 1
+    }
+    if (nameOffset < 0) {
+        throw GradleException("Method name getId_S2YkoFA not found in $file")
+    }
+    val accessFlags = readUnsignedShort(bytes, index)
+    writeUnsignedShort(bytes, index, accessFlags and 0xFBFF)
+    "getId-S2YkoFA".toByteArray(Charsets.UTF_8).copyInto(bytes, nameOffset)
+    file.writeBytes(bytes)
 }
 
 repositories {
     mavenCentral()
 }
 
-// Force Kotlin stdlib version to match what IntelliJ 2024.1 bundles.
-// This prevents older versions (e.g. from the root project's Spring BOM) from
-// replacing 1.9.x and breaking the Kotlin compiler at build time.
-configurations.all {
-    resolutionStrategy.eachDependency {
-        if (requested.group == "org.jetbrains.kotlin") {
-            useVersion("1.9.22")
-            because("IntelliJ 2024.1 bundles Kotlin 1.9.22; compiler and stdlib must match")
-        }
-    }
+fun isLegacyKotlinBuildOutput(file: File): Boolean {
+    val normalized = file.absolutePath.replace('\\', '/')
+    return normalized.contains("/idea-plugin/build/classes/kotlin")
+            || normalized.contains("/idea-plugin/build/classes/kotlin-runtime")
+            || normalized.contains("/idea-plugin/build/instrumented/")
 }
 
-// Kotlin stdlib and Jackson are bundled inside IntelliJ Platform (util-8.jar /
-// lib-client.jar). Exclude them from the packaged plugin to avoid shipping
-// ~3.5 MB of duplicate JARs.
-configurations.runtimeClasspath {
+configurations.configureEach {
     exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-common")
     exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk7")
     exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk8")
-    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-common")
-    exclude(group = "com.fasterxml.jackson.core")
 }
 
 dependencies {
@@ -73,32 +109,12 @@ tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
 }
 
-tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-    kotlinOptions {
-        jvmTarget = "17"
-        freeCompilerArgs = listOf("-Xjvm-default=all")
+val patchInlineCompletionProviderAbi by tasks.registering {
+    dependsOn(tasks.named("compileJava"))
+    doLast {
+        val providerClass = layout.buildDirectory.file("classes/java/main/com/zzf/rikki/idea/completion/RikkiInlineCompletionProvider.class").get().asFile
+        patchInlineCompletionProviderClass(providerClass)
     }
-}
-
-tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileKotlin") {
-    destinationDirectory.set(layout.buildDirectory.dir("classes/kotlin-runtime/main"))
-    setSource(
-        fileTree("src/main/kotlin") {
-            include("com/zzf/rikki/idea/settings/**")
-            include("com/zzf/rikki/idea/completion/**")
-            include("com/zzf/rikki/idea/llm/**")
-        }
-    )
-}
-
-tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileTestKotlin") {
-    destinationDirectory.set(layout.buildDirectory.dir("classes/kotlin-runtime/test"))
-    setSource(
-        fileTree("src/test/kotlin") {
-            include("com/zzf/rikki/idea/agent/LiteSseWriterTest.kt")
-            include("com/zzf/rikki/idea/agent/compat/InMemoryPendingApprovalServiceTest.kt")
-        }
-    )
 }
 
 tasks.buildSearchableOptions {
@@ -126,26 +142,39 @@ tasks.runIde {
     jvmArgs("-Djb.vmOptionsFile=${project.file("src/main/resources/idea.vmoptions").absolutePath}")
 }
 
-tasks.named<Jar>("jar") {
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-    exclude("com/zzf/rikki/idea/agent/compat/InteropBridgeKt*")
-    exclude("com/zzf/rikki/idea/agent/compat/LiteCompatRuntime*")
-    exclude("com/zzf/rikki/idea/agent/compat/PromptPart*")
-    exclude("com/zzf/rikki/idea/agent/compat/PromptReminderService*")
-    exclude("com/zzf/rikki/idea/agent/compat/PromptStrategy*")
-    exclude("com/zzf/rikki/idea/agent/compat/PromptTextLoader*")
-    exclude("com/zzf/rikki/idea/agent/compat/Session*")
-    exclude("com/zzf/rikki/idea/agent/compat/ToolExecutorPortAdapter*")
-    exclude("com/zzf/rikki/idea/agent/compat/*Kt*")
-    exclude("com/zzf/rikki/idea/agent/LiteAgentEngine${'$'}*")
-    exclude("com/zzf/rikki/idea/agent/LiteAgentServer${'$'}*")
-    exclude("com/zzf/rikki/idea/agent/tools/LiteFileTools${'$'}Companion*")
-    exclude("com/zzf/rikki/idea/agent/tools/LiteFileTools${'$'}glob*")
-    exclude("com/zzf/rikki/idea/agent/tools/LiteFileTools${'$'}grep*")
-    exclude("com/zzf/rikki/idea/agent/tools/LiteFileTools${'$'}list*")
-    exclude("com/zzf/rikki/idea/agent/tools/LiteTodoTools${'$'}TodoItem*")
+tasks.named("classes") {
+    dependsOn(patchInlineCompletionProviderAbi)
+}
+
+tasks.named("instrumentCode") {
+    enabled = false
+}
+
+tasks.named("instrumentTestCode") {
+    enabled = false
+}
+
+tasks.named<Jar>("instrumentedJar") {
+    enabled = false
+}
+
+tasks.named<org.jetbrains.intellij.tasks.PrepareSandboxTask>("prepareSandbox") {
+    pluginJar.set(tasks.named<Jar>("jar").flatMap { it.archiveFile })
+}
+
+tasks.named<org.jetbrains.intellij.tasks.PrepareSandboxTask>("prepareTestingSandbox") {
+    pluginJar.set(tasks.named<Jar>("jar").flatMap { it.archiveFile })
 }
 
 tasks.test {
+    dependsOn(patchInlineCompletionProviderAbi)
+    testClassesDirs = files(layout.buildDirectory.dir("classes/java/test"))
+    classpath = files(
+        layout.buildDirectory.dir("classes/java/test"),
+        layout.buildDirectory.dir("resources/test"),
+        layout.buildDirectory.dir("classes/java/main"),
+        layout.buildDirectory.dir("resources/main"),
+        configurations.testRuntimeClasspath
+    ).filter { !isLegacyKotlinBuildOutput(it) }
     useJUnitPlatform()
 }

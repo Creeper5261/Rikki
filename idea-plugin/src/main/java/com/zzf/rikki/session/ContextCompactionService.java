@@ -76,7 +76,12 @@ public class ContextCompactionService {
                 .orElse(DEFAULT_COMPACTION_PROMPT);
         String summary = llmService.completeText(
                 "compaction-" + UUID.randomUUID(),
-                sessionService.toLlmMessages(messages, prompt, capabilities.getSystemRole()),
+                sessionService.toLlmMessages(
+                        messages,
+                        prompt,
+                        capabilities.getSystemRole(),
+                        capabilities.getHasReasoningContent()
+                ),
                 capabilities
         );
         if (summary == null || summary.isBlank()) {

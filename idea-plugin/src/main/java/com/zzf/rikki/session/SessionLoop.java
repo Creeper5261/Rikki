@@ -52,7 +52,7 @@ public class SessionLoop {
     }
 
     public void run(RuntimeRequest request, AgentEventSink sink) {
-        RikkiSettings.State settings = RikkiSettings.Companion.getInstance().getState();
+        RikkiSettings.State settings = RikkiSettings.getInstance().getState();
         SessionInfo session = sessionService.getOrCreate(request.getSessionId(), request.getWorkspaceRoot());
         boolean reused = !sessionService.getMessages(session.id).isEmpty();
         AgentInfo activeAgent = agentService.defaultAgent().orElse(null);

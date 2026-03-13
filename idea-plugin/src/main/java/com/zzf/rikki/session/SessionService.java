@@ -196,10 +196,23 @@ public class SessionService {
     }
 
     public List<Map<String, Object>> toLlmMessages(String sessionId, String systemPrompt, String systemRole) {
-        return toLlmMessages(getFilteredMessages(sessionId), systemPrompt, systemRole);
+        return toLlmMessages(sessionId, systemPrompt, systemRole, false);
+    }
+
+    public List<Map<String, Object>> toLlmMessages(String sessionId, String systemPrompt, String systemRole, boolean includeReasoningContent) {
+        return toLlmMessages(getFilteredMessages(sessionId), systemPrompt, systemRole, includeReasoningContent);
     }
 
     public List<Map<String, Object>> toLlmMessages(List<MessageV2.WithParts> sourceMessages, String systemPrompt, String systemRole) {
+        return toLlmMessages(sourceMessages, systemPrompt, systemRole, false);
+    }
+
+    public List<Map<String, Object>> toLlmMessages(
+            List<MessageV2.WithParts> sourceMessages,
+            String systemPrompt,
+            String systemRole,
+            boolean includeReasoningContent
+    ) {
         List<Map<String, Object>> result = new ArrayList<>();
         result.add(mapOf("role", systemRole, "content", systemPrompt));
         if (sourceMessages == null || sourceMessages.isEmpty()) {
@@ -220,11 +233,15 @@ public class SessionService {
                 continue;
             }
             String text = message.textContent();
+            String reasoning = message.reasoningContent();
             List<MessageV2.ToolPart> toolParts = message.toolParts();
             if (!text.isBlank() || !toolParts.isEmpty()) {
                 LinkedHashMap<String, Object> assistant = new LinkedHashMap<>();
                 assistant.put("role", "assistant");
                 assistant.put("content", text.isBlank() ? null : text);
+                if (includeReasoningContent && (!reasoning.isBlank() || !toolParts.isEmpty())) {
+                    assistant.put("reasoning_content", reasoning);
+                }
                 if (!toolParts.isEmpty()) {
                     List<Map<String, Object>> toolCalls = new ArrayList<>();
                     for (MessageV2.ToolPart part : toolParts) {

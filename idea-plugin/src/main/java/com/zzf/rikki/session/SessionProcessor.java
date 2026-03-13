@@ -85,7 +85,12 @@ public class SessionProcessor {
 
         LlmChatRequest llmRequest = new LlmChatRequest(
                 assistantMessage.info.id,
-                castMaps(sessionService.toLlmMessages(promptMessages, systemPrompt, capabilities.getSystemRole())),
+                castMaps(sessionService.toLlmMessages(
+                        promptMessages,
+                        systemPrompt,
+                        capabilities.getSystemRole(),
+                        capabilities.getHasReasoningContent()
+                )),
                 capabilities,
                 castMaps(toolDefinitions)
         );
