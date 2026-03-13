@@ -3,8 +3,8 @@ package com.zzf.rikki.session;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
-import java.time.LocalDate;
-import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 public final class PromptTextLoader {
     private static final int DEFAULT_BASH_MAX_LINES = 200;
@@ -59,59 +59,58 @@ public final class PromptTextLoader {
         return load("prompts/agent/" + agentName.trim().toLowerCase() + ".txt");
     }
 
+    public static String loadRuntimePrompt(String name) {
+        if (name == null || name.isBlank()) {
+            return "";
+        }
+        return load("prompts/runtime/" + name.trim().toLowerCase() + ".txt");
+    }
+
     public static String loadToolPrompt(String toolId) {
-        String raw = loadFirst(toolPromptCandidates(toolId));
-        return raw == null ? "" : raw.trim();
+        String path = toolPromptPath(toolId);
+        return path.isBlank() ? "" : load(path).trim();
     }
 
     public static String loadToolDescription(String toolId, String workspaceRoot) {
         String raw = loadToolPrompt(toolId);
         if (raw.isBlank()) {
-            return fallbackDescription(toolId);
+            return "";
         }
-        return raw
-                .replace("${directory}", workspaceRoot)
-                .replace("${maxLines}", String.valueOf(DEFAULT_BASH_MAX_LINES))
-                .replace("${maxBytes}", String.valueOf(DEFAULT_BASH_MAX_BYTES))
-                .replace("{{date}}", LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE))
-                .trim();
+        Map<String, Object> variables = new LinkedHashMap<>();
+        variables.put("directory", workspaceRoot == null ? "" : workspaceRoot);
+        variables.put("maxLines", DEFAULT_BASH_MAX_LINES);
+        variables.put("maxBytes", DEFAULT_BASH_MAX_BYTES);
+        variables.put("date", java.time.LocalDate.now().format(java.time.format.DateTimeFormatter.ISO_LOCAL_DATE));
+        return renderTemplate(raw, variables).trim();
     }
 
-    private static String[] toolPromptCandidates(String toolId) {
-        return switch (toolId) {
-            case "bash" -> new String[]{"prompts/tool/bash.txt"};
-            case "read" -> new String[]{"prompts/tool/read.txt"};
-            case "write" -> new String[]{"prompts/tool/write.txt"};
-            case "edit" -> new String[]{"prompts/tool/edit.txt"};
-            case "glob" -> new String[]{"prompts/tool/glob.txt"};
-            case "grep" -> new String[]{"prompts/tool/grep.txt"};
-            case "ls" -> new String[]{"prompts/tool/ls.txt"};
-            case "todo_read" -> new String[]{"prompts/tool/todoread.txt"};
-            case "todo_write" -> new String[]{"prompts/tool/todowrite.txt"};
-            case "task" -> new String[]{"prompts/tool/task.txt"};
-            case "web_search" -> new String[]{"prompts/tool/web_search.txt", "prompts/tool/websearch.txt"};
-            case "search_codebase" -> new String[]{"prompts/tool/search_codebase.txt", "prompts/tool/codesearch.txt"};
-            default -> new String[0];
-        };
-    }
-
-    private static String loadFirst(String[] paths) {
-        for (String path : paths) {
-            String raw = load(path);
-            if (!raw.isBlank()) {
-                return raw;
+    public static String renderTemplate(String raw, Map<String, ?> variables) {
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String rendered = raw;
+        if (variables != null) {
+            for (Map.Entry<String, ?> entry : variables.entrySet()) {
+                String key = entry.getKey();
+                String value = entry.getValue() == null ? "" : String.valueOf(entry.getValue());
+                rendered = rendered.replace("{{" + key + "}}", value);
+                rendered = rendered.replace("${" + key + "}", value);
             }
         }
-        return "";
+        return rendered;
     }
 
-    private static String fallbackDescription(String toolId) {
-        return switch (toolId) {
-            case "delete_file" -> "Delete a file from the workspace.";
-            case "ide_context" -> "Read IDE project/build environment context on demand. Use this when you need SDK, module, or build-system facts.";
-            case "ide_action" -> "Unified IDE-native action tool with async jobs. Supports build/run/test start, status query, cancel, and capability query.";
-            case "ide_capabilities" -> "Fetch available IDE-native bridge capabilities (supported operations, run configurations, async job support).";
-            default -> toolId;
+    private static String toolPromptPath(String toolId) {
+        if (toolId == null || toolId.isBlank()) {
+            return "";
+        }
+        String normalized = toolId.trim().toLowerCase();
+        return switch (normalized) {
+            case "todo_read" -> "prompts/tool/todoread.txt";
+            case "todo_write" -> "prompts/tool/todowrite.txt";
+            case "web_search" -> "prompts/tool/websearch.txt";
+            case "search_codebase" -> "prompts/tool/codesearch.txt";
+            default -> "prompts/tool/" + normalized + ".txt";
         };
     }
 }

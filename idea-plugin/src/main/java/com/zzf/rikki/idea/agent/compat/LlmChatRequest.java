@@ -1,5 +1,7 @@
 package com.zzf.rikki.idea.agent.compat;
 
+import com.zzf.rikki.runtime.RuntimeAgentConfig;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -9,17 +11,20 @@ public class LlmChatRequest {
     private final List<Map<String, Object>> messages;
     private final ModelCapabilities capabilities;
     private final List<Map<String, Object>> toolDefinitions;
+    private final RuntimeAgentConfig config;
 
     public LlmChatRequest(
             String messageId,
             List<Map<String, Object>> messages,
             ModelCapabilities capabilities,
-            List<Map<String, Object>> toolDefinitions
+            List<Map<String, Object>> toolDefinitions,
+            RuntimeAgentConfig config
     ) {
         this.messageId = messageId;
         this.messages = messages == null ? List.of() : new ArrayList<>(messages);
         this.capabilities = capabilities == null ? new ModelCapabilities() : capabilities;
         this.toolDefinitions = toolDefinitions == null ? List.of() : new ArrayList<>(toolDefinitions);
+        this.config = config;
     }
 
     public String getMessageId() {
@@ -36,5 +41,9 @@ public class LlmChatRequest {
 
     public List<Map<String, Object>> getToolDefinitions() {
         return toolDefinitions;
+    }
+
+    public RuntimeAgentConfig getConfig() {
+        return config;
     }
 }

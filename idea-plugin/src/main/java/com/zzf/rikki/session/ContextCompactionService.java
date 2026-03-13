@@ -4,6 +4,7 @@ import com.zzf.rikki.agent.AgentInfo;
 import com.zzf.rikki.agent.AgentService;
 import com.zzf.rikki.idea.agent.compat.ModelCapabilities;
 import com.zzf.rikki.llm.LLMService;
+import com.zzf.rikki.runtime.RuntimeAgentConfig;
 import com.zzf.rikki.session.model.MessageV2;
 import com.zzf.rikki.session.model.PromptPart;
 
@@ -65,7 +66,7 @@ public class ContextCompactionService {
         return totalChars(sessionService.getFilteredMessages(sessionId)) > COMPACT_THRESHOLD_CHARS;
     }
 
-    public boolean compact(String sessionId, ModelCapabilities capabilities) {
+    public boolean compact(String sessionId, ModelCapabilities capabilities, RuntimeAgentConfig config) {
         List<MessageV2.WithParts> messages = sessionService.copyMessages(sessionService.getFilteredMessages(sessionId));
         if (messages.isEmpty()) {
             return false;
@@ -82,8 +83,9 @@ public class ContextCompactionService {
                         capabilities.getSystemRole(),
                         capabilities.getHasReasoningContent()
                 ),
-                capabilities
-        );
+                capabilities,
+                config
+            );
         if (summary == null || summary.isBlank()) {
             summary = fallbackSummary(messages);
         }

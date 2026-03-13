@@ -1,0 +1,27 @@
+name: offline-bash-timeout
+live: false
+workspaceFixture: basic
+goal: Run a command that times out.
+config:
+  provider: DEEPSEEK
+  model: deepseek-reasoner
+expected:
+  requireReasoning: true
+  requireNonEmptyAnswer: true
+  requiredTools:
+    - bash
+  forbiddenEvents:
+    - error
+  toolOutputContains:
+    bash: Command timed out
+script:
+  - reasoning: I should run a short-lived timeout test.
+    toolCalls:
+      - id: call-bash-timeout
+        name: bash
+        args:
+          command: Start-Sleep -Seconds 2; Write-Output 'done'
+          description: Trigger timeout
+          shell: powershell
+          timeout: 100
+  - text: The timeout behavior was exercised.

@@ -4,6 +4,7 @@ import com.zzf.rikki.idea.agent.compat.LlmChatRequest;
 import com.zzf.rikki.idea.agent.compat.LlmStreamListener;
 import com.zzf.rikki.idea.agent.compat.LlmStreamResult;
 import com.zzf.rikki.idea.agent.compat.ModelCapabilities;
+import com.zzf.rikki.runtime.RuntimeAgentConfig;
 import com.zzf.rikki.runtime.port.LlmPort;
 
 import java.util.List;
@@ -20,10 +21,10 @@ public class LLMService {
         return llmPort.streamChat(request, listener);
     }
 
-    public String completeText(String messageId, List<Map<String, Object>> messages, ModelCapabilities capabilities) {
+    public String completeText(String messageId, List<Map<String, Object>> messages, ModelCapabilities capabilities, RuntimeAgentConfig config) {
         StringBuilder buffer = new StringBuilder();
         LlmStreamResult result = llmPort.streamChat(
-                new LlmChatRequest(messageId, cast(messages), capabilities, List.of()),
+                new LlmChatRequest(messageId, cast(messages), capabilities, List.of(), config),
                 new LlmStreamListener() {
                     @Override
                     public void onMessageDelta(String streamedMessageId, String delta) {

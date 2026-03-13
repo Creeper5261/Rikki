@@ -1,0 +1,7 @@
+- Read IDE-native project context gathered from the local bridge
+- Use this tool when you need reliable facts about project structure, SDKs, modules, or build configuration that are better read from the IDE than inferred from files
+
+Usage notes:
+  - query can be one of project, sdk, build, modules, or all
+  - keys can be used to request specific fields only
+  - Prefer this tool before guessing about SDK, module, or build-system state

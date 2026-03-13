@@ -15,6 +15,7 @@ import com.zzf.rikki.idea.agent.tools.LiteBashTool;
 import com.zzf.rikki.idea.agent.tools.LiteFileTools;
 import com.zzf.rikki.idea.agent.tools.LiteIdeTools;
 import com.zzf.rikki.idea.agent.tools.LiteTodoTools;
+import com.zzf.rikki.runtime.RuntimeServicesAware;
 import com.zzf.rikki.runtime.port.ToolExecutorPort;
 import com.zzf.rikki.session.SessionService;
 
@@ -25,7 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
-public class LiteToolExecutor implements ToolExecutorPort {
+public class LiteToolExecutor implements ToolExecutorPort, RuntimeServicesAware {
     private static final List<String> FILE_CHANGE_TOOLS = List.of("write", "edit", "delete_file");
 
     private final ObjectMapper mapper;
@@ -47,7 +48,8 @@ public class LiteToolExecutor implements ToolExecutorPort {
         this.javaToolRegistry = new ToolRegistry(List.of(new WebSearchTool(mapper), new CodeSearchTool(mapper)));
     }
 
-    public void bindServices(SessionService sessionService, AgentService agentService) {
+    @Override
+    public void bindRuntimeServices(SessionService sessionService, AgentService agentService) {
         this.sessionService = sessionService;
         this.agentService = agentService;
         this.javaToolRegistry = new ToolRegistry(List.of(

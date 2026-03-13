@@ -35,8 +35,7 @@ public final class CodeSearchTool implements Tool {
 
     @Override
     public String getDescription() {
-        String prompt = PromptTextLoader.loadToolPrompt("search_codebase");
-        return prompt.isBlank() ? "Search the codebase for relevant code snippets using natural language." : prompt;
+        return PromptTextLoader.loadToolPrompt("search_codebase");
     }
 
     @Override

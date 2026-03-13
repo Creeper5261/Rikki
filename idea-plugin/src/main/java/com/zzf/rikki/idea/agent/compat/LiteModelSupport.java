@@ -1,5 +1,7 @@
 package com.zzf.rikki.idea.agent.compat;
 
+import com.zzf.rikki.runtime.RuntimeAgentConfig;
+
 import java.util.AbstractMap;
 import java.util.Map;
 
@@ -29,6 +31,13 @@ public final class LiteModelSupport {
             return new ModelCapabilities("system", null, "max_completion_tokens", true, false);
         }
         return new ModelCapabilities();
+    }
+
+    public ModelCapabilities detectCapabilities(RuntimeAgentConfig config) {
+        if (config == null) {
+            return new ModelCapabilities();
+        }
+        return detectCapabilities(config.getProvider(), config.getModel());
     }
 
     public Map.Entry<String, String> parseHistoryLine(String text) {

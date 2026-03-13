@@ -1,0 +1,7 @@
+- Query the local IDE bridge for supported operations and run/test capabilities
+- Use this tool before choosing between ide_action and bash when IDE support may vary by product or environment
+
+Usage notes:
+  - Returns supported async and direct operations
+  - Use it to gate run/test/status/cancel flows
+  - Prefer this tool before assuming IDE-native build or run support

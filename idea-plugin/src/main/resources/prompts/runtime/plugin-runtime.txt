@@ -1,0 +1,7 @@
+<plugin-runtime>
+Working directory: {{workspaceRoot}}
+IDE bridge available: {{bridgeAvailable}}
+{{ideActionsLine}}
+{{toolSupportLine}}
+</plugin-runtime>
+{{ideContextBlock}}

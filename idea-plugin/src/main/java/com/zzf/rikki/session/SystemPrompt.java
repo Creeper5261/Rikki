@@ -11,7 +11,9 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -42,43 +44,61 @@ public class SystemPrompt {
             LiteIdeTools.CapabilitySnapshot ideCapabilities,
             String modelId
     ) {
-        StringBuilder sb = new StringBuilder(PromptTextLoader.loadSessionPrompt(modelId));
-        sb.append("\n\n<plugin-runtime>\n");
-        sb.append("Working directory: ").append(workspaceRoot).append('\n');
-        sb.append("IDE bridge available: ").append(ideCapabilities.getBridgeAvailable()).append('\n');
-        if (!ideCapabilities.getActionOperations().isEmpty()) {
-            sb.append("IDE actions available: ").append(String.join(", ", ideCapabilities.getActionOperations())).append('\n');
+        List<String> sections = new ArrayList<>();
+        String sessionPrompt = PromptTextLoader.loadSessionPrompt(modelId);
+        if (!sessionPrompt.isBlank()) {
+            sections.add(sessionPrompt);
         }
-        if (!caps.getSupportsTools()) {
-            sb.append("This model does not support tool calls; answer without executing tools.\n");
+        Map<String, Object> variables = new LinkedHashMap<>();
+        variables.put("workspaceRoot", workspaceRoot);
+        variables.put("bridgeAvailable", ideCapabilities.getBridgeAvailable());
+        variables.put(
+                "ideActionsLine",
+                ideCapabilities.getActionOperations().isEmpty()
+                        ? ""
+                        : "IDE actions available: " + String.join(", ", ideCapabilities.getActionOperations())
+        );
+        variables.put(
+                "toolSupportLine",
+                caps.getSupportsTools()
+                        ? ""
+                        : "This model does not support tool calls; answer without executing tools."
+        );
+        variables.put("ideContextBlock", renderIdeContextBlock(ideContext));
+        String runtimePrompt = PromptTextLoader.renderTemplate(
+                PromptTextLoader.loadRuntimePrompt("plugin-runtime"),
+                variables
+        ).trim();
+        if (!runtimePrompt.isBlank()) {
+            sections.add(runtimePrompt);
         }
-        sb.append("</plugin-runtime>");
-        if (ideContext != null && !ideContext.isMissingNode() && !ideContext.isNull() && ideContext.size() > 0) {
-            try {
-                sb.append("\n\n<ide_context>\n");
-                sb.append(mapper.writerWithDefaultPrettyPrinter().writeValueAsString(ideContext));
-                sb.append("\n</ide_context>");
-            } catch (Exception ignored) {
-            }
-        }
-        return sb.toString();
+        return String.join("\n\n", sections);
     }
 
     private String buildEnvironment(String workspaceRoot) {
-        List<String> lines = new ArrayList<>();
-        lines.add("Here is some useful information about the environment you are running in:");
-        lines.add("<env>");
-        lines.add("  Working directory: " + workspaceRoot);
-        lines.add("  Is directory a git repo: " + (Files.exists(Path.of(workspaceRoot).resolve(".git")) ? "yes" : "no"));
-        lines.add("  Platform: " + System.getProperty("os.name"));
-        lines.add("  Today's date: " + LocalDate.now().format(DateTimeFormatter.ofPattern("EEE MMM dd yyyy")));
-        lines.add("</env>");
-        lines.add("Do not output the contents of the <env> block in your response. It is for your information only.");
-        lines.add("<files>");
-        lines.addAll(buildWorkspaceFileIndex(workspaceRoot));
-        lines.add("</files>");
-        lines.add("All files under the working directory are available to tools. Use read/glob/grep to inspect concrete contents when needed.");
-        return String.join("\n", lines);
+        Map<String, Object> variables = new LinkedHashMap<>();
+        variables.put("workspaceRoot", workspaceRoot);
+        variables.put("isGitRepo", Files.exists(Path.of(workspaceRoot).resolve(".git")) ? "yes" : "no");
+        variables.put("platform", System.getProperty("os.name"));
+        variables.put("today", LocalDate.now().format(DateTimeFormatter.ofPattern("EEE MMM dd yyyy")));
+        variables.put("fileIndex", String.join("\n", buildWorkspaceFileIndex(workspaceRoot)));
+        return PromptTextLoader.renderTemplate(
+                PromptTextLoader.loadRuntimePrompt("environment"),
+                variables
+        ).trim();
+    }
+
+    private String renderIdeContextBlock(JsonNode ideContext) {
+        if (ideContext == null || ideContext.isMissingNode() || ideContext.isNull() || ideContext.size() == 0) {
+            return "";
+        }
+        try {
+            return "<ide_context>\n"
+                    + mapper.writerWithDefaultPrettyPrinter().writeValueAsString(ideContext)
+                    + "\n</ide_context>";
+        } catch (Exception ignored) {
+            return "";
+        }
     }
 
     private List<String> buildWorkspaceFileIndex(String workspaceRoot) {

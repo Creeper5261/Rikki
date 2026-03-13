@@ -15,6 +15,7 @@ import com.zzf.rikki.idea.agent.compat.ToolCallInfo;
 import com.zzf.rikki.idea.agent.compat.ToolExecutionResult;
 import com.zzf.rikki.idea.agent.tools.LiteBashTool;
 import com.zzf.rikki.llm.LLMService;
+import com.zzf.rikki.runtime.RuntimeAgentConfig;
 import com.zzf.rikki.runtime.port.PendingApprovalPort;
 import com.zzf.rikki.runtime.port.RuntimeRequest;
 import com.zzf.rikki.runtime.port.ToolExecutorPort;
@@ -82,6 +83,7 @@ public class SessionProcessor {
 
         final MessageV2.TextPart[] currentText = {null};
         final MessageV2.ReasoningPart[] currentReasoning = {null};
+        RuntimeAgentConfig config = request.getConfig();
 
         LlmChatRequest llmRequest = new LlmChatRequest(
                 assistantMessage.info.id,
@@ -92,7 +94,8 @@ public class SessionProcessor {
                         capabilities.getHasReasoningContent()
                 )),
                 capabilities,
-                castMaps(toolDefinitions)
+                castMaps(toolDefinitions),
+                config
         );
         LlmStreamResult llmResult = llmService.streamChat(llmRequest, new LlmStreamListener() {
             @Override

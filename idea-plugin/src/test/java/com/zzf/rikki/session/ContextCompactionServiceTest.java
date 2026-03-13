@@ -7,6 +7,7 @@ import com.zzf.rikki.idea.agent.compat.LlmStreamListener;
 import com.zzf.rikki.idea.agent.compat.LlmStreamResult;
 import com.zzf.rikki.idea.agent.compat.ModelCapabilities;
 import com.zzf.rikki.llm.LLMService;
+import com.zzf.rikki.runtime.RuntimeAgentConfig;
 import com.zzf.rikki.runtime.port.LlmPort;
 import com.zzf.rikki.session.model.MessageV2;
 import org.junit.jupiter.api.Test;
@@ -49,7 +50,11 @@ class ContextCompactionServiceTest {
         });
         ContextCompactionService compactionService = new ContextCompactionService(sessionService, llmService, new AgentService());
 
-        boolean compacted = compactionService.compact(session.id, new ModelCapabilities());
+        boolean compacted = compactionService.compact(
+                session.id,
+                new ModelCapabilities(),
+                new RuntimeAgentConfig("OPENAI", "gpt-4o", "https://api.openai.com/v1", "token", "", "", null, true)
+        );
 
         assertTrue(compacted);
         List<MessageV2.WithParts> messages = sessionService.getMessages(session.id);

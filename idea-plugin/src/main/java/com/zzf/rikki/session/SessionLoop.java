@@ -7,7 +7,7 @@ import com.zzf.rikki.idea.agent.compat.LiteModelSupport;
 import com.zzf.rikki.idea.agent.compat.ModelCapabilities;
 import com.zzf.rikki.idea.agent.compat.RuntimeEvent;
 import com.zzf.rikki.idea.agent.tools.LiteIdeTools;
-import com.zzf.rikki.idea.settings.RikkiSettings;
+import com.zzf.rikki.runtime.RuntimeAgentConfig;
 import com.zzf.rikki.runtime.port.RuntimeRequest;
 import com.zzf.rikki.runtime.port.ToolExecutorPort;
 import com.zzf.rikki.session.model.MessageV2;
@@ -52,10 +52,12 @@ public class SessionLoop {
     }
 
     public void run(RuntimeRequest request, AgentEventSink sink) {
-        RikkiSettings.State settings = RikkiSettings.getInstance().getState();
+        RuntimeAgentConfig config = request.getConfig();
         SessionInfo session = sessionService.getOrCreate(request.getSessionId(), request.getWorkspaceRoot());
         boolean reused = !sessionService.getMessages(session.id).isEmpty();
-        AgentInfo activeAgent = agentService.defaultAgent().orElse(null);
+        AgentInfo activeAgent = (config != null && config.getAgent() != null && !config.getAgent().isBlank())
+                ? agentService.get(config.getAgent()).orElseGet(() -> agentService.defaultAgent().orElse(null))
+                : agentService.defaultAgent().orElse(null);
 
         sink.emit(new RuntimeEvent.SessionBound(session.id, reused));
         sessionStatus.set(session.id, new SessionStatus.Info("busy", null, "Agent is thinking...", null));
@@ -67,7 +69,7 @@ public class SessionLoop {
             sessionService.addUserMessage(session.id, request.getGoal());
         }
 
-        ModelCapabilities capabilities = LiteModelSupport.INSTANCE.detectCapabilities(settings.getProvider(), settings.getModelName());
+        ModelCapabilities capabilities = LiteModelSupport.INSTANCE.detectCapabilities(config);
         LiteIdeTools.CapabilitySnapshot ideCapabilities = toolExecutor.refreshIdeCapabilities();
         List<Map<String, Object>> toolDefinitions = toolExecutor.toolDefinitions(request.getWorkspaceRoot(), ideCapabilities);
 
@@ -80,7 +82,7 @@ public class SessionLoop {
                     request.getIdeContext(),
                     capabilities,
                     ideCapabilities,
-                    settings.getModelName()
+                    config == null ? "" : config.getModel()
             ));
             if (activeAgent != null && activeAgent.getPrompt() != null && !activeAgent.getPrompt().isBlank()) {
                 promptSections.add(activeAgent.getPrompt());
@@ -96,7 +98,11 @@ public class SessionLoop {
             history = reminderService.insertReminders(history, session);
             reminderService.wrapMidLoopUserMessages(history, lastFinishedAssistantId(history));
 
-            MessageV2.WithParts assistantMessage = sessionService.startAssistantMessage(session.id, settings.getProvider(), settings.getModelName());
+            MessageV2.WithParts assistantMessage = sessionService.startAssistantMessage(
+                    session.id,
+                    config == null ? "DEEPSEEK" : config.getProvider(),
+                    config == null ? "deepseek-chat" : config.getModel()
+            );
             if (activeAgent != null) {
                 assistantMessage.info.agent = activeAgent.getName();
             }
@@ -114,7 +120,7 @@ public class SessionLoop {
             lastMessageId = result.messageId;
             contextCompactionService.prune(session.id);
             if (result.continueLoop && contextCompactionService.needsCompaction(session.id)) {
-                if (contextCompactionService.compact(session.id, capabilities)) {
+                if (contextCompactionService.compact(session.id, capabilities, config)) {
                     continue;
                 }
             }

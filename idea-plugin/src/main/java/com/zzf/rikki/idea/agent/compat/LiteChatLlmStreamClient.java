@@ -2,7 +2,7 @@ package com.zzf.rikki.idea.agent.compat;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.zzf.rikki.idea.settings.RikkiSettings;
+import com.zzf.rikki.runtime.RuntimeAgentConfig;
 import com.zzf.rikki.runtime.port.LlmPort;
 
 import java.io.BufferedReader;
@@ -24,19 +24,20 @@ public class LiteChatLlmStreamClient implements LlmPort {
 
     @Override
     public LlmStreamResult streamChat(LlmChatRequest request, LlmStreamListener listener) {
-        RikkiSettings.State settings = RikkiSettings.getInstance().getState();
-        String apiKey = settings.currentApiKey();
-        if ((apiKey == null || apiKey.isBlank()) && !"OLLAMA".equals(settings.getProvider())) {
+        RuntimeAgentConfig config = request.getConfig();
+        String apiKey = config == null ? "" : config.getApiKey();
+        String provider = config == null ? "DEEPSEEK" : config.getProvider();
+        if ((apiKey == null || apiKey.isBlank()) && (config == null || config.getRequiresApiKey()) && !"OLLAMA".equals(provider)) {
             return new LlmStreamResult("Error: API key not configured.", List.of());
         }
-        String model = settings.getModelName() == null || settings.getModelName().isBlank() ? "deepseek-chat" : settings.getModelName();
-        String baseUrl = settings.currentBaseUrl().replaceAll("/+$", "");
+        String model = config == null || config.getModel().isBlank() ? "deepseek-chat" : config.getModel();
+        String baseUrl = config == null ? "" : config.getBaseUrl().replaceAll("/+$", "");
         HttpURLConnection connection = openConnection(baseUrl + "/chat/completions", apiKey);
         if (connection == null) {
             return new LlmStreamResult("Error: cannot connect to LLM endpoint.", List.of());
         }
         try {
-            String body = buildRequestBody(model, request.getMessages(), request.getCapabilities(), request.getToolDefinitions());
+            String body = buildRequestBody(model, request.getMessages(), request.getCapabilities(), request.getToolDefinitions(), config);
             connection.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8));
             if (connection.getResponseCode() < 200 || connection.getResponseCode() > 299) {
                 String errorBody = "";
@@ -156,12 +157,21 @@ public class LiteChatLlmStreamClient implements LlmPort {
         }
     }
 
-    private String buildRequestBody(String model, List<Map<String, Object>> messages, ModelCapabilities capabilities, List<Map<String, Object>> toolDefinitions) throws Exception {
+    private String buildRequestBody(
+            String model,
+            List<Map<String, Object>> messages,
+            ModelCapabilities capabilities,
+            List<Map<String, Object>> toolDefinitions,
+            RuntimeAgentConfig config
+    ) throws Exception {
         LinkedHashMap<String, Object> body = new LinkedHashMap<>();
         body.put("model", model);
         body.put("stream", Boolean.TRUE);
         body.put(capabilities.getMaxTokensKey(), 8192);
-        body.put("temperature", capabilities.getTemperatureFixed() == null ? 0.1 : capabilities.getTemperatureFixed());
+        double temperature = capabilities.getTemperatureFixed() == null
+                ? (config == null ? 0.1 : config.effectiveTemperature(0.1))
+                : capabilities.getTemperatureFixed();
+        body.put("temperature", temperature);
         body.put("messages", messages);
         if (capabilities.getSupportsTools() && toolDefinitions != null && !toolDefinitions.isEmpty()) {
             body.put("tools", toolDefinitions);

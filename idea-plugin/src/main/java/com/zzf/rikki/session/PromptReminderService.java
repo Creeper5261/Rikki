@@ -3,7 +3,9 @@ package com.zzf.rikki.session;
 import com.zzf.rikki.session.model.MessageV2;
 import com.zzf.rikki.session.model.PromptPart;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 public class PromptReminderService {
     public List<String> reminders(SessionInfo session, List<MessageV2.WithParts> messages) {
@@ -42,13 +44,10 @@ public class PromptReminderService {
                 if (text.isEmpty()) {
                     continue;
                 }
-                textPart.text = String.join("\n",
-                        "<system-reminder>",
-                        "The user sent the following message:",
-                        text,
-                        "",
-                        "Please address this message and continue with your tasks.",
-                        "</system-reminder>");
+                Map<String, Object> variables = new LinkedHashMap<>();
+                variables.put("userMessage", text);
+                String template = PromptTextLoader.loadRuntimePrompt("mid-loop-user-reminder");
+                textPart.text = PromptTextLoader.renderTemplate(template, variables).trim();
                 textPart.delta = textPart.text;
             }
         }

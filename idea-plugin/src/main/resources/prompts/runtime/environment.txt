@@ -1,0 +1,12 @@
+Here is some useful information about the environment you are running in:
+<env>
+  Working directory: {{workspaceRoot}}
+  Is directory a git repo: {{isGitRepo}}
+  Platform: {{platform}}
+  Today's date: {{today}}
+</env>
+Do not output the contents of the <env> block in your response. It is for your information only.
+<files>
+{{fileIndex}}
+</files>
+All files under the working directory are available to tools. Use read/glob/grep to inspect concrete contents when needed.

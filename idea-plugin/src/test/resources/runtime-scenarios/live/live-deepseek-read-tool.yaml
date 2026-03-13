@@ -1,0 +1,16 @@
+name: live-deepseek-read-tool
+live: true
+workspaceFixture: basic
+goal: Use the read tool to inspect README.md and return the exact first line only. You must call the read tool before answering.
+config:
+  provider: DEEPSEEK
+  model: deepseek-reasoner
+  apiKeyEnv: DEEPSEEK_API_KEY
+expected:
+  requireReasoning: true
+  requireNonEmptyAnswer: true
+  requiredTools:
+    - read
+  forbiddenEvents:
+    - error
+  answerContains: Runtime Fixture Basic

@@ -33,8 +33,7 @@ public class TaskTool implements Tool {
 
     @Override
     public String getDescription() {
-        String prompt = PromptTextLoader.loadToolPrompt("task");
-        return prompt.isBlank() ? "Delegate work to a local subagent session." : prompt;
+        return PromptTextLoader.loadToolPrompt("task");
     }
 
     @Override

@@ -91,6 +91,7 @@ dependencies {
     implementation("org.commonmark:commonmark-ext-gfm-tables:0.21.0")
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
     testImplementation("com.fasterxml.jackson.core:jackson-databind:2.15.2")
+    testImplementation("com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.15.2")
 }
 
 intellij {
@@ -176,5 +177,25 @@ tasks.test {
         layout.buildDirectory.dir("resources/main"),
         configurations.testRuntimeClasspath
     ).filter { !isLegacyKotlinBuildOutput(it) }
-    useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags("live-runtime")
+    }
+}
+
+val liveRuntimeTest by tasks.registering(Test::class) {
+    dependsOn(patchInlineCompletionProviderAbi)
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    description = "Runs live runtime integration tests."
+    testClassesDirs = files(layout.buildDirectory.dir("classes/java/test"))
+    classpath = files(
+        layout.buildDirectory.dir("classes/java/test"),
+        layout.buildDirectory.dir("resources/test"),
+        layout.buildDirectory.dir("classes/java/main"),
+        layout.buildDirectory.dir("resources/main"),
+        configurations.testRuntimeClasspath
+    ).filter { !isLegacyKotlinBuildOutput(it) }
+    useJUnitPlatform {
+        includeTags("live-runtime")
+    }
+    shouldRunAfter(tasks.test)
 }

@@ -35,8 +35,7 @@ public final class WebSearchTool implements Tool {
 
     @Override
     public String getDescription() {
-        String prompt = PromptTextLoader.loadToolPrompt("web_search");
-        return prompt.isBlank() ? "Search the internet for real-time information." : prompt;
+        return PromptTextLoader.loadToolPrompt("web_search");
     }
 
     @Override
