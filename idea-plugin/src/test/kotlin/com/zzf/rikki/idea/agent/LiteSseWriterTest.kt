@@ -25,14 +25,14 @@ class LiteSseWriterTest {
         writer.emit(RuntimeEvent.ThoughtEnd("msg-1"))
         writer.emit(
             RuntimeEvent.ToolCall(
-                partId = "part-1",
-                tool = "bash",
-                callId = "call-1",
-                messageId = "msg-1",
-                state = "pending",
-                title = "bash",
-                args = mapOf("command" to "npm test"),
-                meta = mapOf(
+                "part-1",
+                "bash",
+                "call-1",
+                "msg-1",
+                "pending",
+                "bash",
+                mapOf("command" to "npm test"),
+                mapOf(
                     "pending_command" to mapOf("id" to "pc-1", "command" to "npm test"),
                     "approval_options" to listOf("manual", "whitelist"),
                     "requires_explicit_user_consent" to true
@@ -42,13 +42,15 @@ class LiteSseWriterTest {
         writer.emit(RuntimeEvent.ToolPendingApproval("part-1", "call-1", "npm test", "bash"))
         writer.emit(
             RuntimeEvent.ToolResult(
-                partId = "part-1",
-                tool = "bash",
-                callId = "call-1",
-                messageId = "msg-1",
-                state = "completed",
-                title = "bash",
-                output = "ok"
+                "part-1",
+                "bash",
+                "call-1",
+                "msg-1",
+                "completed",
+                "bash",
+                "ok",
+                null,
+                null
             )
         )
         writer.emit(RuntimeEvent.TodoUpdated("[{\"content\":\"task\",\"status\":\"pending\"}]", "session-1"))

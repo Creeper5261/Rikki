@@ -36,6 +36,13 @@ public class SessionService {
         return sessions.get(sessionId);
     }
 
+    public SessionInfo createSubSession(String parentSessionId, String workspaceRoot, String title, String agentName) {
+        String normalizedWorkspace = workspaceRoot == null ? "" : workspaceRoot;
+        SessionInfo session = new SessionInfo(nextId("session"), normalizedWorkspace, parentSessionId, title, agentName);
+        sessions.put(session.id, session);
+        return session;
+    }
+
     public void importHistory(String sessionId, JsonNode history) {
         SessionInfo session = sessions.get(sessionId);
         if (session == null || session.historyImported || history == null || !history.isArray()) {
@@ -53,7 +60,11 @@ public class SessionService {
     }
 
     public MessageV2.WithParts addUserMessage(String sessionId, String text) {
-        return addTextMessage(sessionId, "user", text);
+        return addTextMessage(sessionId, "user", text, false);
+    }
+
+    public MessageV2.WithParts addSyntheticUserMessage(String sessionId, String text) {
+        return addTextMessage(sessionId, "user", text, true);
     }
 
     public MessageV2.WithParts startAssistantMessage(String sessionId, String providerId, String modelId) {
@@ -85,6 +96,14 @@ public class SessionService {
         messages.computeIfAbsent(sessionId, ignored -> new ArrayList<>()).add(message);
         touch(sessionId);
         return message;
+    }
+
+    public void addMessage(String sessionId, MessageV2.WithParts message) {
+        if (message == null) {
+            return;
+        }
+        messages.computeIfAbsent(sessionId, ignored -> new ArrayList<>()).add(message);
+        touch(sessionId);
     }
 
     public void updateMessage(MessageV2.WithParts message) {
@@ -246,7 +265,7 @@ public class SessionService {
         if (parsed == null) {
             return;
         }
-        addTextMessage(sessionId, parsed[0], parsed[1]);
+        addTextMessage(sessionId, parsed[0], parsed[1], false);
     }
 
     private void importStructuredHistoryEntry(String sessionId, JsonNode entry) {
@@ -351,6 +370,10 @@ public class SessionService {
                 parts.add(part);
             }
         }
+    }
+
+    public PromptPart deserializePart(String sessionId, String messageId, JsonNode node) {
+        return parsePart(sessionId, messageId, node, System.currentTimeMillis());
     }
 
     private PromptPart parsePart(String sessionId, String messageId, JsonNode node, long created) {
@@ -536,7 +559,7 @@ public class SessionService {
         return usage;
     }
 
-    private MessageV2.WithParts addTextMessage(String sessionId, String role, String text) {
+    private MessageV2.WithParts addTextMessage(String sessionId, String role, String text, boolean synthetic) {
         long created = System.currentTimeMillis();
         MessageV2.MessageInfo info = new MessageV2.MessageInfo();
         info.id = nextId("message");
@@ -559,6 +582,7 @@ public class SessionService {
         part.messageID = info.id;
         part.text = text;
         part.delta = text;
+        part.synthetic = synthetic;
         part.time.start = created;
         part.time.end = created;
         MessageV2.WithParts message = new MessageV2.WithParts();

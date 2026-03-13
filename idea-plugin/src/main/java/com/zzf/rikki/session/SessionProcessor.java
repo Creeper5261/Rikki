@@ -14,13 +14,12 @@ import com.zzf.rikki.idea.agent.compat.RuntimeEvent;
 import com.zzf.rikki.idea.agent.compat.ToolCallInfo;
 import com.zzf.rikki.idea.agent.compat.ToolExecutionResult;
 import com.zzf.rikki.idea.agent.tools.LiteBashTool;
-import com.zzf.rikki.runtime.port.LlmPort;
+import com.zzf.rikki.llm.LLMService;
 import com.zzf.rikki.runtime.port.PendingApprovalPort;
 import com.zzf.rikki.runtime.port.RuntimeRequest;
 import com.zzf.rikki.runtime.port.ToolExecutorPort;
 import com.zzf.rikki.session.model.MessageV2;
-import kotlin.jvm.functions.Function0;
-
+import com.zzf.rikki.session.model.PromptPart;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -46,7 +45,7 @@ public class SessionProcessor {
     private final SessionService sessionService;
     private final SessionStatus sessionStatus;
     private final PendingApprovalPort pendingApprovalService;
-    private final LlmPort llmStreamClient;
+    private final LLMService llmService;
     private final ToolExecutorPort toolExecutor;
 
     public SessionProcessor(
@@ -54,14 +53,14 @@ public class SessionProcessor {
             SessionService sessionService,
             SessionStatus sessionStatus,
             PendingApprovalPort pendingApprovalService,
-            LlmPort llmStreamClient,
+            LLMService llmService,
             ToolExecutorPort toolExecutor
     ) {
         this.mapper = mapper;
         this.sessionService = sessionService;
         this.sessionStatus = sessionStatus;
         this.pendingApprovalService = pendingApprovalService;
-        this.llmStreamClient = llmStreamClient;
+        this.llmService = llmService;
         this.toolExecutor = toolExecutor;
     }
 
@@ -90,7 +89,7 @@ public class SessionProcessor {
                 capabilities,
                 castMaps(toolDefinitions)
         );
-        LlmStreamResult llmResult = llmStreamClient.streamChat(llmRequest, new LlmStreamListener() {
+        LlmStreamResult llmResult = llmService.streamChat(llmRequest, new LlmStreamListener() {
             @Override
             public void onMessageDelta(String messageId, String delta) {
                 if (delta == null || delta.isEmpty()) {
@@ -271,6 +270,7 @@ public class SessionProcessor {
         Long startedAt = toolPart.state.time.start;
         LinkedHashMap<String, Object> meta = new LinkedHashMap<>();
         meta.putAll(result.getMeta());
+        List<PromptPart> emittedParts = materializeEmittedParts(toolPart.sessionID, toolPart.messageID, meta.get("emitted_parts"));
         PendingChangesManager.PendingChange pendingChange = result.getPendingChange();
         if (pendingChange != null) {
             meta.put("pending_change", pendingChange);
@@ -290,6 +290,9 @@ public class SessionProcessor {
         nextState.time.end = System.currentTimeMillis();
         toolPart.state = nextState;
         sessionService.updatePart(toolPart);
+        for (PromptPart part : emittedParts) {
+            sessionService.updatePart(part);
+        }
         sink.emit(new RuntimeEvent.ToolResult(
                 toolPart.id,
                 toolPart.tool,
@@ -304,6 +307,33 @@ public class SessionProcessor {
         if (result.getTodoJson() != null) {
             sink.emit(new RuntimeEvent.TodoUpdated(result.getTodoJson(), session.id));
         }
+    }
+
+    private List<PromptPart> materializeEmittedParts(String sessionId, String messageId, Object rawParts) {
+        List<PromptPart> parts = new ArrayList<>();
+        if (!(rawParts instanceof List<?> rawList)) {
+            return parts;
+        }
+        for (Object candidate : rawList) {
+            try {
+                JsonNode node = mapper.valueToTree(candidate);
+                PromptPart part = sessionService.deserializePart(sessionId, messageId, node);
+                if (part != null) {
+                    if (part.sessionID == null || part.sessionID.isBlank()) {
+                        part.sessionID = sessionId;
+                    }
+                    if (part.messageID == null || part.messageID.isBlank()) {
+                        part.messageID = messageId;
+                    }
+                    if (part.id == null || part.id.isBlank()) {
+                        part.id = nextId("part");
+                    }
+                    parts.add(part);
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return parts;
     }
 
     private PendingCommandRecord buildPendingCommandRecord(
@@ -352,7 +382,7 @@ public class SessionProcessor {
                 strictApproval,
                 reasons,
                 shell,
-                (Function0<ToolExecutionResult>) () -> toolExecutor.execute(
+                () -> toolExecutor.execute(
                         toolCall.getName(),
                         toolCall.getArgs(),
                         workspaceRoot,

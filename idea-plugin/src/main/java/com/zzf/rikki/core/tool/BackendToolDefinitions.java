@@ -61,6 +61,23 @@ public final class BackendToolDefinitions {
                 "path", str("The absolute path to the directory to list (must be absolute, not relative)"),
                 "ignore", mapOf("type", "array", "items", mapOf("type", "string"))
         ), List.of()));
+        defs.add(tool("task", PromptTextLoader.loadToolDescription("task", workspaceRoot), props(
+                "description", str("A short description of the task."),
+                "prompt", str("The task the subagent should perform."),
+                "subagent_type", str("The subagent type to use."),
+                "session_id", str("Optional existing sub-session id to continue.")
+        ), List.of("description", "prompt", "subagent_type")));
+        defs.add(tool("web_search", PromptTextLoader.loadToolDescription("web_search", workspaceRoot), props(
+                "query", str("Websearch query"),
+                "numResults", integer("Number of search results to return (default: 8)"),
+                "livecrawl", str("Live crawl mode. Use fallback by default or preferred to force live crawling."),
+                "type", str("Search type. Use auto by default, or fast/deep when needed."),
+                "contextMaxCharacters", integer("Maximum context characters to return.")
+        ), List.of("query")));
+        defs.add(tool("search_codebase", PromptTextLoader.loadToolDescription("search_codebase", workspaceRoot), props(
+                "query", str("Search query to find relevant APIs, libraries, or SDK usage."),
+                "tokensNum", integer("Number of tokens to return. Defaults to 5000.")
+        ), List.of("query")));
         defs.add(tool("todo_read", PromptTextLoader.loadToolDescription("todo_read", workspaceRoot), props(), List.of()));
         defs.add(tool("todo_write", PromptTextLoader.loadToolDescription("todo_write", workspaceRoot), props(
                 "todos", mapOf(

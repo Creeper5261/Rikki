@@ -3,6 +3,8 @@ package com.zzf.rikki.session;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 
 public final class PromptTextLoader {
     private static final int DEFAULT_BASH_MAX_LINES = 200;
@@ -50,23 +52,20 @@ public final class PromptTextLoader {
         return load("prompts/session/" + file);
     }
 
+    public static String loadAgentPrompt(String agentName) {
+        if (agentName == null || agentName.isBlank()) {
+            return "";
+        }
+        return load("prompts/agent/" + agentName.trim().toLowerCase() + ".txt");
+    }
+
+    public static String loadToolPrompt(String toolId) {
+        String raw = loadFirst(toolPromptCandidates(toolId));
+        return raw == null ? "" : raw.trim();
+    }
+
     public static String loadToolDescription(String toolId, String workspaceRoot) {
-        String resourcePath = switch (toolId) {
-            case "bash" -> "prompts/tool/bash.txt";
-            case "read" -> "prompts/tool/read.txt";
-            case "write" -> "prompts/tool/write.txt";
-            case "edit" -> "prompts/tool/edit.txt";
-            case "glob" -> "prompts/tool/glob.txt";
-            case "grep" -> "prompts/tool/grep.txt";
-            case "ls" -> "prompts/tool/ls.txt";
-            case "todo_read" -> "prompts/tool/todoread.txt";
-            case "todo_write" -> "prompts/tool/todowrite.txt";
-            case "task" -> "prompts/tool/task.txt";
-            case "web_search" -> "prompts/tool/websearch.txt";
-            case "search_codebase" -> "prompts/tool/codesearch.txt";
-            default -> null;
-        };
-        String raw = resourcePath == null ? "" : load(resourcePath);
+        String raw = loadToolPrompt(toolId);
         if (raw.isBlank()) {
             return fallbackDescription(toolId);
         }
@@ -74,7 +73,36 @@ public final class PromptTextLoader {
                 .replace("${directory}", workspaceRoot)
                 .replace("${maxLines}", String.valueOf(DEFAULT_BASH_MAX_LINES))
                 .replace("${maxBytes}", String.valueOf(DEFAULT_BASH_MAX_BYTES))
+                .replace("{{date}}", LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE))
                 .trim();
+    }
+
+    private static String[] toolPromptCandidates(String toolId) {
+        return switch (toolId) {
+            case "bash" -> new String[]{"prompts/tool/bash.txt"};
+            case "read" -> new String[]{"prompts/tool/read.txt"};
+            case "write" -> new String[]{"prompts/tool/write.txt"};
+            case "edit" -> new String[]{"prompts/tool/edit.txt"};
+            case "glob" -> new String[]{"prompts/tool/glob.txt"};
+            case "grep" -> new String[]{"prompts/tool/grep.txt"};
+            case "ls" -> new String[]{"prompts/tool/ls.txt"};
+            case "todo_read" -> new String[]{"prompts/tool/todoread.txt"};
+            case "todo_write" -> new String[]{"prompts/tool/todowrite.txt"};
+            case "task" -> new String[]{"prompts/tool/task.txt"};
+            case "web_search" -> new String[]{"prompts/tool/web_search.txt", "prompts/tool/websearch.txt"};
+            case "search_codebase" -> new String[]{"prompts/tool/search_codebase.txt", "prompts/tool/codesearch.txt"};
+            default -> new String[0];
+        };
+    }
+
+    private static String loadFirst(String[] paths) {
+        for (String path : paths) {
+            String raw = load(path);
+            if (!raw.isBlank()) {
+                return raw;
+            }
+        }
+        return "";
     }
 
     private static String fallbackDescription(String toolId) {

@@ -3,14 +3,23 @@ package com.zzf.rikki.idea.agent.compat
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.openapi.project.Project
+import com.zzf.rikki.agent.AgentService
+import com.zzf.rikki.core.tool.BackendToolDefinitions
+import com.zzf.rikki.core.tool.CodeSearchTool
 import com.zzf.rikki.core.tool.PendingChangesManager
+import com.zzf.rikki.core.tool.TaskTool
+import com.zzf.rikki.core.tool.Tool
+import com.zzf.rikki.core.tool.ToolRegistry
+import com.zzf.rikki.core.tool.WebSearchTool
 import com.zzf.rikki.idea.agent.tools.LiteBashTool
 import com.zzf.rikki.idea.agent.tools.LiteFileTools
 import com.zzf.rikki.idea.agent.tools.LiteIdeTools
 import com.zzf.rikki.idea.agent.tools.LiteTodoTools
+import com.zzf.rikki.session.SessionService
 import java.io.File
 
 interface ToolExecutor {
+    fun bindServices(sessionService: SessionService, agentService: AgentService) {}
     fun isHighRisk(name: String, args: JsonNode): Boolean
     fun execute(
         name: String,
@@ -38,6 +47,20 @@ class LiteToolExecutor(
     private val files = LiteFileTools(mapper)
     private val ide = LiteIdeTools(project, mapper)
     private val todos = LiteTodoTools(mapper)
+    private var sessionService: SessionService? = null
+    private var agentService: AgentService? = null
+    private var javaToolRegistry = ToolRegistry(listOf(WebSearchTool(mapper), CodeSearchTool(mapper)))
+
+    override fun bindServices(sessionService: SessionService, agentService: AgentService) {
+        this.sessionService = sessionService
+        this.agentService = agentService
+        val tools = mutableListOf<Tool>(
+            WebSearchTool(mapper),
+            CodeSearchTool(mapper),
+        )
+        tools += TaskTool(agentService, sessionService, mapper)
+        javaToolRegistry = ToolRegistry(tools)
+    }
 
     override fun isHighRisk(name: String, args: JsonNode): Boolean {
         if (name == "bash") {
@@ -107,6 +130,7 @@ class LiteToolExecutor(
                 "glob" -> success("completed", files.glob(args, workspaceRoot))
                 "grep" -> success("completed", files.grep(args, workspaceRoot))
                 "ls" -> success("completed", files.list(args, workspaceRoot))
+                "task", "web_search", "search_codebase" -> executeJavaTool(name, args, workspaceRoot, sessionId, callId, messageId)
                 "todo_read" -> success("completed", todos.read(workspaceRoot, sessionId))
                 "todo_write" -> {
                     val out = todos.write(args, workspaceRoot, sessionId)
@@ -187,6 +211,43 @@ class LiteToolExecutor(
         )
     }
 
+    private fun executeJavaTool(
+        name: String,
+        args: JsonNode,
+        workspaceRoot: String,
+        sessionId: String,
+        callId: String,
+        messageId: String
+    ): ToolExecutionResult {
+        val tool = javaToolRegistry.get(name).orElse(null)
+            ?: return ToolExecutionResult(status = "error", output = "", error = "Unknown tool: $name")
+        val context = Tool.Context.basic(sessionId, messageId, callId)
+        context.extra = mapOf("workspaceRoot" to workspaceRoot)
+        sessionService?.let { context.messages = it.getMessages(sessionId) }
+        context.permissionAsker = Tool.PermissionAsker { java.util.concurrent.CompletableFuture.completedFuture(null) }
+        val metadata = LinkedHashMap<String, Any?>()
+        context.metadataConsumer = Tool.MetadataConsumer { title, data ->
+            if (title != null) {
+                metadata["title"] = title
+            }
+            if (data != null) {
+                metadata.putAll(data)
+            }
+        }
+        val result = tool.execute(args, context).get()
+        val meta = LinkedHashMap<String, Any?>()
+        if (result.title != null) {
+            meta["title"] = result.title
+        }
+        meta.putAll(metadata)
+        meta.putAll(result.metadata)
+        return ToolExecutionResult(
+            status = "completed",
+            output = result.output,
+            meta = meta
+        )
+    }
+
     private fun withPendingChange(
         output: String,
         filePath: String,
@@ -262,28 +323,5 @@ class LiteToolExecutor(
 
     companion object {
         private val FILE_CHANGE_TOOLS = setOf("write", "edit", "delete_file")
-
-        private fun tool(
-            name: String,
-            description: String,
-            properties: Map<String, Any>,
-            required: List<String>
-        ): Map<String, Any> = mapOf(
-            "type" to "function",
-            "function" to mapOf(
-                "name" to name,
-                "description" to description,
-                "parameters" to mapOf(
-                    "type" to "object",
-                    "properties" to properties,
-                    "required" to required
-                )
-            )
-        )
-
-        private fun props(vararg pairs: Pair<String, Any>) = mapOf(*pairs)
-        private fun str(desc: String) = mapOf("type" to "string", "description" to desc)
-        private fun int(desc: String) = mapOf("type" to "integer", "description" to desc)
-        private fun bool(desc: String) = mapOf("type" to "boolean", "description" to desc)
     }
 }

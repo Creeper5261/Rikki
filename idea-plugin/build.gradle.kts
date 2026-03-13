@@ -80,6 +80,27 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
     }
 }
 
+tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileKotlin") {
+    destinationDirectory.set(layout.buildDirectory.dir("classes/kotlin-runtime/main"))
+    setSource(
+        fileTree("src/main/kotlin") {
+            include("com/zzf/rikki/idea/settings/**")
+            include("com/zzf/rikki/idea/completion/**")
+            include("com/zzf/rikki/idea/llm/**")
+        }
+    )
+}
+
+tasks.named<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>("compileTestKotlin") {
+    destinationDirectory.set(layout.buildDirectory.dir("classes/kotlin-runtime/test"))
+    setSource(
+        fileTree("src/test/kotlin") {
+            include("com/zzf/rikki/idea/agent/LiteSseWriterTest.kt")
+            include("com/zzf/rikki/idea/agent/compat/InMemoryPendingApprovalServiceTest.kt")
+        }
+    )
+}
+
 tasks.buildSearchableOptions {
     enabled = false
 }
@@ -103,6 +124,26 @@ tasks.runPluginVerifier {
 
 tasks.runIde {
     jvmArgs("-Djb.vmOptionsFile=${project.file("src/main/resources/idea.vmoptions").absolutePath}")
+}
+
+tasks.named<Jar>("jar") {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    exclude("com/zzf/rikki/idea/agent/compat/InteropBridgeKt*")
+    exclude("com/zzf/rikki/idea/agent/compat/LiteCompatRuntime*")
+    exclude("com/zzf/rikki/idea/agent/compat/PromptPart*")
+    exclude("com/zzf/rikki/idea/agent/compat/PromptReminderService*")
+    exclude("com/zzf/rikki/idea/agent/compat/PromptStrategy*")
+    exclude("com/zzf/rikki/idea/agent/compat/PromptTextLoader*")
+    exclude("com/zzf/rikki/idea/agent/compat/Session*")
+    exclude("com/zzf/rikki/idea/agent/compat/ToolExecutorPortAdapter*")
+    exclude("com/zzf/rikki/idea/agent/compat/*Kt*")
+    exclude("com/zzf/rikki/idea/agent/LiteAgentEngine${'$'}*")
+    exclude("com/zzf/rikki/idea/agent/LiteAgentServer${'$'}*")
+    exclude("com/zzf/rikki/idea/agent/tools/LiteFileTools${'$'}Companion*")
+    exclude("com/zzf/rikki/idea/agent/tools/LiteFileTools${'$'}glob*")
+    exclude("com/zzf/rikki/idea/agent/tools/LiteFileTools${'$'}grep*")
+    exclude("com/zzf/rikki/idea/agent/tools/LiteFileTools${'$'}list*")
+    exclude("com/zzf/rikki/idea/agent/tools/LiteTodoTools${'$'}TodoItem*")
 }
 
 tasks.test {

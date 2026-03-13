@@ -20,14 +20,14 @@ class InMemoryPendingApprovalServiceTest {
         val executions = AtomicInteger()
         val registration = service.registerPendingCommand(record("pc-approve", strictApproval = true) {
             executions.incrementAndGet()
-            ToolExecutionResult(status = "completed", output = "approved")
+            ToolExecutionResult("completed", "approved", null, emptyMap<String, Any>(), null, null, null, null, false)
         })
 
         assertTrue(registration.awaitApproval)
         val awaited = async(start = CoroutineStart.DEFAULT) { service.awaitDecision("pc-approve") }
         delay(25)
 
-        val resolution = service.resolve("pc-approve", reject = false, decisionMode = PendingApprovalService.DECISION_MANUAL)
+        val resolution = service.resolve("pc-approve", false, PendingApprovalService.DECISION_MANUAL)
         val result = awaited.await()
 
         assertEquals("completed", resolution.status)
@@ -44,13 +44,13 @@ class InMemoryPendingApprovalServiceTest {
         val executions = AtomicInteger()
         service.registerPendingCommand(record("pc-reject", strictApproval = true) {
             executions.incrementAndGet()
-            ToolExecutionResult(status = "completed", output = "should-not-run")
+            ToolExecutionResult("completed", "should-not-run", null, emptyMap<String, Any>(), null, null, null, null, false)
         })
 
         val awaited = async(start = CoroutineStart.DEFAULT) { service.awaitDecision("pc-reject") }
         delay(25)
 
-        val resolution = service.resolve("pc-reject", reject = true, decisionMode = PendingApprovalService.DECISION_MANUAL)
+        val resolution = service.resolve("pc-reject", true, PendingApprovalService.DECISION_MANUAL)
         val result = awaited.await()
 
         assertEquals("rejected", resolution.status)
@@ -66,16 +66,16 @@ class InMemoryPendingApprovalServiceTest {
 
         service.registerPendingCommand(record("pc-1", sessionId = "session-1", command = "npm test") {
             executions.incrementAndGet()
-            ToolExecutionResult(status = "completed", output = "first")
+            ToolExecutionResult("completed", "first", null, emptyMap<String, Any>(), null, null, null, null, false)
         })
         val awaited = async(start = CoroutineStart.DEFAULT) { service.awaitDecision("pc-1") }
         delay(25)
-        service.resolve("pc-1", reject = false, decisionMode = PendingApprovalService.DECISION_WHITELIST)
+        service.resolve("pc-1", false, PendingApprovalService.DECISION_WHITELIST)
         assertEquals("first", awaited.await().output)
 
         val second = service.registerPendingCommand(record("pc-2", sessionId = "session-1", command = "npm run lint") {
             executions.incrementAndGet()
-            ToolExecutionResult(status = "completed", output = "second")
+            ToolExecutionResult("completed", "second", null, emptyMap<String, Any>(), null, null, null, null, false)
         })
 
         assertFalse(second.awaitApproval)
@@ -103,23 +103,23 @@ class InMemoryPendingApprovalServiceTest {
         executor: () -> ToolExecutionResult
     ): PendingCommandRecord {
         return PendingCommandRecord(
-            id = id,
-            command = command,
-            description = "run command",
-            workdir = "D:/Projects/Rikki",
-            workspaceRoot = "D:/Projects/Rikki",
-            sessionId = sessionId,
-            timeoutMs = 60_000,
-            tool = "bash",
-            callId = "call-$id",
-            messageId = "msg-$id",
-            riskLevel = "high",
-            riskCategory = if (strictApproval) "destructive" else "restricted",
-            commandFamily = LiteBashTool.commandFamily(command),
-            strictApproval = strictApproval,
-            reasons = if (strictApproval) listOf("destructive") else listOf("requires approval"),
-            shell = "auto",
-            executor = executor
+            id,
+            command,
+            "run command",
+            "D:/Projects/Rikki",
+            "D:/Projects/Rikki",
+            sessionId,
+            60_000,
+            "bash",
+            "call-$id",
+            "msg-$id",
+            "high",
+            if (strictApproval) "destructive" else "restricted",
+            LiteBashTool.commandFamily(command),
+            strictApproval,
+            if (strictApproval) listOf("destructive") else listOf("requires approval"),
+            "auto",
+            executor
         )
     }
 }

@@ -1,16 +1,13 @@
 package com.zzf.rikki.session;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.intellij.openapi.project.Project;
-import com.zzf.rikki.core.tool.BackendToolDefinitions;
+import com.zzf.rikki.agent.AgentInfo;
+import com.zzf.rikki.agent.AgentService;
 import com.zzf.rikki.idea.agent.compat.AgentEventSink;
 import com.zzf.rikki.idea.agent.compat.LiteModelSupport;
 import com.zzf.rikki.idea.agent.compat.ModelCapabilities;
 import com.zzf.rikki.idea.agent.compat.RuntimeEvent;
 import com.zzf.rikki.idea.agent.tools.LiteIdeTools;
 import com.zzf.rikki.idea.settings.RikkiSettings;
-import com.zzf.rikki.runtime.port.LlmPort;
-import com.zzf.rikki.runtime.port.PendingApprovalPort;
 import com.zzf.rikki.runtime.port.RuntimeRequest;
 import com.zzf.rikki.runtime.port.ToolExecutorPort;
 import com.zzf.rikki.session.model.MessageV2;
@@ -29,27 +26,36 @@ public class SessionLoop {
     private final PromptReminderService reminderService;
     private final SessionProcessor processor;
     private final ToolExecutorPort toolExecutor;
+    private final AgentService agentService;
+    private final ContextCompactionService contextCompactionService;
 
     public SessionLoop(
-            Project project,
-            ObjectMapper mapper,
-            PendingApprovalPort pendingApprovalPort,
-            LlmPort llmPort,
-            ToolExecutorPort toolExecutor
+            SessionService sessionService,
+            SessionStatus sessionStatus,
+            SystemPrompt systemPrompt,
+            InstructionPrompt instructionPrompt,
+            PromptReminderService reminderService,
+            SessionProcessor processor,
+            ToolExecutorPort toolExecutor,
+            AgentService agentService,
+            ContextCompactionService contextCompactionService
     ) {
-        this.sessionService = new SessionService(mapper);
-        this.sessionStatus = new SessionStatus();
-        this.systemPrompt = new SystemPrompt(mapper);
-        this.instructionPrompt = new InstructionPrompt();
-        this.reminderService = new PromptReminderService();
-        this.processor = new SessionProcessor(mapper, sessionService, sessionStatus, pendingApprovalPort, llmPort, toolExecutor);
+        this.sessionService = sessionService;
+        this.sessionStatus = sessionStatus;
+        this.systemPrompt = systemPrompt;
+        this.instructionPrompt = instructionPrompt;
+        this.reminderService = reminderService;
+        this.processor = processor;
         this.toolExecutor = toolExecutor;
+        this.agentService = agentService;
+        this.contextCompactionService = contextCompactionService;
     }
 
     public void run(RuntimeRequest request, AgentEventSink sink) {
         RikkiSettings.State settings = RikkiSettings.Companion.getInstance().getState();
         SessionInfo session = sessionService.getOrCreate(request.getSessionId(), request.getWorkspaceRoot());
         boolean reused = !sessionService.getMessages(session.id).isEmpty();
+        AgentInfo activeAgent = agentService.defaultAgent().orElse(null);
 
         sink.emit(new RuntimeEvent.SessionBound(session.id, reused));
         sessionStatus.set(session.id, new SessionStatus.Info("busy", null, "Agent is thinking...", null));
@@ -63,7 +69,7 @@ public class SessionLoop {
 
         ModelCapabilities capabilities = LiteModelSupport.INSTANCE.detectCapabilities(settings.getProvider(), settings.getModelName());
         LiteIdeTools.CapabilitySnapshot ideCapabilities = toolExecutor.refreshIdeCapabilities();
-        List<Map<String, Object>> toolDefinitions = BackendToolDefinitions.build(request.getWorkspaceRoot(), ideCapabilities);
+        List<Map<String, Object>> toolDefinitions = toolExecutor.toolDefinitions(request.getWorkspaceRoot(), ideCapabilities);
 
         String answer = "";
         String lastMessageId = "";
@@ -76,6 +82,9 @@ public class SessionLoop {
                     ideCapabilities,
                     settings.getModelName()
             ));
+            if (activeAgent != null && activeAgent.getPrompt() != null && !activeAgent.getPrompt().isBlank()) {
+                promptSections.add(activeAgent.getPrompt());
+            }
             promptSections.addAll(instructionPrompt.system(request.getWorkspaceRoot()));
             promptSections.addAll(reminderService.reminders(session, sessionService.getMessages(session.id)));
             String composedSystemPrompt = promptSections.stream()
@@ -88,6 +97,9 @@ public class SessionLoop {
             reminderService.wrapMidLoopUserMessages(history, lastFinishedAssistantId(history));
 
             MessageV2.WithParts assistantMessage = sessionService.startAssistantMessage(session.id, settings.getProvider(), settings.getModelName());
+            if (activeAgent != null) {
+                assistantMessage.info.agent = activeAgent.getName();
+            }
             SessionProcessor.ProcessorResult result = processor.process(
                     request,
                     session,
@@ -100,6 +112,12 @@ public class SessionLoop {
             );
             answer = result.answer;
             lastMessageId = result.messageId;
+            contextCompactionService.prune(session.id);
+            if (result.continueLoop && contextCompactionService.needsCompaction(session.id)) {
+                if (contextCompactionService.compact(session.id, capabilities)) {
+                    continue;
+                }
+            }
             if (!result.continueLoop) {
                 break;
             }
