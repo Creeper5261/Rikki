@@ -7,6 +7,7 @@ import org.junit.jupiter.api.TestFactory;
 
 import java.util.stream.Stream;
 
+@Tag("runtime")
 @Tag("live-runtime")
 public class LiveRuntimeScenarioTest {
     private final RuntimeScenarioRunner runner = new RuntimeScenarioRunner();
@@ -16,7 +17,7 @@ public class LiveRuntimeScenarioTest {
         return runner.scenarioFiles("live").stream()
                 .map(path -> DynamicTest.dynamicTest(path.getFileName().toString(), () -> {
                     RuntimeScenarioSpec spec = runner.load(path);
-                    Assumptions.assumeTrue("1".equals(System.getenv("RIKKI_LIVE_AGENT_TESTS")), "RIKKI_LIVE_AGENT_TESTS is not enabled");
+                    Assumptions.assumeTrue(Boolean.getBoolean("rikki.liveRuntime.enabled"), "rikki.liveRuntime.enabled is not enabled");
                     Assumptions.assumeTrue(
                             spec.config.apiKeyEnv != null
                                     && !spec.config.apiKeyEnv.isBlank()

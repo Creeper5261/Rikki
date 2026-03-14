@@ -2,6 +2,7 @@ package com.zzf.rikki.session;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zzf.rikki.session.model.MessageV2;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -11,6 +12,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 
+@Tag("runtime")
 class SessionServiceTest {
     private final ObjectMapper mapper = new ObjectMapper();
 

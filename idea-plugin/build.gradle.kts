@@ -30,6 +30,7 @@ fun patchInlineCompletionProviderClass(file: File) {
     val constantPoolCount = readUnsignedShort(bytes, index)
     index += 2
     var nameOffset = -1
+    var alreadyPatched = false
     var entryIndex = 1
     while (entryIndex < constantPoolCount) {
         val tag = bytes[index].toInt() and 0xFF
@@ -41,6 +42,8 @@ fun patchInlineCompletionProviderClass(file: File) {
                 val value = String(bytes, index, length, Charsets.UTF_8)
                 if (value == "getId_S2YkoFA") {
                     nameOffset = index
+                } else if (value == "getId-S2YkoFA") {
+                    alreadyPatched = true
                 }
                 index += length
             }
@@ -54,6 +57,9 @@ fun patchInlineCompletionProviderClass(file: File) {
         entryIndex += if (tag == 5 || tag == 6) 2 else 1
     }
     if (nameOffset < 0) {
+        if (alreadyPatched) {
+            return
+        }
         throw GradleException("Method name getId_S2YkoFA not found in $file")
     }
     val accessFlags = readUnsignedShort(bytes, index)
@@ -167,35 +173,49 @@ tasks.named<org.jetbrains.intellij.tasks.PrepareSandboxTask>("prepareTestingSand
     pluginJar.set(tasks.named<Jar>("jar").flatMap { it.archiveFile })
 }
 
-tasks.test {
+val liveRuntimeEnabledProvider = providers.gradleProperty("rikki.liveRuntime")
+    .orElse("0")
+    .map { value ->
+        value.equals("1", ignoreCase = true)
+                || value.equals("true", ignoreCase = true)
+                || value.equals("yes", ignoreCase = true)
+    }
+
+fun Test.configureJavaOnlyTestRuntime() {
     dependsOn(patchInlineCompletionProviderAbi)
-    testClassesDirs = files(layout.buildDirectory.dir("classes/java/test"))
-    classpath = files(
-        layout.buildDirectory.dir("classes/java/test"),
-        layout.buildDirectory.dir("resources/test"),
-        layout.buildDirectory.dir("classes/java/main"),
-        layout.buildDirectory.dir("resources/main"),
-        configurations.testRuntimeClasspath
-    ).filter { !isLegacyKotlinBuildOutput(it) }
+    val testSourceSet = sourceSets["test"]
+    testClassesDirs = testSourceSet.output.classesDirs
+    classpath = testSourceSet.runtimeClasspath.filter { !isLegacyKotlinBuildOutput(it) }
+}
+
+tasks.test {
+    configureJavaOnlyTestRuntime()
     useJUnitPlatform {
         excludeTags("live-runtime")
     }
 }
 
-val liveRuntimeTest by tasks.registering(Test::class) {
-    dependsOn(patchInlineCompletionProviderAbi)
+val runtimeTest by tasks.registering(Test::class) {
+    configureJavaOnlyTestRuntime()
     group = LifecycleBasePlugin.VERIFICATION_GROUP
-    description = "Runs live runtime integration tests."
-    testClassesDirs = files(layout.buildDirectory.dir("classes/java/test"))
-    classpath = files(
-        layout.buildDirectory.dir("classes/java/test"),
-        layout.buildDirectory.dir("resources/test"),
-        layout.buildDirectory.dir("classes/java/main"),
-        layout.buildDirectory.dir("resources/main"),
-        configurations.testRuntimeClasspath
-    ).filter { !isLegacyKotlinBuildOutput(it) }
+    description = "Runs offline agent runtime integration tests."
+    useJUnitPlatform {
+        includeTags("runtime")
+        excludeTags("live-runtime")
+    }
+    shouldRunAfter(tasks.test)
+}
+
+val liveRuntimeTest by tasks.registering(Test::class) {
+    configureJavaOnlyTestRuntime()
+    group = LifecycleBasePlugin.VERIFICATION_GROUP
+    description = "Runs live runtime integration tests when -Prikki.liveRuntime=1 is supplied."
+    onlyIf {
+        liveRuntimeEnabledProvider.get()
+    }
+    systemProperty("rikki.liveRuntime.enabled", liveRuntimeEnabledProvider.get().toString())
     useJUnitPlatform {
         includeTags("live-runtime")
     }
-    shouldRunAfter(tasks.test)
+    shouldRunAfter(runtimeTest)
 }

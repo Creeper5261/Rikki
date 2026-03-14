@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zzf.rikki.idea.agent.LiteSseWriter;
 import com.zzf.rikki.idea.agent.compat.RuntimeEvent;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -15,6 +16,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag("runtime")
 class LiteSseWriterTest {
     private final ObjectMapper mapper = new ObjectMapper();
 

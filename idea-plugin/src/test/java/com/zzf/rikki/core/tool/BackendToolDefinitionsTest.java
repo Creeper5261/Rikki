@@ -1,6 +1,7 @@
 package com.zzf.rikki.core.tool;
 
 import com.zzf.rikki.idea.agent.tools.LiteIdeTools;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -9,6 +10,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag("runtime")
 class BackendToolDefinitionsTest {
 
     @Test

@@ -10,6 +10,7 @@ import com.zzf.rikki.llm.LLMService;
 import com.zzf.rikki.runtime.RuntimeAgentConfig;
 import com.zzf.rikki.runtime.port.LlmPort;
 import com.zzf.rikki.session.model.MessageV2;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -19,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag("runtime")
 class ContextCompactionServiceTest {
     private final ObjectMapper mapper = new ObjectMapper();
 

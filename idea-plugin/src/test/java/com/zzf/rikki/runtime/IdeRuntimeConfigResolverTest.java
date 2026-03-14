@@ -3,12 +3,14 @@ package com.zzf.rikki.runtime;
 import com.zzf.rikki.idea.settings.RikkiCredentials;
 import com.zzf.rikki.idea.settings.RikkiSettings;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+@Tag("runtime")
 class IdeRuntimeConfigResolverTest {
 
     @AfterEach

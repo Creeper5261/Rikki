@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.zzf.rikki.idea.agent.compat.ModelCapabilities;
 import com.zzf.rikki.idea.agent.tools.LiteIdeTools;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -13,6 +14,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag("runtime")
 class SystemPromptTest {
     private final ObjectMapper mapper = new ObjectMapper();
 

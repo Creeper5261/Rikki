@@ -1,5 +1,6 @@
 package com.zzf.rikki.idea;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -7,6 +8,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+@Tag("runtime")
 class ChatSseAdapterTest {
     @Test
     void consume_should_parse_events_and_flush_tail_payload() {

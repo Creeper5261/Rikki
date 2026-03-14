@@ -6,6 +6,7 @@ import com.zzf.rikki.agent.AgentService;
 import com.zzf.rikki.session.SessionInfo;
 import com.zzf.rikki.session.SessionService;
 import com.zzf.rikki.session.model.MessageV2;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -16,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+@Tag("runtime")
 class TaskToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
 
