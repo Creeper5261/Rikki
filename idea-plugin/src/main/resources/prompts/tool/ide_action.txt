@@ -1,8 +1,0 @@
-- Execute supported IDE-native actions through the local IDE bridge
-- Use this tool for run, test, status, cancel, and capability-aware IDE actions when the bridge reports support
-- Prefer this tool over raw shell commands when the task depends on IDE-managed run configurations or job state
-
-Usage notes:
-  - Always check ide_capabilities when you are unsure whether an operation is supported
-  - build may be unavailable in cross-IDE mode; fall back to bash when required
-  - status and cancel operate on an existing jobId

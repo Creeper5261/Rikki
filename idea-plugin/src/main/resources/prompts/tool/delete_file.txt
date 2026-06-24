@@ -1,8 +1,0 @@
-- Delete a file from the workspace
-- This tool permanently removes the target file and always requires explicit approval
-- Use it only when the file should be removed entirely, not when the user only wants to modify its contents
-
-Usage notes:
-  - Provide the absolute path to the file to delete
-  - Prefer read/edit/write when the user wants to inspect or modify the file instead of removing it
-  - If the user rejects the deletion, do not retry automatically

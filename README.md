@@ -1,119 +1,71 @@
-# Rikki Coding Agent
+<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
+<p align="center">
+  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
+</p>
+</br>
+If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
+</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
+</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
 
-A lightweight AI coding assistant plugin for JetBrains IDEs. Connects directly to LLM APIs — no backend server required.
+---
 
-## Features
+## Quickstart
 
-**Chat Agent**
+### Installing and running Codex CLI
 
-An AI panel embedded in the IDE sidebar. The agent can read files, write and edit code, run terminal commands, and perform Git operations. Commands classified as high-risk (file deletion, force-push, etc.) are always paused for explicit **Approve / Skip** confirmation before execution.
+Run the following on Mac or Linux to install Codex CLI:
 
-**Inline TAB Completion**
+```shell
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```
 
-Ghost-text suggestions appear as you type; press TAB to accept.
+Run the following on Windows to install Codex CLI:
 
-- **FIM mode** (Fill-In-Middle) for DeepSeek and Ollama — sends prefix and suffix to the model's dedicated completions endpoint for accurate in-place suggestions.
-- **Chat-format fallback** for OpenAI, Gemini, Moonshot, and other providers.
-- Completion can use a **different provider, model, and API key** than the chat agent — suitable for pairing a fast/cheap model for completions with a powerful model for chat.
+```
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+```
 
-**Multi-Provider Support**
+Codex CLI can also be installed via the following package managers:
 
-Built-in presets for DeepSeek, OpenAI, Google Gemini, Moonshot / Kimi, Ollama (local, no key required), and fully custom endpoints. Each provider stores its own API key independently.
+```shell
+# Install using npm
+npm install -g @openai/codex
+```
 
-## Requirements
+```shell
+# Install using Homebrew
+brew install --cask codex
+```
 
-- JetBrains IDE based on platform build `241+`
+Then simply run `codex` to get started.
 
 <details>
-<summary>Supported IDE versions</summary>
+<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
 
-- Android Studio — Koala \| 2024.1.1+
-- AppCode — build 241.0+
-- Aqua — build 241.0+
-- CLion — 2024.1+
-- Code With Me Guest — 1.0+
-- DataGrip — 2024.1+
-- DataSpell — 2024.1+
-- GoLand — 2024.1+
-- IntelliJ IDEA — 2024.1+
-- IntelliJ IDEA Community — 2024.1+
-- JetBrains Client — 1.0+
-- JetBrains Gateway — 2024.1+
-- MPS — 2024.1+
-- PhpStorm — 2024.1+
-- PyCharm — 2024.1+
-- PyCharm Community — 2024.1+
-- Rider — 2024.1+
-- RubyMine — 2024.1+
-- RustRover — 2024.1+
-- WebStorm — 2024.1+
-- Writerside — build 241.0+
+Each GitHub Release contains many executables, but in practice, you likely want one of these:
+
+- macOS
+  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
+  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
+- Linux
+  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
+  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+
+Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
 
 </details>
 
-- An API key from a supported LLM provider, or a locally running Ollama instance
+### Using Codex with your ChatGPT plan
 
+Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
 
-## Setup
+You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
 
-You can install Rikki either directly from the JetBrains Marketplace (recommended) or manually from a downloaded ZIP file.
+## Docs
 
-### Option 1: Install from [JETBRAINS Marketplace](https://plugins.jetbrains.com/plugin/30315-rikki-coding-agent) (Recommended)
+- [**Codex Documentation**](https://developers.openai.com/codex)
+- [**Contributing**](./docs/contributing.md)
+- [**Installing & building**](./docs/install.md)
+- [**Open source fund**](./docs/open-source-fund.md)
 
-1. Open IntelliJ IDEA.
-<!-- 1. Open your JetBrains IDE. -->
-
-<!-- <details>
-<summary>Supported IDE versions</summary>
-
-- Android Studio — Koala \| 2024.1.1+
-- AppCode — build 241.0+
-- Aqua — build 241.0+
-- CLion — 2024.1+
-- Code With Me Guest — 1.0+
-- DataGrip — 2024.1+
-- DataSpell — 2024.1+
-- GoLand — 2024.1+
-- IntelliJ IDEA — 2024.1+
-- IntelliJ IDEA Community — 2024.1+
-- JetBrains Client — 1.0+
-- JetBrains Gateway — 2024.1+
-- MPS — 2024.1+
-- PhpStorm — 2024.1+
-- PyCharm — 2024.1+
-- PyCharm Community — 2024.1+
-- Rider — 2024.1+
-- RubyMine — 2024.1+
-- RustRover — 2024.1+
-- WebStorm — 2024.1+
-- Writerside — build 241.0+
-
-</details> -->
-2. Go to Settings → Plugins → Marketplace.
-
-3. Search for **Rikki Coding Agent**.
-
-4. Click Install and restart the IDE if prompted.
-
-### Option 2: Install from Disk (Manual Installation)
-
-1. Download `idea-plugin-0.1.1.zip` from the [Releases](https://github.com/Creeper5261/Rikki/releases) or [JETBRAINS Marketplace](https://plugins.jetbrains.com/plugin/30315-rikki-code-agent) .
-2. In IntelliJ IDEA, go to **Settings → Plugins → ⚙ → Install Plugin from Disk**, and select the downloaded file.
-
-## Configuration
-After installation:
-1. Open **Settings → Tools → Rikki Coding Agent**.
-2. Select a provider, enter the API key, and choose a model.
-3. For local use, select **Ollama** — no API key is required.
-
-## License
-
-[MIT](LICENSE)
-
-
-
-
-
-
-
-
+This repository is licensed under the [Apache-2.0 License](LICENSE).

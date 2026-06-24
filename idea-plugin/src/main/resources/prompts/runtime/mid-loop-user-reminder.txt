@@ -1,6 +1,0 @@
-<system-reminder>
-The user sent the following message:
-{{userMessage}}
-
-Please address this message and continue with your tasks.
-</system-reminder>
