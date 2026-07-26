@@ -663,6 +663,76 @@ async fn thread_lifecycle_params_include_legacy_sandbox_when_no_active_profile()
 }
 
 #[tokio::test]
+async fn exec_config_keeps_danger_full_access_on_workspace_write_base_config() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let cwd = tempdir().expect("create temp cwd");
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "approval_policy = \"never\"\nsandbox_mode = \"workspace-write\"\n",
+    )
+    .expect("write config");
+    let config = ConfigBuilder::default()
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .codex_home(codex_home.path().to_path_buf())
+        .harness_overrides(ConfigOverrides {
+            sandbox_mode: Some(SandboxMode::DangerFullAccess),
+            ..Default::default()
+        })
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build config with danger-full-access override");
+
+    assert_eq!(
+        config.permissions.effective_permission_profile(),
+        codex_protocol::models::PermissionProfile::Disabled
+    );
+
+    let start_params = thread_start_params_from_config(&config);
+    assert_eq!(
+        start_params.sandbox,
+        Some(codex_app_server_protocol::SandboxMode::DangerFullAccess)
+    );
+    assert_eq!(start_params.permissions, None);
+}
+
+#[tokio::test]
+async fn exec_config_keeps_danger_full_access_from_cli_override() {
+    let codex_home = tempdir().expect("create temp codex home");
+    let cwd = tempdir().expect("create temp cwd");
+    std::fs::write(
+        codex_home.path().join("config.toml"),
+        "approval_policy = \"never\"\nsandbox_mode = \"workspace-write\"\n",
+    )
+    .expect("write config");
+    let cli_overrides = vec![(
+        "sandbox_mode".to_string(),
+        codex_config::TomlValue::String("danger-full-access".to_string()),
+    )];
+    let config = ConfigBuilder::default()
+        .loader_overrides(LoaderOverrides::without_managed_config_for_tests())
+        .codex_home(codex_home.path().to_path_buf())
+        .cli_overrides(cli_overrides)
+        .harness_overrides(ConfigOverrides::default())
+        .fallback_cwd(Some(cwd.path().to_path_buf()))
+        .build()
+        .await
+        .expect("build config with cli sandbox override");
+
+    assert_eq!(
+        config.permissions.effective_permission_profile(),
+        codex_protocol::models::PermissionProfile::Disabled
+    );
+
+    let start_params = thread_start_params_from_config(&config);
+    assert_eq!(
+        start_params.sandbox,
+        Some(codex_app_server_protocol::SandboxMode::DangerFullAccess)
+    );
+    assert_eq!(start_params.permissions, None);
+}
+
+#[tokio::test]
 async fn session_configured_from_thread_response_uses_review_policy_from_response() {
     let codex_home = tempdir().expect("create temp codex home");
     let cwd = tempdir().expect("create temp cwd");

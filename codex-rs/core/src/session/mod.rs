@@ -1406,6 +1406,7 @@ impl Session {
             .map(build_world_state_from_turn_context_item);
         {
             let mut state = self.state.lock().await;
+            state.rebuild_context_evidence_from_rollout(rollout_items);
             state.replace_history(history, reference_context_item);
             if let Some(world_state) = world_state_baseline {
                 state
@@ -3419,6 +3420,86 @@ impl Session {
     pub(crate) async fn clone_history(&self) -> ContextManager {
         let state = self.state.lock().await;
         state.clone_history()
+    }
+
+    pub(crate) async fn clone_history_with_context_governance_state(
+        &self,
+    ) -> (
+        ContextManager,
+        HashMap<String, String>,
+        HashMap<String, u64>,
+        HashSet<u64>,
+        crate::context_engine::TaskState,
+        Option<crate::context_engine::GovernanceProjection>,
+        Vec<crate::context_engine::TrajectoryNode>,
+    ) {
+        let state = self.state.lock().await;
+        (
+            state.clone_history(),
+            state.context_evidence_refs(),
+            state.context_evidence_indices(),
+            state.observed_tool_output_indices(),
+            state.context_task_state(),
+            state.governance_projection(),
+            state.trajectory_nodes(),
+        )
+    }
+
+    pub(crate) async fn hydrate_tool_output_index(&self, index: u64) -> Option<ResponseItem> {
+        let state = self.state.lock().await;
+        state.tool_output_by_index(index)
+    }
+
+    pub(crate) async fn hydrate_history_slice_page(
+        &self,
+        index: u64,
+        before: usize,
+        after: usize,
+        offset: usize,
+        max_chars: usize,
+    ) -> Result<crate::context_engine::HistorySlicePage, crate::context_engine::TrajectoryError>
+    {
+        self.state
+            .lock()
+            .await
+            .history_slice_page(index, before, after, offset, max_chars)
+    }
+
+    pub(crate) async fn append_context_trajectory_node(
+        &self,
+        summary: String,
+        core_start: u64,
+        core_end: u64,
+        retrieval_start: u64,
+        retrieval_end: u64,
+        checkpoint: u64,
+    ) -> Result<u64, crate::context_engine::TrajectoryError> {
+        self.state.lock().await.append_trajectory_node(
+            summary,
+            core_start,
+            core_end,
+            retrieval_start,
+            retrieval_end,
+            checkpoint,
+        )
+    }
+
+    pub(crate) async fn context_trajectory_event_count(&self) -> u64 {
+        self.state.lock().await.trajectory_event_count()
+    }
+
+    pub(crate) async fn set_context_governance_projection(
+        &self,
+        projection: crate::context_engine::GovernanceProjection,
+    ) {
+        self.state
+            .lock()
+            .await
+            .set_governance_projection(projection);
+    }
+
+    pub(crate) async fn mark_pending_tool_outputs_observed(&self) {
+        self.state.lock().await.mark_pending_tool_outputs_observed();
     }
 
     pub(crate) async fn current_window_id(&self) -> String {

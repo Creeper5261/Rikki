@@ -732,6 +732,7 @@ mod tests {
     use codex_app_server_protocol::ClientInfo;
     use codex_app_server_protocol::ConfigRequirementsReadResponse;
     use codex_app_server_protocol::ExternalAgentConfigImportCompletedNotification;
+    use codex_app_server_protocol::SandboxMode;
     use codex_app_server_protocol::SessionSource as ApiSessionSource;
     use codex_app_server_protocol::ThreadStartParams;
     use codex_app_server_protocol::ThreadStartResponse;
@@ -850,6 +851,64 @@ mod tests {
                 .await
                 .expect("in-process runtime should shutdown cleanly");
         }
+    }
+
+    #[tokio::test]
+    async fn in_process_thread_start_respects_danger_full_access_override() {
+        let codex_home = TempDir::new().expect("temp dir");
+        std::fs::write(
+            codex_home.path().join("config.toml"),
+            "approval_policy = \"never\"\nsandbox_mode = \"workspace-write\"\n",
+        )
+        .expect("write config");
+        let config = Arc::new(build_test_config(codex_home.path()).await);
+        let state_db = codex_rollout::state_db::try_init(config.as_ref())
+            .await
+            .expect("state db should initialize for in-process test");
+        let args = InProcessStartArgs {
+            arg0_paths: Arg0DispatchPaths::default(),
+            config,
+            cli_overrides: Vec::new(),
+            loader_overrides: LoaderOverrides::default(),
+            strict_config: false,
+            cloud_config_bundle: CloudConfigBundleLoader::default(),
+            thread_config_loader: Arc::new(codex_config::NoopThreadConfigLoader),
+            feedback: CodexFeedback::new(),
+            log_db: None,
+            state_db: Some(state_db),
+            environment_manager: Arc::new(EnvironmentManager::default_for_tests()),
+            config_warnings: Vec::new(),
+            session_source: SessionSource::Exec,
+            enable_codex_api_key_env: false,
+            initialize: InitializeParams {
+                client_info: ClientInfo {
+                    name: "codex-in-process-test".to_string(),
+                    title: None,
+                    version: "0.0.0".to_string(),
+                },
+                capabilities: None,
+            },
+            channel_capacity: DEFAULT_IN_PROCESS_CHANNEL_CAPACITY,
+        };
+        let client = start(args).await.expect("in-process runtime should start");
+        let response = client
+            .request(ClientRequest::ThreadStart {
+                request_id: RequestId::Integer(3),
+                params: ThreadStartParams {
+                    sandbox: Some(SandboxMode::DangerFullAccess),
+                    ephemeral: Some(true),
+                    ..ThreadStartParams::default()
+                },
+            })
+            .await
+            .expect("request transport should work")
+            .expect("thread/start should succeed");
+        let parsed: ThreadStartResponse =
+            serde_json::from_value(response).expect("thread/start response should parse");
+        assert_eq!(
+            parsed.sandbox,
+            codex_app_server_protocol::SandboxPolicy::DangerFullAccess
+        );
     }
 
     #[tokio::test]

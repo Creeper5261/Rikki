@@ -1,8 +1,12 @@
 use super::*;
 use crate::session::tests::make_session_configuration_for_tests;
 use crate::state::AutoCompactWindowSnapshot;
+use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputBody;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::protocol::CreditsSnapshot;
 use codex_protocol::protocol::RateLimitWindow;
+use codex_protocol::protocol::RolloutItem;
 use codex_protocol::protocol::SpendControlLimitSnapshot;
 use pretty_assertions::assert_eq;
 
@@ -78,6 +82,114 @@ async fn replace_history_clears_auto_compact_window_prefill() {
             prefill_input_tokens: None,
         }
     );
+}
+
+#[tokio::test]
+async fn record_items_indexes_context_evidence_by_response_item_id() {
+    let session_configuration = make_session_configuration_for_tests().await;
+    let mut state = SessionState::new(session_configuration);
+    let item = ResponseItem::Message {
+        id: Some("msg-evidence".to_string()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "Preserve this requirement as evidence.".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    state.record_items(std::slice::from_ref(&item), TruncationPolicy::Tokens(1_000));
+
+    assert_eq!(
+        state.context_evidence_refs(),
+        HashMap::from([(
+            "msg-evidence".to_string(),
+            "evidence://response-item/msg-evidence?record=0".to_string(),
+        )])
+    );
+    assert_eq!(
+        state
+            .context_task_state()
+            .latest_requirement_revision()
+            .and_then(|revision| revision.response_item_id.as_deref()),
+        Some("msg-evidence")
+    );
+}
+
+#[tokio::test]
+async fn record_items_reduces_failed_tool_output_into_task_state() {
+    let session_configuration = make_session_configuration_for_tests().await;
+    let mut state = SessionState::new(session_configuration);
+    let call = ResponseItem::FunctionCall {
+        id: Some("call-failed-item".to_string()),
+        name: "shell_command".to_string(),
+        namespace: None,
+        arguments: serde_json::json!({
+            "command": "pytest -q",
+            "workdir": "D:/repo"
+        })
+        .to_string(),
+        call_id: "call-failed".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let item = ResponseItem::FunctionCallOutput {
+        id: Some("output-failed".to_string()),
+        call_id: "call-failed".to_string(),
+        output: FunctionCallOutputPayload {
+            body: Default::default(),
+            success: Some(false),
+        },
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    state.record_items([&call, &item], TruncationPolicy::Tokens(1_000));
+
+    let task_state = state.context_task_state();
+    assert_eq!(task_state.tool_outcomes().len(), 1);
+    assert_eq!(task_state.failed_tool_outcomes().count(), 1);
+    assert_eq!(
+        task_state.tool_outcomes()[0].category,
+        crate::context_engine::ToolOutcomeCategory::Test
+    );
+    assert_eq!(
+        task_state.tool_outcomes()[0].scope_paths,
+        vec!["D:/repo".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn rollout_rebuild_marks_tool_output_observed_only_after_model_response() {
+    let session_configuration = make_session_configuration_for_tests().await;
+    let output = ResponseItem::FunctionCallOutput {
+        id: Some("tool-output-1".to_string()),
+        call_id: "call-1".to_string(),
+        output: FunctionCallOutputPayload {
+            body: FunctionCallOutputBody::Text("raw output".to_string()),
+            success: Some(true),
+        },
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let model_response = ResponseItem::Message {
+        id: Some("assistant-after-output".to_string()),
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: "I consumed the tool result.".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+
+    let mut incomplete_state = SessionState::new(session_configuration.clone());
+    incomplete_state
+        .rebuild_context_evidence_from_rollout(&[RolloutItem::ResponseItem(output.clone())]);
+    assert!(incomplete_state.tool_output_by_index(0).is_none());
+
+    let mut observed_state = SessionState::new(session_configuration);
+    observed_state.rebuild_context_evidence_from_rollout(&[
+        RolloutItem::ResponseItem(output),
+        RolloutItem::ResponseItem(model_response),
+    ]);
+    assert!(observed_state.tool_output_by_index(0).is_some());
 }
 
 #[tokio::test]

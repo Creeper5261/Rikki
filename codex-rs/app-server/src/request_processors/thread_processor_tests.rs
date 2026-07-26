@@ -730,6 +730,40 @@ mod thread_processor_behavior_tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn config_manager_load_with_overrides_keeps_danger_full_access() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        std::fs::write(
+            temp_dir.path().join("config.toml"),
+            "approval_policy = \"never\"\nsandbox_mode = \"workspace-write\"\n",
+        )?;
+        let config_manager = ConfigManager::new(
+            temp_dir.path().to_path_buf(),
+            Vec::new(),
+            LoaderOverrides::default(),
+            /*strict_config*/ false,
+            CloudConfigBundleLoader::default(),
+            Arg0DispatchPaths::default(),
+            Arc::new(codex_config::NoopThreadConfigLoader),
+        );
+        let config = config_manager
+            .load_with_overrides(
+                None,
+                ConfigOverrides {
+                    sandbox_mode: Some(codex_protocol::config_types::SandboxMode::DangerFullAccess),
+                    ..Default::default()
+                },
+            )
+            .await?;
+
+        assert_eq!(
+            config.permissions.effective_permission_profile(),
+            PermissionProfile::Disabled
+        );
+        assert_eq!(config.permissions.active_permission_profile(), None);
+        Ok(())
+    }
+
     #[test]
     fn collect_resume_override_mismatches_includes_service_tier() {
         let cwd = test_path_buf("/tmp").abs();

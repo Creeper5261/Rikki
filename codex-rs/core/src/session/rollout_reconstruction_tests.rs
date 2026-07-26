@@ -4,6 +4,7 @@ use super::tests::make_session_and_context;
 use codex_protocol::AgentPath;
 use codex_protocol::ThreadId;
 use codex_protocol::models::ContentItem;
+use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::protocol::CompactedItem;
 use codex_protocol::protocol::InitialHistory;
@@ -57,6 +58,63 @@ fn inter_agent_assistant_message(text: &str) -> ResponseItem {
         phase: None,
         internal_chat_message_metadata_passthrough: None,
     }
+}
+
+#[tokio::test]
+async fn resume_rebuilds_full_evidence_but_only_active_task_state() {
+    let (session, _turn_context) = make_session_and_context().await;
+    let requirement = ResponseItem::Message {
+        id: Some("req-before-compaction".to_string()),
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "Keep the active requirement.".to_string(),
+        }],
+        phase: None,
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let failed_output = ResponseItem::FunctionCallOutput {
+        id: Some("output-before-compaction".to_string()),
+        call_id: "call-before-compaction".to_string(),
+        output: FunctionCallOutputPayload {
+            body: Default::default(),
+            success: Some(false),
+        },
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let rollout_items = vec![
+        RolloutItem::ResponseItem(requirement.clone()),
+        RolloutItem::ResponseItem(failed_output),
+        RolloutItem::Compacted(CompactedItem {
+            message: "Compacted active state".to_string(),
+            replacement_history: Some(vec![requirement]),
+            window_number: Some(1),
+            first_window_id: None,
+            previous_window_id: None,
+            window_id: None,
+        }),
+    ];
+
+    session
+        .record_initial_history(InitialHistory::Resumed(ResumedHistory {
+            conversation_id: ThreadId::default(),
+            history: Arc::new(rollout_items),
+            rollout_path: Some(PathBuf::from("/tmp/resume.jsonl")),
+        }))
+        .await;
+
+    let state = session.state.lock().await;
+    assert_eq!(state.context_task_state().requirement_revisions().len(), 1);
+    assert!(state.context_task_state().tool_outcomes().is_empty());
+    assert!(
+        state
+            .context_evidence_refs()
+            .contains_key("output-before-compaction")
+    );
+    assert!(
+        state
+            .context_evidence_refs()
+            .contains_key("req-before-compaction")
+    );
 }
 
 #[tokio::test]
