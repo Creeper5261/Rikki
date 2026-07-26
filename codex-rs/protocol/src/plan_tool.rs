@@ -14,9 +14,19 @@ pub enum StepStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(deny_unknown_fields)]
+pub struct PlanItemVerificationArg {
+    pub command: String,
+    #[serde(default)]
+    pub scope: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(deny_unknown_fields)]
 pub struct PlanItemArg {
     pub step: String,
     pub status: StepStatus,
+    #[serde(default)]
+    pub verification: Option<PlanItemVerificationArg>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -27,3 +37,7 @@ pub struct UpdatePlanArgs {
     pub explanation: Option<String>,
     pub plan: Vec<PlanItemArg>,
 }
+
+#[cfg(test)]
+#[path = "plan_tool_tests.rs"]
+mod tests;

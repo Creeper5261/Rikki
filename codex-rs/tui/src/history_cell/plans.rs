@@ -207,7 +207,7 @@ impl HistoryCell for PlanUpdateCell {
         if self.plan.is_empty() {
             indented_lines.push(Line::from("(no steps provided)".dim().italic()));
         } else {
-            for PlanItemArg { step, status } in self.plan.iter() {
+            for PlanItemArg { step, status, .. } in self.plan.iter() {
                 indented_lines.extend(render_step(status, step));
             }
         }
@@ -229,7 +229,7 @@ impl HistoryCell for PlanUpdateCell {
         if self.plan.is_empty() {
             lines.push(Line::from("(no steps provided)"));
         } else {
-            for PlanItemArg { step, status } in &self.plan {
+            for PlanItemArg { step, status, .. } in &self.plan {
                 lines.push(Line::from(format!("{status:?}: {step}")));
             }
         }

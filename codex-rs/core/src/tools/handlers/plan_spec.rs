@@ -5,6 +5,21 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 pub fn create_update_plan_tool() -> ToolSpec {
+    let verification_properties = BTreeMap::from([
+        (
+            "command".to_string(),
+            JsonSchema::string(Some(
+                "Exact verification command required before this step may close.".to_string(),
+            )),
+        ),
+        (
+            "scope".to_string(),
+            JsonSchema::array(
+                JsonSchema::string(Some("Verification workspace or path scope.".to_string())),
+                Some("Verification scopes that must match the observed verifier.".to_string()),
+            ),
+        ),
+    ]);
     let plan_item_properties = BTreeMap::from([
         (
             "step".to_string(),
@@ -15,6 +30,14 @@ pub fn create_update_plan_tool() -> ToolSpec {
             JsonSchema::string_enum(
                 vec![json!("pending"), json!("in_progress"), json!("completed")],
                 Some("Step status.".to_string()),
+            ),
+        ),
+        (
+            "verification".to_string(),
+            JsonSchema::object(
+                verification_properties,
+                Some(vec!["command".to_string()]),
+                Some(false.into()),
             ),
         ),
     ]);

@@ -454,6 +454,30 @@ fn apply_patch_accepts_environment_id(spec: &ToolSpec) -> bool {
 }
 
 #[tokio::test]
+async fn tool_output_tool_is_registered_and_model_visible() {
+    let plan = probe(|_| {}).await;
+
+    plan.assert_visible_contains(&["get_tool_output"]);
+    plan.assert_registered_contains(&["get_tool_output"]);
+}
+
+#[tokio::test]
+async fn repo_node_tool_is_registered_and_model_visible() {
+    let plan = probe(|_| {}).await;
+
+    plan.assert_visible_contains(&["get_repo_node"]);
+    plan.assert_registered_contains(&["get_repo_node"]);
+}
+
+#[tokio::test]
+async fn workspace_index_tool_is_registered_and_model_visible() {
+    let plan = probe(|_| {}).await;
+
+    plan.assert_visible_contains(&["search_workspace_files"]);
+    plan.assert_registered_contains(&["search_workspace_files"]);
+}
+
+#[tokio::test]
 async fn request_user_input_tool_respects_experimental_config_gate() {
     let enabled = probe(|_| {}).await;
     enabled.assert_visible_contains(&["request_user_input"]);

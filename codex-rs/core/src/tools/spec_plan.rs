@@ -13,6 +13,9 @@ use crate::tools::handlers::DynamicToolHandler;
 use crate::tools::handlers::ExecCommandHandler;
 use crate::tools::handlers::ExecCommandHandlerOptions;
 use crate::tools::handlers::GetContextRemainingHandler;
+use crate::tools::handlers::GetHistorySliceHandler;
+use crate::tools::handlers::GetRepoNodeHandler;
+use crate::tools::handlers::GetToolOutputHandler;
 use crate::tools::handlers::ListAvailablePluginsToInstallHandler;
 use crate::tools::handlers::ListMcpResourceTemplatesHandler;
 use crate::tools::handlers::ListMcpResourcesHandler;
@@ -23,6 +26,7 @@ use crate::tools::handlers::ReadMcpResourceHandler;
 use crate::tools::handlers::RequestPermissionsHandler;
 use crate::tools::handlers::RequestPluginInstallHandler;
 use crate::tools::handlers::RequestUserInputHandler;
+use crate::tools::handlers::SearchWorkspaceFilesHandler;
 use crate::tools::handlers::ShellCommandHandler;
 use crate::tools::handlers::ShellCommandHandlerOptions;
 use crate::tools::handlers::SleepHandler;
@@ -743,6 +747,11 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         }
         planned_tools.add(GetContextRemainingHandler);
     }
+
+    planned_tools.add(GetToolOutputHandler);
+    planned_tools.add(GetHistorySliceHandler);
+    planned_tools.add(GetRepoNodeHandler);
+    planned_tools.add(SearchWorkspaceFilesHandler);
 
     if features.enabled(Feature::CurrentTimeReminder) {
         planned_tools.add(CurrentTimeHandler);

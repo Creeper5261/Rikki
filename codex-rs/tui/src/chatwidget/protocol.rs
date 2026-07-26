@@ -111,6 +111,7 @@ impl ChatWidget {
                                 TurnPlanStepStatus::InProgress => UpdatePlanItemStatus::InProgress,
                                 TurnPlanStepStatus::Completed => UpdatePlanItemStatus::Completed,
                             },
+                            verification: None,
                         })
                         .collect(),
                 })
