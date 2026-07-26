@@ -37,6 +37,7 @@ mod command_canonicalization;
 pub mod config;
 pub mod connectors;
 pub mod context;
+pub mod context_engine;
 mod context_manager;
 mod current_time;
 mod environment_selection;
