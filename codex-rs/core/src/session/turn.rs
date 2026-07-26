@@ -17,6 +17,18 @@ use crate::compact_remote::run_inline_remote_auto_compact_task;
 use crate::compact_remote_v2::run_inline_remote_auto_compact_task as run_inline_remote_auto_compact_task_v2;
 use crate::connectors;
 use crate::context::ContextualUserFragment;
+use crate::context_engine::ContextBudget;
+use crate::context_engine::ContextGovernanceError;
+use crate::context_engine::ContextItem;
+use crate::context_engine::ContextItemKind;
+use crate::context_engine::ContextRetention;
+use crate::context_engine::GovernedContext;
+use crate::context_engine::GovernedContextAssembler;
+use crate::context_engine::GovernedContextCandidate;
+use crate::context_engine::GovernedContextRequest;
+use crate::context_engine::MODEL_GOVERNANCE_NOTE_TOKEN_RESERVE;
+use crate::context_engine::TaskState;
+use crate::event_mapping::is_contextual_user_message_content;
 use crate::feedback_tags;
 use crate::hook_runtime::inspect_pending_input;
 use crate::hook_runtime::record_additional_contexts;
@@ -107,6 +119,7 @@ use codex_protocol::protocol::WarningEvent;
 use codex_protocol::user_input::UserInput;
 use codex_tools::ToolName;
 use codex_tools::filter_request_plugin_install_discoverable_tools_for_client;
+use codex_utils_output_truncation::approx_token_count;
 use codex_utils_stream_parser::AssistantTextChunk;
 use codex_utils_stream_parser::AssistantTextStreamParser;
 use codex_utils_stream_parser::ProposedPlanSegment;
@@ -258,12 +271,18 @@ pub(crate) async fn run_turn(
 
             // Construct the input that we will send to the model.
             let sampling_request_input: Vec<ResponseItem> = async {
-                sess.clone_history()
-                    .await
-                    .for_prompt(&turn_context.model_info.input_modalities)
+                let governed_context =
+                    build_governed_model_context_from_session(&sess, &turn_context).await?;
+                trace!(
+                    selected_context_items = governed_context.manifest.selected.len(),
+                    dropped_context_items = governed_context.manifest.dropped.len(),
+                    selected_context_tokens = governed_context.manifest.total_selected_tokens,
+                    "assembled governed sampling context"
+                );
+                Ok::<Vec<ResponseItem>, CodexErr>(governed_context.model_input)
             }
             .instrument(trace_span!("run_turn.prepare_sampling_request_input"))
-            .await;
+            .await?;
 
             let responses_metadata = turn_context.turn_metadata_state.to_responses_metadata(
                 sess.installation_id.clone(),
@@ -1038,6 +1057,363 @@ pub(super) fn collect_explicit_app_ids_from_skill_items(
     connector_ids
 }
 
+const GOVERNED_CONTEXT_MAX_TOKENS_CAP: u32 = 32_000;
+const GOVERNED_CONTEXT_WINDOW_DIVISOR: i64 = 4;
+const GOVERNED_CONTEXT_MIN_DENSITY: f64 = 0.00005;
+
+pub(crate) async fn build_governed_model_context_from_session(
+    sess: &Session,
+    turn_context: &TurnContext,
+) -> CodexResult<GovernedContext> {
+    let (
+        history,
+        evidence_refs,
+        evidence_indices,
+        observed_tool_output_indices,
+        task_state,
+        governance_projection,
+        trajectory_nodes,
+    ) = sess.clone_history_with_context_governance_state().await;
+    let prompt_history = history.for_prompt(&turn_context.model_info.input_modalities);
+
+    assemble_governed_model_context_with_evidence_refs(
+        prompt_history,
+        governed_context_budget(turn_context),
+        &evidence_refs,
+        &evidence_indices,
+        &observed_tool_output_indices,
+        Some(&task_state),
+        governance_projection.as_ref(),
+        &trajectory_nodes,
+    )
+    .map_err(|err| CodexErr::Fatal(format!("context governance failed closed: {err:?}")))
+}
+
+pub(crate) fn governed_context_budget(turn_context: &TurnContext) -> ContextBudget {
+    let window_budget = turn_context
+        .model_context_window()
+        .map(|window| (window / GOVERNED_CONTEXT_WINDOW_DIVISOR).max(1))
+        .and_then(|tokens| u32::try_from(tokens).ok())
+        .unwrap_or(GOVERNED_CONTEXT_MAX_TOKENS_CAP);
+
+    ContextBudget {
+        max_tokens: window_budget.min(GOVERNED_CONTEXT_MAX_TOKENS_CAP).max(1),
+        min_density: GOVERNED_CONTEXT_MIN_DENSITY,
+    }
+}
+
+pub(crate) fn assemble_governed_model_context(
+    prompt_history: Vec<ResponseItem>,
+    budget: ContextBudget,
+) -> Result<GovernedContext, ContextGovernanceError> {
+    assemble_governed_model_context_with_evidence_refs(
+        prompt_history,
+        budget,
+        &HashMap::new(),
+        &HashMap::new(),
+        &HashSet::new(),
+        /*task_state*/ None,
+        None,
+        &[],
+    )
+}
+
+fn assemble_governed_model_context_with_evidence_refs(
+    prompt_history: Vec<ResponseItem>,
+    budget: ContextBudget,
+    evidence_refs: &HashMap<String, String>,
+    evidence_indices: &HashMap<String, u64>,
+    observed_tool_output_indices: &HashSet<u64>,
+    task_state: Option<&crate::context_engine::TaskState>,
+    governance_projection: Option<&crate::context_engine::GovernanceProjection>,
+    trajectory_nodes: &[crate::context_engine::TrajectoryNode],
+) -> Result<GovernedContext, ContextGovernanceError> {
+    let prompt_history = if tool_projection_enabled() {
+        project_observed_tool_outputs_as_notes(
+            prompt_history,
+            evidence_indices,
+            observed_tool_output_indices,
+            task_state,
+        )
+    } else {
+        prompt_history
+    };
+    let task_state_summary = task_state.and_then(|state| state.render_context_summary(8));
+    let task_state_tokens = task_state_summary
+        .as_ref()
+        .map(|summary| u32::try_from(approx_token_count(summary)).unwrap_or(u32::MAX))
+        .unwrap_or(0);
+    let governance_note_tokens = MODEL_GOVERNANCE_NOTE_TOKEN_RESERVE.min(budget.max_tokens);
+    let history_budget = ContextBudget {
+        max_tokens: budget
+            .max_tokens
+            .saturating_sub(task_state_tokens)
+            .saturating_sub(governance_note_tokens)
+            .max(1),
+        min_density: budget.min_density,
+    };
+    let Some(current_user_index) = prompt_history.iter().rposition(is_current_user_input_item)
+    else {
+        return Err(ContextGovernanceError::CurrentUserInputMissing);
+    };
+    let current_user_input = prompt_history[current_user_index].clone();
+    let history_len = prompt_history.len().max(1);
+    let mut candidates = Vec::with_capacity(prompt_history.len().saturating_sub(1));
+
+    for (index, item) in prompt_history.into_iter().enumerate() {
+        if index == current_user_index {
+            continue;
+        }
+
+        let token_estimate = estimate_governance_tokens(&item);
+        let freshness = ((index + 1) as f64 / history_len as f64).clamp(0.05, 1.0);
+        let retention = task_state
+            .map(|state| state.retention_for_response_item(&item))
+            .unwrap_or(ContextRetention::Optional);
+        let context_item = ContextItem::new(
+            format!("history-{index}"),
+            context_item_kind_for_response_item(&item),
+            token_estimate,
+        )
+        .with_utility_score(
+            utility_score_for_response_item(&item) * retention_utility_modifier(retention),
+        )
+        .with_freshness(freshness)
+        .with_retention(retention);
+        let source_ref = item
+            .id()
+            .and_then(|item_id| evidence_refs.get(item_id))
+            .cloned()
+            .unwrap_or_else(|| format!("history://item/{index}"));
+
+        candidates
+            .push(GovernedContextCandidate::new(context_item, item).with_source_ref(source_ref));
+    }
+
+    let graph_signals = task_state
+        .map(TaskState::navigation_graph_signals)
+        .unwrap_or_default();
+    let mut governed = GovernedContextAssembler.assemble(GovernedContextRequest {
+        candidates,
+        graph_signals,
+        current_user_input,
+        budget: history_budget,
+    })?;
+    governed.manifest.budget = budget;
+    governed.manifest.task_state_tokens = task_state_tokens;
+    governed.manifest.governance_note_tokens = governance_note_tokens;
+    governed.manifest.total_selected_tokens = governed
+        .manifest
+        .total_selected_tokens
+        .saturating_add(task_state_tokens)
+        .saturating_add(governance_note_tokens);
+    if let Some(summary) = task_state_summary {
+        governed.model_input.insert(
+            1,
+            ResponseItem::Message {
+                id: None,
+                role: "developer".to_string(),
+                content: vec![ContentItem::InputText { text: summary }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+        );
+    }
+    if let Some(governance_note) =
+        render_governance_projection(governance_projection, trajectory_nodes)
+    {
+        governed.model_input.insert(
+            1,
+            ResponseItem::Message {
+                id: None,
+                role: "developer".to_string(),
+                content: vec![ContentItem::InputText {
+                    text: governance_note,
+                }],
+                phase: None,
+                internal_chat_message_metadata_passthrough: None,
+            },
+        );
+    }
+    Ok(governed)
+}
+
+fn render_governance_projection(
+    projection: Option<&crate::context_engine::GovernanceProjection>,
+    nodes: &[crate::context_engine::TrajectoryNode],
+) -> Option<String> {
+    let projection = projection?;
+    let mut lines = vec![
+        "CONTEXT GOVERNANCE STATE".to_string(),
+        format!("USER INTENT\n{}", projection.user_intent),
+        format!("CURRENT POSITION\n{}", projection.current_position),
+        "TRAJECTORY MAP".to_string(),
+    ];
+    if nodes.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        for node in nodes.iter().rev().take(24).rev() {
+            lines.push(format!("[{}] {}", node.public_index, node.summary));
+        }
+    }
+    lines.push(format!("RECENT EPISODE\n{}", projection.recent_episode));
+    Some(lines.join("\n"))
+}
+
+fn tool_projection_enabled() -> bool {
+    std::env::var("CODEX_CONTEXT_GOVERNANCE_TOOL_PROJECTION")
+        .map(|value| value != "0")
+        .unwrap_or(true)
+}
+
+fn project_observed_tool_outputs_as_notes(
+    prompt_history: Vec<ResponseItem>,
+    evidence_indices: &HashMap<String, u64>,
+    observed_tool_output_indices: &HashSet<u64>,
+    task_state: Option<&crate::context_engine::TaskState>,
+) -> Vec<ResponseItem> {
+    let observed_call_keys = prompt_history
+        .iter()
+        .filter_map(|item| {
+            let index = item
+                .id()
+                .and_then(|item_id| evidence_indices.get(item_id))
+                .copied()?;
+            (observed_tool_output_indices.contains(&index)
+                && !is_exploration_or_read_item(item, task_state))
+            .then(|| crate::context_engine::tool_call_pair_key(item).map(|(key, _)| key))
+            .flatten()
+        })
+        .collect::<HashSet<_>>();
+
+    prompt_history
+        .into_iter()
+        .filter_map(|item| {
+            let pair_key = crate::context_engine::tool_call_pair_key(&item).map(|(key, _)| key);
+            if pair_key
+                .as_ref()
+                .is_some_and(|key| observed_call_keys.contains(key))
+            {
+                let index = item
+                    .id()
+                    .and_then(|item_id| evidence_indices.get(item_id))
+                    .copied();
+                if let Some(index) = index
+                    && observed_tool_output_indices.contains(&index)
+                    && let Some(note) = crate::context_engine::render_model_visible_tool_note(
+                        task_state, &item, index,
+                    )
+                {
+                    return Some(ResponseItem::Message {
+                        id: None,
+                        role: "developer".to_string(),
+                        content: vec![ContentItem::InputText { text: note }],
+                        phase: None,
+                        internal_chat_message_metadata_passthrough: None,
+                    });
+                }
+                return None;
+            }
+            Some(item)
+        })
+        .collect()
+}
+
+fn is_exploration_or_read_item(
+    item: &ResponseItem,
+    task_state: Option<&crate::context_engine::TaskState>,
+) -> bool {
+    use crate::context_engine::ToolOutcomeCategory;
+
+    match item {
+        ResponseItem::ToolSearchCall { .. } | ResponseItem::ToolSearchOutput { .. } => true,
+        ResponseItem::FunctionCall { call_id, .. }
+        | ResponseItem::CustomToolCall { call_id, .. } => task_state
+            .and_then(|state| state.tool_calls().get(call_id))
+            .is_some_and(|call| call.category == ToolOutcomeCategory::FileRead),
+        ResponseItem::FunctionCallOutput { call_id, .. }
+        | ResponseItem::CustomToolCallOutput { call_id, .. } => task_state
+            .and_then(|state| {
+                state
+                    .tool_outcomes()
+                    .iter()
+                    .find(|outcome| outcome.call_id == *call_id)
+            })
+            .is_some_and(|outcome| outcome.category == ToolOutcomeCategory::FileRead),
+        _ => false,
+    }
+}
+
+fn is_current_user_input_item(item: &ResponseItem) -> bool {
+    matches!(
+        item,
+        ResponseItem::Message { role, content, .. }
+            if role == "user" && !is_contextual_user_message_content(content)
+    )
+}
+
+fn estimate_governance_tokens(item: &ResponseItem) -> u32 {
+    let serialized = serde_json::to_string(item).unwrap_or_default();
+    let tokens = approx_token_count(&serialized).max(1);
+    u32::try_from(tokens).unwrap_or(u32::MAX)
+}
+
+fn context_item_kind_for_response_item(item: &ResponseItem) -> ContextItemKind {
+    match item {
+        ResponseItem::FunctionCallOutput { .. }
+        | ResponseItem::CustomToolCallOutput { .. }
+        | ResponseItem::ToolSearchOutput { .. } => ContextItemKind::ToolOutput,
+        ResponseItem::Message { role, .. } if role == "user" || role == "developer" => {
+            ContextItemKind::UserRequirement
+        }
+        ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. } => {
+            ContextItemKind::Delta
+        }
+        ResponseItem::AdditionalTools { .. }
+        | ResponseItem::Message { .. }
+        | ResponseItem::AgentMessage { .. }
+        | ResponseItem::Reasoning { .. }
+        | ResponseItem::LocalShellCall { .. }
+        | ResponseItem::FunctionCall { .. }
+        | ResponseItem::ToolSearchCall { .. }
+        | ResponseItem::CustomToolCall { .. }
+        | ResponseItem::WebSearchCall { .. }
+        | ResponseItem::ImageGenerationCall { .. }
+        | ResponseItem::CompactionTrigger { .. }
+        | ResponseItem::Other => ContextItemKind::Delta,
+    }
+}
+
+fn utility_score_for_response_item(item: &ResponseItem) -> f64 {
+    match item {
+        ResponseItem::Message { role, .. } if role == "developer" => 0.95,
+        ResponseItem::Message { role, .. } if role == "user" => 0.9,
+        ResponseItem::Compaction { .. } | ResponseItem::ContextCompaction { .. } => 0.9,
+        ResponseItem::FunctionCallOutput { .. }
+        | ResponseItem::CustomToolCallOutput { .. }
+        | ResponseItem::ToolSearchOutput { .. } => 0.75,
+        ResponseItem::FunctionCall { .. }
+        | ResponseItem::CustomToolCall { .. }
+        | ResponseItem::ToolSearchCall { .. }
+        | ResponseItem::LocalShellCall { .. } => 0.55,
+        ResponseItem::Message { .. } | ResponseItem::AgentMessage { .. } => 0.5,
+        ResponseItem::WebSearchCall { .. } | ResponseItem::ImageGenerationCall { .. } => 0.4,
+        ResponseItem::Reasoning { .. } => 0.25,
+        ResponseItem::AdditionalTools { .. }
+        | ResponseItem::CompactionTrigger { .. }
+        | ResponseItem::Other => 0.2,
+    }
+}
+
+fn retention_utility_modifier(retention: ContextRetention) -> f64 {
+    match retention {
+        ContextRetention::Required => 2.0,
+        ContextRetention::Open => 1.5,
+        ContextRetention::Recoverable => 0.2,
+        ContextRetention::Optional => 1.0,
+    }
+}
+
 #[instrument(level = "trace", skip_all)]
 pub(crate) fn build_prompt(
     input: Vec<ResponseItem>,
@@ -1102,9 +1478,15 @@ async fn run_sampling_request(
         let prompt_input = if let Some(input) = initial_input.take() {
             input
         } else {
-            sess.clone_history()
-                .await
-                .for_prompt(&turn_context.model_info.input_modalities)
+            let governed_context =
+                build_governed_model_context_from_session(&sess, &turn_context).await?;
+            trace!(
+                selected_context_items = governed_context.manifest.selected.len(),
+                dropped_context_items = governed_context.manifest.dropped.len(),
+                selected_context_tokens = governed_context.manifest.total_selected_tokens,
+                "reassembled governed sampling context after retry"
+            );
+            governed_context.model_input
         };
         let prompt = build_prompt(
             prompt_input,
@@ -2212,6 +2594,7 @@ async fn try_run_sampling_request(
                     &mut assistant_message_stream_parsers,
                 )
                 .await;
+                sess.mark_pending_tool_outputs_observed().await;
                 let budget_result = sess
                     .record_token_usage_info(&turn_context, token_usage.as_ref())
                     .await;

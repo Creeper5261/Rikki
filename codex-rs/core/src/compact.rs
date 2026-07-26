@@ -15,7 +15,9 @@ use crate::responses_metadata::CompactionTurnMetadata;
 #[cfg(test)]
 use crate::session::PreviousTurnSettings;
 use crate::session::session::Session;
+use crate::session::turn::assemble_governed_model_context;
 use crate::session::turn::get_last_assistant_message_from_turn;
+use crate::session::turn::governed_context_budget;
 use crate::session::turn_context::TurnContext;
 use crate::util::backoff;
 use codex_analytics::CodexCompactionEvent;
@@ -44,6 +46,7 @@ use codex_utils_output_truncation::TruncationPolicy;
 use codex_utils_output_truncation::approx_token_count;
 use codex_utils_output_truncation::truncate_text;
 use futures::prelude::*;
+use serde::Deserialize;
 use tracing::error;
 
 use codex_model_provider_info::ModelProviderInfo;
@@ -51,6 +54,118 @@ use codex_model_provider_info::ModelProviderInfo;
 pub use codex_prompts::SUMMARIZATION_PROMPT;
 pub use codex_prompts::SUMMARY_PREFIX;
 const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+
+/// Appended after the native compact prompt; the native text itself is not changed.
+pub(crate) const CONTEXT_GOVERNANCE_APPENDIX_V1: &str = r#"
+
+<context_governance_appendix version="1">
+After the native handoff append one strict JSON `<context_governance_update>` block with
+`schema_version`, `user_intent`, `current_position`, `trajectory_append`, and `recent_episode`.
+Use only directly observable facts. Do not create recommendations, priorities, diagnoses, or new
+tasks. Append new chronological landmarks only; never rewrite prior landmarks.
+</context_governance_appendix>
+"#;
+
+pub(crate) fn native_compact_prompt_with_governance_appendix(native_prompt: &str) -> String {
+    format!("{native_prompt}{CONTEXT_GOVERNANCE_APPENDIX_V1}")
+}
+
+#[derive(Debug, Deserialize)]
+struct GovernanceUpdate {
+    schema_version: u64,
+    user_intent: serde_json::Value,
+    current_position: String,
+    trajectory_append: Vec<TrajectoryAppend>,
+    recent_episode: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrajectoryAppend {
+    summary: String,
+    core_start: u64,
+    core_end: u64,
+    retrieval_start: u64,
+    retrieval_end: u64,
+}
+
+fn split_governance_update(summary: &str) -> Result<(&str, GovernanceUpdate), &'static str> {
+    const OPEN: &str = "<context_governance_update>";
+    const CLOSE: &str = "</context_governance_update>";
+    let (handoff, remainder) = summary
+        .rsplit_once(OPEN)
+        .ok_or("governance block missing")?;
+    let (json, trailing) = remainder
+        .split_once(CLOSE)
+        .ok_or("governance block is unclosed")?;
+    if !trailing.trim().is_empty() {
+        return Err("unexpected content after governance block");
+    }
+    let update = serde_json::from_str::<GovernanceUpdate>(json.trim())
+        .map_err(|_| "governance block is not strict JSON")?;
+    if update.schema_version != 1 {
+        return Err("unsupported governance schema version");
+    }
+    Ok((handoff.trim_end(), update))
+}
+
+async fn persist_governance_trajectory(
+    sess: &Session,
+    update: GovernanceUpdate,
+) -> Result<(), &'static str> {
+    let event_count = sess.context_trajectory_event_count().await;
+    let projection = crate::context_engine::GovernanceProjection {
+        user_intent: serde_json::to_string(&update.user_intent)
+            .map_err(|_| "user intent cannot be serialized")?,
+        current_position: update.current_position.clone(),
+        recent_episode: update.recent_episode.clone(),
+    };
+    let checkpoint = event_count;
+    for node in update.trajectory_append {
+        if node.retrieval_end >= event_count {
+            return Err("trajectory range exceeds captured history");
+        }
+        sess.append_context_trajectory_node(
+            node.summary,
+            node.core_start,
+            node.core_end,
+            node.retrieval_start,
+            node.retrieval_end,
+            checkpoint,
+        )
+        .await
+        .map_err(|_| "trajectory range is invalid")?;
+    }
+    sess.set_context_governance_projection(projection).await;
+    Ok(())
+}
+
+#[cfg(test)]
+mod governance_tests {
+    use super::*;
+
+    #[test]
+    fn governance_update_preserves_native_handoff_and_requires_strict_json() {
+        let source = "native handoff\n<context_governance_update>\n{\"schema_version\":1,\"user_intent\":{},\"current_position\":\"here\",\"trajectory_append\":[{\"summary\":\"user corrected direction\",\"core_start\":1,\"core_end\":2,\"retrieval_start\":0,\"retrieval_end\":3}],\"recent_episode\":\"facts\"}\n</context_governance_update>";
+        let (handoff, update) = split_governance_update(source).expect("valid update");
+        assert_eq!(handoff, "native handoff");
+        assert_eq!(update.trajectory_append.len(), 1);
+        assert!(split_governance_update("native handoff").is_err());
+        assert!(
+            split_governance_update(
+                "<context_governance_update>{not json}</context_governance_update>"
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn native_prompt_is_a_verbatim_prefix() {
+        let native = "ORIGINAL NATIVE COMPACT PROMPT";
+        let composed = native_compact_prompt_with_governance_appendix(native);
+        assert!(composed.starts_with(native));
+        assert_eq!(&composed[..native.len()], native);
+    }
+}
 
 /// Controls whether compaction replacement history must include initial context.
 ///
@@ -95,12 +210,13 @@ pub(crate) async fn run_inline_auto_compact_task(
     reason: CompactionReason,
     phase: CompactionPhase,
 ) -> CodexResult<()> {
-    let prompt = turn_context
+    let native_prompt = turn_context
         .config
         .compact_prompt
         .as_deref()
         .unwrap_or(SUMMARIZATION_PROMPT)
         .to_string();
+    let prompt = native_compact_prompt_with_governance_appendix(&native_prompt);
     let input = vec![UserInput::Text {
         text: prompt,
         // Compaction prompt is synthesized; no UI element ranges to preserve.
@@ -250,9 +366,14 @@ async fn run_compact_task_inner_impl(
 
     loop {
         // Clone is required because of the loop
-        let turn_input = history
-            .clone()
-            .for_prompt(&turn_context.model_info.input_modalities);
+        let turn_input = assemble_governed_model_context(
+            history
+                .clone()
+                .for_prompt(&turn_context.model_info.input_modalities),
+            governed_context_budget(turn_context.as_ref()),
+        )
+        .map_err(|err| CodexErr::Fatal(format!("context governance failed closed: {err:?}")))?
+        .model_input;
         let turn_input_len = turn_input.len();
         let prompt = Prompt {
             input: turn_input,
@@ -321,7 +442,18 @@ async fn run_compact_task_inner_impl(
 
     let history_snapshot = sess.clone_history().await;
     let history_items = history_snapshot.raw_items();
-    let summary_suffix = get_last_assistant_message_from_turn(history_items).unwrap_or_default();
+    let raw_summary_suffix =
+        get_last_assistant_message_from_turn(history_items).unwrap_or_default();
+    let (summary_suffix, governance_update) = split_governance_update(&raw_summary_suffix)
+        .map_err(|err| {
+            CodexErr::Fatal(format!("context governance compact failed closed: {err}"))
+        })?;
+    persist_governance_trajectory(sess.as_ref(), governance_update)
+        .await
+        .map_err(|err| {
+            CodexErr::Fatal(format!("context governance compact failed closed: {err}"))
+        })?;
+    let summary_suffix = summary_suffix.to_string();
     let summary_text = format!("{SUMMARY_PREFIX}\n{summary_suffix}");
     let user_messages = collect_user_messages(history_items);
 

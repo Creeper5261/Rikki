@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::Config;
 use crate::resolve_installation_id;
 use crate::session::session::Session;
+use crate::session::turn::build_governed_model_context_from_session;
 use crate::session::turn::build_prompt;
 use crate::session::turn::built_tools;
 use crate::state_db_bridge::StateDbHandle;
@@ -98,14 +99,12 @@ pub(crate) async fn build_prompt_input_from_session(
             .await;
     }
 
-    let prompt_input = sess
-        .clone_history()
-        .await
-        .for_prompt(&turn_context.model_info.input_modalities);
+    let prompt_input =
+        build_governed_model_context_from_session(sess, turn_context.as_ref()).await?;
     let router = built_tools(sess, step_context.as_ref(), &CancellationToken::new()).await?;
     let base_instructions = sess.get_base_instructions().await;
     let prompt = build_prompt(
-        prompt_input,
+        prompt_input.model_input,
         router.as_ref(),
         turn_context.as_ref(),
         base_instructions,

@@ -19,7 +19,9 @@ use crate::responses_metadata::CodexResponsesRequestKind;
 use crate::responses_metadata::CompactionTurnMetadata;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
+use crate::session::turn::assemble_governed_model_context;
 use crate::session::turn::built_tools;
+use crate::session::turn::governed_context_budget;
 use crate::session::turn_context::TurnContext;
 use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionPhase;
@@ -223,7 +225,12 @@ async fn run_remote_compact_task_inner_impl(
     // fit the compact endpoint. The checkpoint below records it separately from the next sampling
     // request, whose prompt will repeat current developer/context prefix items.
     let trace_input_history = history.raw_items().to_vec();
-    let prompt_input = history.for_prompt(&turn_context.model_info.input_modalities);
+    let prompt_input = assemble_governed_model_context(
+        history.for_prompt(&turn_context.model_info.input_modalities),
+        governed_context_budget(turn_context.as_ref()),
+    )
+    .map_err(|err| CodexErr::Fatal(format!("context governance failed closed: {err:?}")))?
+    .model_input;
     let tool_router = built_tools(
         sess.as_ref(),
         step_context.as_ref(),

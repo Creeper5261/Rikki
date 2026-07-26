@@ -69,6 +69,19 @@ async fn build_prompt_input_includes_context_and_user_message() -> Result<()> {
             text.contains(TEST_INSTRUCTIONS)
         })
     }));
+    assert!(input.iter().any(|item| {
+        let ResponseItem::Message { content, .. } = item else {
+            return false;
+        };
+
+        content.iter().any(|content_item| {
+            let (ContentItem::InputText { text } | ContentItem::OutputText { text }) = content_item
+            else {
+                return false;
+            };
+            text.contains("CONTEXT GOVERNANCE MANIFEST")
+        })
+    }));
 
     Ok(())
 }
