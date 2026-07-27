@@ -272,6 +272,9 @@ pub fn render_model_visible_tool_note(
     item: &ResponseItem,
     index: u64,
 ) -> Option<String> {
+    if let Some(note) = render_recovery_tool_note(task_state, item, index) {
+        return Some(note);
+    }
     let (tool, status, output) = match item {
         ResponseItem::FunctionCallOutput {
             call_id, output, ..
@@ -325,6 +328,72 @@ pub fn render_model_visible_tool_note(
     lines.push(format!("summary: {summary}"));
     lines.push(format!("raw: get_tool_output(index={index})"));
     Some(lines.join("\n"))
+}
+
+fn render_recovery_tool_note(
+    task_state: Option<&TaskState>,
+    item: &ResponseItem,
+    evidence_index: u64,
+) -> Option<String> {
+    let (call_id, output) = match item {
+        ResponseItem::FunctionCallOutput {
+            call_id, output, ..
+        }
+        | ResponseItem::CustomToolCallOutput {
+            call_id, output, ..
+        } => (call_id, output),
+        _ => return None,
+    };
+    let call = task_state?.tool_calls().get(call_id)?;
+    if !matches!(
+        call.tool_name.as_str(),
+        "get_tool_output" | "get_history_slice" | "get_repo_node"
+    ) {
+        return None;
+    }
+
+    let status = match output.success {
+        Some(true) => "succeeded",
+        Some(false) => "failed",
+        None => "incomplete",
+    };
+    let output_text = output.body.to_text().unwrap_or_default();
+    let value = serde_json::from_str::<serde_json::Value>(&output_text).ok();
+    let mut lines = vec![
+        format!("recovery_tool: {}", call.tool_name),
+        format!("status: {status}"),
+    ];
+    if let Some(value) = value {
+        for field in ["index", "node_ref", "truncated", "next_cursor"] {
+            if let Some(field_value) = value.get(field) {
+                lines.push(format!("{field}: {field_value}"));
+            }
+        }
+        if let Some(content) = value.get("content").and_then(serde_json::Value::as_str) {
+            lines.push(format!(
+                "content_excerpt: {}",
+                bounded_recovery_note_text(content)
+            ));
+        } else if let Some(related_paths) = value.get("related_paths") {
+            lines.push(format!("related_paths: {related_paths}"));
+        }
+    } else if !output_text.trim().is_empty() {
+        lines.push(format!(
+            "result_excerpt: {}",
+            bounded_recovery_note_text(&output_text)
+        ));
+    }
+    lines.push(format!("raw: get_tool_output(index={evidence_index})"));
+    Some(lines.join("\n"))
+}
+
+fn bounded_recovery_note_text(text: &str) -> String {
+    const MAX_CHARS: usize = 512;
+    let mut excerpt = text.chars().take(MAX_CHARS).collect::<String>();
+    if text.chars().count() > MAX_CHARS {
+        excerpt.push_str("...");
+    }
+    excerpt
 }
 
 fn command_from_tool_call(call: &ToolCallRecord) -> String {

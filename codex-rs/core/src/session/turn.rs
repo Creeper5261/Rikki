@@ -1128,6 +1128,16 @@ fn assemble_governed_model_context_with_evidence_refs(
     governance_projection: Option<&crate::context_engine::GovernanceProjection>,
     trajectory_nodes: &[crate::context_engine::TrajectoryNode],
 ) -> Result<GovernedContext, ContextGovernanceError> {
+    let Some(current_user_index) = prompt_history.iter().rposition(is_current_user_input_item)
+    else {
+        return Err(ContextGovernanceError::CurrentUserInputMissing);
+    };
+    let current_user_input = prompt_history[current_user_index].clone();
+    // The active-turn tail is protocol state, not historical context. In
+    // particular, function calls and their outputs must remain after the user
+    // message and must never enter density selection or tool projection.
+    let active_turn_tail = prompt_history[current_user_index + 1..].to_vec();
+    let prompt_history = prompt_history[..current_user_index].to_vec();
     let prompt_history = if tool_projection_enabled() {
         project_observed_tool_outputs_as_notes(
             prompt_history,
@@ -1143,28 +1153,24 @@ fn assemble_governed_model_context_with_evidence_refs(
         .as_ref()
         .map(|summary| u32::try_from(approx_token_count(summary)).unwrap_or(u32::MAX))
         .unwrap_or(0);
+    let active_turn_tail_tokens = active_turn_tail
+        .iter()
+        .map(estimate_governance_tokens)
+        .fold(0_u32, u32::saturating_add);
     let governance_note_tokens = MODEL_GOVERNANCE_NOTE_TOKEN_RESERVE.min(budget.max_tokens);
     let history_budget = ContextBudget {
         max_tokens: budget
             .max_tokens
             .saturating_sub(task_state_tokens)
+            .saturating_sub(active_turn_tail_tokens)
             .saturating_sub(governance_note_tokens)
             .max(1),
         min_density: budget.min_density,
     };
-    let Some(current_user_index) = prompt_history.iter().rposition(is_current_user_input_item)
-    else {
-        return Err(ContextGovernanceError::CurrentUserInputMissing);
-    };
-    let current_user_input = prompt_history[current_user_index].clone();
     let history_len = prompt_history.len().max(1);
-    let mut candidates = Vec::with_capacity(prompt_history.len().saturating_sub(1));
+    let mut candidates = Vec::with_capacity(prompt_history.len());
 
     for (index, item) in prompt_history.into_iter().enumerate() {
-        if index == current_user_index {
-            continue;
-        }
-
         let token_estimate = estimate_governance_tokens(&item);
         let freshness = ((index + 1) as f64 / history_len as f64).clamp(0.05, 1.0);
         let retention = task_state
@@ -1199,6 +1205,7 @@ fn assemble_governed_model_context_with_evidence_refs(
         current_user_input,
         budget: history_budget,
     })?;
+    governed.model_input.extend(active_turn_tail);
     governed.manifest.budget = budget;
     governed.manifest.task_state_tokens = task_state_tokens;
     governed.manifest.governance_note_tokens = governance_note_tokens;
@@ -1286,6 +1293,7 @@ fn project_observed_tool_outputs_as_notes(
         })
         .collect::<HashSet<_>>();
 
+    let mut recovery_notes = HashSet::new();
     prompt_history
         .into_iter()
         .filter_map(|item| {
@@ -1304,6 +1312,11 @@ fn project_observed_tool_outputs_as_notes(
                         task_state, &item, index,
                     )
                 {
+                    if is_recovery_tool_item(&item, task_state)
+                        && !recovery_notes.insert(note.clone())
+                    {
+                        return None;
+                    }
                     return Some(ResponseItem::Message {
                         id: None,
                         role: "developer".to_string(),
@@ -1317,6 +1330,27 @@ fn project_observed_tool_outputs_as_notes(
             Some(item)
         })
         .collect()
+}
+
+fn is_recovery_tool_item(
+    item: &ResponseItem,
+    task_state: Option<&crate::context_engine::TaskState>,
+) -> bool {
+    let call_id = match item {
+        ResponseItem::FunctionCall { call_id, .. }
+        | ResponseItem::CustomToolCall { call_id, .. }
+        | ResponseItem::FunctionCallOutput { call_id, .. }
+        | ResponseItem::CustomToolCallOutput { call_id, .. } => call_id,
+        _ => return false,
+    };
+    task_state
+        .and_then(|state| state.tool_calls().get(call_id))
+        .is_some_and(|call| {
+            matches!(
+                call.tool_name.as_str(),
+                "get_tool_output" | "get_history_slice" | "get_repo_node"
+            )
+        })
 }
 
 fn is_exploration_or_read_item(

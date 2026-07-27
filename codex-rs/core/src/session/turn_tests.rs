@@ -260,6 +260,55 @@ async fn governed_context_replays_observed_tool_pair_as_fact_only_note() {
 }
 
 #[tokio::test]
+async fn governed_context_projects_completed_recovery_result_as_bounded_fact() {
+    let (session, turn_context) = crate::session::tests::make_session_and_context().await;
+    let call = ResponseItem::FunctionCall {
+        id: Some("recovery-call-item".to_string()),
+        name: "get_tool_output".to_string(),
+        namespace: None,
+        arguments: serde_json::json!({"index": 1889}).to_string(),
+        call_id: "recovery-call".to_string(),
+        internal_chat_message_metadata_passthrough: None,
+    };
+    let output = ResponseItem::FunctionCallOutput {
+        id: Some("recovery-output-item".to_string()),
+        call_id: "recovery-call".to_string(),
+        output: FunctionCallOutputPayload {
+            body: FunctionCallOutputBody::Text(
+                serde_json::json!({
+                    "index": 1889,
+                    "cursor": null,
+                    "next_cursor": null,
+                    "total_chars": 13,
+                    "truncated": false,
+                    "content": "RIKKI_PLUS_OK"
+                })
+                .to_string(),
+            ),
+            success: Some(true),
+        },
+        internal_chat_message_metadata_passthrough: None,
+    };
+    session
+        .record_conversation_items(&turn_context, &[call, output, user_input_text("Continue.")])
+        .await;
+    session.mark_pending_tool_outputs_observed().await;
+
+    let governed = build_governed_model_context_from_session(&session, &turn_context)
+        .await
+        .expect("completed recovery output should remain a model-visible fact");
+    let model_text = joined_input_text(&governed.model_input);
+
+    assert!(model_text.contains("recovery_tool: get_tool_output"));
+    assert!(model_text.contains("status: succeeded"));
+    assert!(model_text.contains("index: 1889"));
+    assert!(model_text.contains("content_excerpt: RIKKI_PLUS_OK"));
+    assert!(!governed.model_input.iter().any(
+        |item| matches!(item, ResponseItem::FunctionCall { call_id, .. } if call_id == "recovery-call")
+    ));
+}
+
+#[tokio::test]
 async fn governed_context_note_keeps_verbatim_failure_diagnostic_without_advice() {
     let (session, turn_context) = crate::session::tests::make_session_and_context().await;
     let call = ResponseItem::FunctionCall {
