@@ -748,9 +748,12 @@ fn add_core_utility_tools(context: &CoreToolPlanContext<'_>, planned_tools: &mut
         planned_tools.add(GetContextRemainingHandler);
     }
 
-    planned_tools.add(GetToolOutputHandler);
-    planned_tools.add(GetHistorySliceHandler);
-    planned_tools.add(GetRepoNodeHandler);
+    // Recovery tools must stay outside Code Mode. Their call/result pair is
+    // part of the model's durable recovery state, not an implementation detail
+    // to be nested inside an `exec` cell.
+    planned_tools.add_with_exposure(GetToolOutputHandler, ToolExposure::DirectModelOnly);
+    planned_tools.add_with_exposure(GetHistorySliceHandler, ToolExposure::DirectModelOnly);
+    planned_tools.add_with_exposure(GetRepoNodeHandler, ToolExposure::DirectModelOnly);
     planned_tools.add(SearchWorkspaceFilesHandler);
 
     if features.enabled(Feature::CurrentTimeReminder) {

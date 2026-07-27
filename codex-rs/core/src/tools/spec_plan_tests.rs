@@ -462,6 +462,19 @@ async fn tool_output_tool_is_registered_and_model_visible() {
 }
 
 #[tokio::test]
+async fn recovery_tools_stay_direct_in_code_mode_only() {
+    let plan = probe(|turn| {
+        set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
+    })
+    .await;
+
+    for tool_name in ["get_tool_output", "get_history_slice", "get_repo_node"] {
+        plan.assert_visible_contains(&[tool_name]);
+        assert_eq!(plan.exposure(tool_name), ToolExposure::DirectModelOnly);
+    }
+}
+
+#[tokio::test]
 async fn repo_node_tool_is_registered_and_model_visible() {
     let plan = probe(|_| {}).await;
 
